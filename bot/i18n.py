@@ -4,14 +4,21 @@ from __future__ import annotations
 
 from typing import Any
 
+from .locales.admin import ADMIN
 from .locales.en import EN
 from .locales.fa import FA
 
 LANGS: tuple[str, ...] = ("fa", "en")
 RULE = "\u2501" * 14
-CATALOG: dict[str, dict[str, str]] = {"fa": FA, "en": EN}
 
-_PERSIAN_DIGITS = str.maketrans("0123456789", "\u06f0\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7\u06f8\u06f9")
+CATALOG: dict[str, dict[str, str]] = {
+    "fa": {**FA, **ADMIN["fa"]},
+    "en": {**EN, **ADMIN["en"]},
+}
+
+_PERSIAN_DIGITS = str.maketrans(
+    "0123456789", "\u06f0\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7\u06f8\u06f9"
+)
 
 
 def normalise(lang: str | None) -> str:
@@ -28,12 +35,12 @@ def num(value: Any, lang: str) -> str:
 def t(lang: str, key: str, **kwargs: Any) -> str:
     """Look up a key, falling back to Persian and then to the key itself."""
     lang = normalise(lang)
-    template = CATALOG[lang].get(key) or FA.get(key) or key
+    template = CATALOG[lang].get(key) or CATALOG["fa"].get(key) or key
     if not kwargs and "{rule}" not in template:
         return template
     try:
         return template.format(rule=RULE, **kwargs)
-    except (KeyError, IndexError):
+    except (KeyError, IndexError, ValueError):
         return template
 
 
