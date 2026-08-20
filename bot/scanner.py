@@ -5,6 +5,7 @@ Two independent background jobs, both tuned for a 1 vCPU / 1 GB box:
   CleanIPScanner   entry points the client dials: curated seed lists mixed with
                    a random sweep of Cloudflare prefixes, then verified with a
                    real request to /cdn-cgi/trace so we also learn the colo.
+                   TLS ports get extra effort when the initial pass is lean.
 
   ProxyIPScanner   relays the worker uses to reach hosts that sit behind
                    Cloudflare. A Worker cannot open a socket to a
@@ -301,6 +302,18 @@ class CleanIPScanner:
                     )
                     alive = sorted((r for r in results if r), key=lambda r: r["latency"])
                     shortlist = alive[: settings.verify_top]
+
+                    # TLS ports need extra help to fill the pool
+                    is_tls = port in settings.tls_ports
+                    if len(shortlist) < 4 and is_tls and alive:
+                        log.info("port %s light on alive (%s), running second pass", port, len(alive))
+                        more = await asyncio.gather(
+                            *(self._tcp_probe(ip, port, semaphore) for ip in random_ips(batch * 2)),
+                            return_exceptions=False,
+                        )
+                        alive.extend(sorted((r for r in more if r), key=lambda r: r["latency"]))
+                        alive.sort(key=lambda r: r["latency"])
+                        shortlist = alive[: settings.verify_top]
 
                     verify_sem = asyncio.Semaphore(min(24, settings.scan_concurrency))
                     verified = await asyncio.gather(
