@@ -19,6 +19,8 @@ CF_TOKEN_URL = (
     "&accountId=*&zoneId=all&name=AutoVless"
 )
 
+TICKET_MARKS = {"open": "\U0001f7e0", "answered": "\u2705", "closed": "\U0001f512"}
+
 
 def _b(text: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=data)
@@ -36,10 +38,7 @@ def main_menu(lang: str, is_admin: bool = False) -> InlineKeyboardMarkup:
         [_b(t(lang, "btn.convert"), "nav:convert")],
         [_b(t(lang, "btn.apps"), "nav:apps"), _b(t(lang, "btn.guide"), "nav:guide")],
         [_b(t(lang, "btn.status"), "nav:status"), _b(t(lang, "btn.operator"), "nav:operator")],
-        [
-            InlineKeyboardButton(text=t(lang, "btn.support"), url=settings.support_url),
-            _b(t(lang, "btn.donate"), "nav:donate"),
-        ],
+        [_b(t(lang, "btn.support"), "nav:support"), _b(t(lang, "btn.donate"), "nav:donate")],
         [_b(t(lang, "btn.lang"), "nav:lang")],
     ]
     if is_admin:
@@ -101,6 +100,69 @@ def simple_back(lang: str, target: str = "nav:menu") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[back_row(lang, target)])
 
 
+# ---------------------------------------------------------------- support
+
+
+def support_menu(lang: str, has_thread: bool) -> InlineKeyboardMarkup:
+    """User facing support home."""
+    rows: list[list[InlineKeyboardButton]] = [[_b(t(lang, "btn.support_new"), "sup:new")]]
+    if has_thread:
+        rows.append([_b(t(lang, "btn.support_thread"), "sup:thread")])
+    if settings.support_url:
+        rows.append(
+            [InlineKeyboardButton(text=t(lang, "btn.support_direct"), url=settings.support_url)]
+        )
+    rows.append(back_row(lang))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def support_user_reply(lang: str) -> InlineKeyboardMarkup:
+    """Attached to an admin answer so the user can keep the thread going."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_b(t(lang, "btn.support_new"), "sup:new")],
+            back_row(lang),
+        ]
+    )
+
+
+def support_list(lang: str, tickets: list[dict], scope: str = "open") -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    for ticket in tickets:
+        mark = TICKET_MARKS.get(str(ticket.get("status")), "\u2022")
+        who = ticket.get("username") or ticket.get("first_name") or ticket.get("tg_id")
+        badge = f" \u00b7 {ticket['unread_admin']} new" if ticket.get("unread_admin") else ""
+        rows.append([_b(f"{mark} #{ticket['id']} \u00b7 {who}{badge}", f"sup:open:{ticket['id']}")])
+    toggle = (
+        ("btn.tickets_all", "sup:list:all") if scope != "all" else ("btn.tickets_open", "sup:list:open")
+    )
+    rows.append([_b(t(lang, toggle[0]), toggle[1])])
+    rows.append([_b(t(lang, "support.toggle_switch"), "sup:toggle")])
+    rows.append(back_row(lang, "adm:menu"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def support_ticket(
+    lang: str,
+    ticket_id: int,
+    closed: bool = False,
+    scope: str = "open",
+) -> InlineKeyboardMarkup:
+    action = (
+        ("btn.reopen_ticket", f"sup:reopen:{ticket_id}")
+        if closed
+        else ("btn.close_ticket", f"sup:close:{ticket_id}")
+    )
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_b(t(lang, "btn.reply"), f"sup:reply:{ticket_id}")],
+            [_b(t(lang, action[0]), action[1])],
+            [_b(t(lang, "btn.tickets"), f"sup:list:{scope}")],
+            back_row(lang, "adm:menu"),
+        ]
+    )
+
+
 # ------------------------------------------------------------------ admin
 
 
@@ -111,7 +173,7 @@ def admin_menu(lang: str) -> InlineKeyboardMarkup:
             [_b(t(lang, "btn.broadcast"), "adm:broadcast"), _b(t(lang, "btn.channels"), "adm:channels")],
             [_b(t(lang, "btn.engine"), "adm:engine"), _b(t(lang, "btn.options"), "adm:options")],
             [_b(t(lang, "btn.panels"), "adm:panels"), _b(t(lang, "btn.logs"), "adm:logs")],
-            [_b(t(lang, "btn.backup"), "adm:backup")],
+            [_b(t(lang, "btn.tickets"), "sup:list:open"), _b(t(lang, "btn.backup"), "adm:backup")],
             back_row(lang),
         ]
     )

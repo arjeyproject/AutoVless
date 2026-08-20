@@ -72,9 +72,32 @@ CREATE TABLE IF NOT EXISTS events (
     at      INTEGER NOT NULL
 );
 
+CREATE TABLE IF NOT EXISTS tickets (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id        INTEGER NOT NULL,
+    status       TEXT    NOT NULL DEFAULT 'open',
+    unread_admin INTEGER NOT NULL DEFAULT 0,
+    unread_user  INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS ticket_messages (
+    id        INTEGER PRIMARY KEY AUTOINCREMENT,
+    ticket_id INTEGER NOT NULL,
+    sender    TEXT    NOT NULL,
+    admin_id  INTEGER,
+    body      TEXT    NOT NULL,
+    at        INTEGER NOT NULL,
+    FOREIGN KEY (ticket_id) REFERENCES tickets (id) ON DELETE CASCADE
+);
+
 CREATE INDEX IF NOT EXISTS idx_clean_latency ON clean_ips (port, verified, latency);
 CREATE INDEX IF NOT EXISTS idx_events_at ON events (at DESC);
 CREATE INDEX IF NOT EXISTS idx_users_seen ON users (seen_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tickets_updated ON tickets (status, updated_at DESC);
+CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets (tg_id, id DESC);
+CREATE INDEX IF NOT EXISTS idx_ticket_messages ON ticket_messages (ticket_id, id);
 """
 
 
@@ -138,6 +161,15 @@ async def execute(sql: str, params: Sequence[Any] = ()) -> None:
     await conn().commit()
 
 
+async def insert(sql: str, params: Sequence[Any] = ()) -> int:
+    """Insert a row and return its new rowid."""
+    cursor = await conn().execute(sql, params)
+    await conn().commit()
+    new_id = int(cursor.lastrowid or 0)
+    await cursor.close()
+    return new_id
+
+
 async def scalar(sql: str, params: Sequence[Any] = (), default: Any = 0) -> Any:
     row = await fetch_one(sql, params)
     if row is None or row[0] is None:
@@ -153,6 +185,7 @@ DEFAULT_OPTIONS: dict[str, str] = {
     "maintenance": "0",
     "builds_enabled": "1",
     "force_join": "1",
+    "support_enabled": "1",
     "welcome_extra": "",
     "support_note": "",
 }
@@ -323,6 +356,128 @@ async def channels() -> list[dict]:
 
 
 # --------------------------------------------------------------------- #
+# support tickets
+# --------------------------------------------------------------------- #
+
+TICKET_OPEN = "open"
+TICKET_ANSWERED = "answered"
+TICKET_CLOSED = "closed"
+
+SENDER_USER = "user"
+SENDER_ADMIN = "admin"
+
+_TICKET_SELECT = (
+    "SELECT t.*, u.username AS username, u.first_name AS first_name, u.lang AS user_lang "
+    "FROM tickets t LEFT JOIN users u ON u.tg_id = t.tg_id "
+)
+
+
+async def open_ticket(tg_id: int) -> int:
+    """Reuse the caller's live thread, or start a fresh one."""
+    row = await fetch_one(
+        "SELECT id FROM tickets WHERE tg_id = ? AND status != ? ORDER BY id DESC LIMIT 1",
+        (tg_id, TICKET_CLOSED),
+    )
+    if row is not None:
+        return int(row["id"])
+    ts = now()
+    return await insert(
+        "INSERT INTO tickets (tg_id, status, created_at, updated_at) VALUES (?, ?, ?, ?)",
+        (tg_id, TICKET_OPEN, ts, ts),
+    )
+
+
+async def add_ticket_message(
+    ticket_id: int,
+    sender: str,
+    body: str,
+    admin_id: Optional[int] = None,
+) -> None:
+    ts = now()
+    await execute(
+        "INSERT INTO ticket_messages (ticket_id, sender, admin_id, body, at) VALUES (?, ?, ?, ?, ?)",
+        (ticket_id, sender, admin_id, body[:4000], ts),
+    )
+    if sender == SENDER_ADMIN:
+        await execute(
+            "UPDATE tickets SET status = ?, updated_at = ?, unread_admin = 0, "
+            "unread_user = unread_user + 1 WHERE id = ?",
+            (TICKET_ANSWERED, ts, ticket_id),
+        )
+    else:
+        await execute(
+            "UPDATE tickets SET status = ?, updated_at = ?, unread_admin = unread_admin + 1 WHERE id = ?",
+            (TICKET_OPEN, ts, ticket_id),
+        )
+
+
+async def get_ticket(ticket_id: int) -> Optional[dict]:
+    row = await fetch_one(_TICKET_SELECT + "WHERE t.id = ?", (ticket_id,))
+    return dict(row) if row is not None else None
+
+
+async def latest_ticket(tg_id: int) -> Optional[dict]:
+    row = await fetch_one(_TICKET_SELECT + "WHERE t.tg_id = ? ORDER BY t.id DESC LIMIT 1", (tg_id,))
+    return dict(row) if row is not None else None
+
+
+async def ticket_thread(ticket_id: int, limit: int = 12) -> list[dict]:
+    rows = await fetch_all(
+        "SELECT * FROM (SELECT * FROM ticket_messages WHERE ticket_id = ? "
+        "ORDER BY id DESC LIMIT ?) ORDER BY id ASC",
+        (ticket_id, limit),
+    )
+    return [dict(row) for row in rows]
+
+
+async def ticket_message_count(ticket_id: int) -> int:
+    return int(await scalar("SELECT COUNT(*) FROM ticket_messages WHERE ticket_id = ?", (ticket_id,)))
+
+
+async def set_ticket_status(ticket_id: int, status: str) -> None:
+    await execute(
+        "UPDATE tickets SET status = ?, updated_at = ? WHERE id = ?",
+        (status, now(), ticket_id),
+    )
+
+
+async def mark_ticket_seen(ticket_id: int, by: str) -> None:
+    column = "unread_admin" if by == SENDER_ADMIN else "unread_user"
+    await execute(f"UPDATE tickets SET {column} = 0 WHERE id = ?", (ticket_id,))
+
+
+async def tickets(scope: str = "open", limit: int = 12) -> list[dict]:
+    """Newest first, with anything waiting on the admin floated to the top."""
+    where = "" if scope == "all" else f"WHERE t.status != '{TICKET_CLOSED}' "
+    rows = await fetch_all(
+        _TICKET_SELECT + where + "ORDER BY t.unread_admin DESC, t.updated_at DESC LIMIT ?",
+        (limit,),
+    )
+    return [dict(row) for row in rows]
+
+
+async def ticket_stats() -> dict:
+    return {
+        "open": int(await scalar("SELECT COUNT(*) FROM tickets WHERE status = ?", (TICKET_OPEN,))),
+        "answered": int(await scalar("SELECT COUNT(*) FROM tickets WHERE status = ?", (TICKET_ANSWERED,))),
+        "closed": int(await scalar("SELECT COUNT(*) FROM tickets WHERE status = ?", (TICKET_CLOSED,))),
+        "waiting": int(await scalar("SELECT COUNT(*) FROM tickets WHERE unread_admin > 0")),
+    }
+
+
+async def last_support_message_at(tg_id: int) -> int:
+    return int(
+        await scalar(
+            "SELECT MAX(m.at) FROM ticket_messages m JOIN tickets t ON t.id = m.ticket_id "
+            "WHERE t.tg_id = ? AND m.sender = ?",
+            (tg_id, SENDER_USER),
+            default=0,
+        )
+        or 0
+    )
+
+
+# --------------------------------------------------------------------- #
 # clean ip pool
 # --------------------------------------------------------------------- #
 
@@ -407,4 +562,5 @@ async def global_stats() -> dict:
         "rebuilds": int(await scalar("SELECT COALESCE(SUM(rebuilds), 0) FROM panels")),
         "avg_build_ms": int(await scalar("SELECT COALESCE(AVG(build_ms), 0) FROM panels")),
         "channels": int(await scalar("SELECT COUNT(*) FROM channels")),
+        "tickets_waiting": int(await scalar("SELECT COUNT(*) FROM tickets WHERE unread_admin > 0")),
     }

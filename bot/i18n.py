@@ -7,13 +7,14 @@ from typing import Any
 from .locales.admin import ADMIN
 from .locales.en import EN
 from .locales.fa import FA
+from .locales.support import SUPPORT
 
 LANGS: tuple[str, ...] = ("fa", "en")
 RULE = "\u2501" * 14
 
 CATALOG: dict[str, dict[str, str]] = {
-    "fa": {**FA, **ADMIN["fa"]},
-    "en": {**EN, **ADMIN["en"]},
+    "fa": {**FA, **ADMIN["fa"], **SUPPORT["fa"]},
+    "en": {**EN, **ADMIN["en"], **SUPPORT["en"]},
 }
 
 _PERSIAN_DIGITS = str.maketrans(
