@@ -1,0 +1,334 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>راهنمای نصب AutoVless</title>
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@300;400;500;700;800&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:oklch(98.6% 0.006 78); --sunk:oklch(96.2% 0.009 78);
+  --line:oklch(89% 0.012 70); --line-soft:oklch(93.5% 0.009 74);
+  --ink:oklch(24% 0.022 58); --ink-soft:oklch(46% 0.018 62); --ink-faint:oklch(62% 0.014 66);
+  --accent:oklch(56% 0.158 38); --accent-deep:oklch(44% 0.132 36); --accent-wash:oklch(95% 0.028 44);
+  --good:oklch(48% 0.098 158); --good-wash:oklch(95.5% 0.03 158);
+  --warn:oklch(52% 0.12 72); --warn-wash:oklch(96% 0.038 80);
+  --code-bg:oklch(26% 0.018 58); --code-ink:oklch(93% 0.01 80);
+  --font:"Vazirmatn",-apple-system,BlinkMacSystemFont,"Segoe UI",system-ui,sans-serif;
+  --mono:ui-monospace,SFMono-Regular,Menlo,Consolas,monospace;
+  --ease:cubic-bezier(0.22,1,0.36,1);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth;scroll-padding-top:80px}
+body{margin:0;background:var(--paper);color:var(--ink);font:400 16px/1.75 var(--font)}
+h1,h2,h3{text-wrap:balance;margin:0}
+p{margin:0;text-wrap:pretty}
+a{color:var(--accent-deep);text-underline-offset:3px}
+a:hover{color:var(--accent)}
+:focus-visible{outline:2px solid var(--accent);outline-offset:3px;border-radius:3px}
+header{padding:96px 24px 48px;border-bottom:1px solid var(--line);background:linear-gradient(to bottom,var(--sunk),var(--paper))}
+header div{max-width:1140px;margin:0 auto}
+.eyebrow{font-size:.75rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--accent);margin-bottom:12px}
+h1{font-size:clamp(2.1rem,6vw,3.3rem);font-weight:800;line-height:1.15;letter-spacing:-.01em}
+.lede{margin-top:16px;max-width:64ch;font-size:1.18rem;font-weight:300;line-height:1.85;color:var(--ink-soft)}
+.facts{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:32px;padding-top:24px;border-top:1px solid var(--line-soft);font-size:.875rem;color:var(--ink-soft)}
+.facts b{color:var(--ink);font-weight:500}
+.shell{max-width:1140px;margin:0 auto;padding:48px 24px 96px;display:grid;gap:64px}
+@media(min-width:1040px){.shell{grid-template-columns:240px minmax(0,1fr);gap:64px 88px;align-items:start}nav{position:sticky;top:32px;max-height:calc(100vh - 96px);overflow-y:auto}}
+nav h2{font-size:.75rem;font-weight:700;letter-spacing:.1em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:16px}
+nav ol{list-style:none;margin:0;padding:0;display:grid;gap:2px}
+nav a{display:flex;gap:12px;align-items:baseline;padding:8px 12px;border-radius:7px;font-size:.9rem;color:var(--ink-soft);text-decoration:none;transition:background 180ms var(--ease),color 180ms var(--ease)}
+nav a span{font-size:.72rem;font-weight:700;color:var(--ink-faint);min-width:1.4em;font-variant-numeric:tabular-nums}
+nav a:hover{background:var(--sunk);color:var(--ink)}
+nav a[aria-current="true"]{background:var(--accent-wash);color:var(--accent-deep);font-weight:500}
+nav a[aria-current="true"] span{color:var(--accent)}
+main{min-width:0}
+section{padding-block:48px;border-top:1px solid var(--line-soft)}
+section:first-of-type{border-top:0;padding-block-start:0}
+.head{display:grid;grid-template-columns:auto 1fr;gap:16px;align-items:start}
+.n{font-size:2.5rem;font-weight:800;line-height:1;color:var(--line);font-variant-numeric:tabular-nums;letter-spacing:-.03em}
+section h2{font-size:clamp(1.4rem,3.4vw,1.85rem);font-weight:700;line-height:1.3}
+.sub{margin-top:8px;color:var(--ink-soft);max-width:70ch}
+.body{margin-top:24px;display:grid;gap:16px;max-width:74ch}
+h3{font-size:1.05rem;font-weight:700;margin-top:12px}
+ol.num,ul.dot{margin:0;padding-inline-start:1.35em;display:grid;gap:8px}
+ol.num li::marker{color:var(--accent);font-weight:700}
+ul.dot{list-style:none;padding-inline-start:0}
+ul.dot li{padding-inline-start:1.3em;position:relative}
+ul.dot li::before{content:"";position:absolute;inset-inline-start:.35em;inset-block-start:.72em;width:5px;height:5px;border-radius:50%;background:var(--accent)}
+code:not(pre code){font-family:var(--mono);font-size:.86em;direction:ltr;unicode-bidi:embed;background:var(--sunk);border:1px solid var(--line-soft);padding:.1em .4em;border-radius:5px}
+.snippet{position:relative}
+.snippet p{font-size:.72rem;font-weight:700;letter-spacing:.09em;text-transform:uppercase;color:var(--ink-faint);margin-bottom:8px}
+pre{margin:0;direction:ltr;text-align:left;background:var(--code-bg);color:var(--code-ink);border-radius:10px;padding:16px 24px;overflow-x:auto;font:.865rem/1.75 var(--mono);font-variant-ligatures:none}
+pre .cm{color:oklch(66% 0.03 120)}
+.copy{position:absolute;inset-block-start:28px;inset-inline-end:12px;font:500 .75rem var(--font);color:var(--code-ink);background:oklch(36% 0.02 58);border:1px solid oklch(46% 0.02 58);border-radius:6px;padding:3px 9px;cursor:pointer;opacity:0;transition:opacity 160ms var(--ease)}
+.snippet:hover .copy,.copy:focus-visible{opacity:1}
+.copy[data-state="ok"]{background:var(--good);border-color:var(--good);opacity:1}
+.note{border:1px solid var(--line);border-radius:10px;padding:16px 24px;background:var(--sunk)}
+.note b{display:block;margin-bottom:4px}
+.note.warn{background:var(--warn-wash);border-color:oklch(84% 0.06 80)}
+.note.warn b{color:var(--warn)}
+.note.good{background:var(--good-wash);border-color:oklch(86% 0.05 158)}
+.note.good b{color:var(--good)}
+.tw{overflow-x:auto;border:1px solid var(--line);border-radius:10px}
+table{width:100%;border-collapse:collapse;font-size:.9rem;min-width:520px}
+th,td{padding:12px 16px;text-align:right;border-bottom:1px solid var(--line-soft)}
+thead th{background:var(--sunk);font-size:.75rem;font-weight:700;letter-spacing:.06em;text-transform:uppercase;color:var(--ink-faint)}
+tbody tr:last-child td{border-bottom:0}
+td.v{font-variant-numeric:tabular-nums;color:var(--ink-soft)}
+details{border-bottom:1px solid var(--line-soft);padding-block:16px}
+details:first-of-type{border-top:1px solid var(--line-soft)}
+summary{cursor:pointer;list-style:none;display:flex;gap:12px;align-items:baseline;font-weight:500}
+summary::-webkit-details-marker{display:none}
+summary::before{content:"+";color:var(--accent);font-weight:700;font-size:1.1rem;line-height:1.4}
+details[open] summary::before{content:"−"}
+details .a{margin-top:12px;padding-inline-start:1.6em;color:var(--ink-soft);display:grid;gap:12px}
+footer{border-top:1px solid var(--line);padding:48px 24px;text-align:center;color:var(--ink-faint);font-size:.85rem}
+@media(max-width:560px){header{padding:48px 16px 32px}.shell{padding:32px 16px 64px}.head{grid-template-columns:1fr;gap:8px}.n{font-size:1.6rem;color:var(--accent)}nav{display:none}}
+@media(prefers-reduced-motion:reduce){*{transition-duration:.01ms!important}html{scroll-behavior:auto}}
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <p class="eyebrow">نصب صفر تا صد</p>
+    <h1>راه‌اندازی ربات AutoVless</h1>
+    <p class="lede">از یک سرور خالی تا رباتی که روی اکانت کلادفلر هر کاربر پنل VLESS می‌سازد و شش کانفیگ سالم (سه تا پورت ۴۴۳ و سه تا پورت ۸۰) تحویل می‌دهد.</p>
+    <div class="facts">
+      <span>سرور: <b>۱ هسته / ۱ گیگ رم</b></span>
+      <span>زمان نصب: <b>حدود ۱۰ دقیقه</b></span>
+      <span>اجرا: <b>Docker Compose</b></span>
+    </div>
+  </div>
+</header>
+
+<div class="shell">
+<nav aria-label="فهرست">
+  <h2>مراحل</h2>
+  <ol>
+    <li><a href="#pre"><span>۰</span>پیش‌نیازها</a></li>
+    <li><a href="#token"><span>۱</span>ساخت ربات و توکن</a></li>
+    <li><a href="#id"><span>۲</span>آیدی عددی ادمین</a></li>
+    <li><a href="#ssh"><span>۳</span>اتصال به سرور</a></li>
+    <li><a href="#install"><span>۴</span>نصب یک‌خطی</a></li>
+    <li><a href="#manual"><span>۵</span>نصب دستی</a></li>
+    <li><a href="#env"><span>۶</span>تنطیمات env</a></li>
+    <li><a href="#first"><span>۷</span>اولین اجرا</a></li>
+    <li><a href="#flow"><span>۸</span>مسیر کاربر</a></li>
+    <li><a href="#ops"><span>۹</span>نگهداری</a></li>
+    <li><a href="#faq"><span>۱۰</span>رفع اشکال</a></li>
+  </ol>
+</nav>
+
+<main>
+<section id="pre">
+  <div class="head"><div class="n">۰</div><div><h2>پیش‌نیازها را جمع کن</h2><p class="sub">قبل از تایپ اولین دستور، این چهار چیز باید آماده باشد.</p></div></div>
+  <div class="body">
+    <ul class="dot">
+      <li><b>یک سرور لینوکس</b> با اوبونتو ۲۲.۰۴ یا ۲۴.۰۴، حداقل ۱ هسته و ۱ گیگ رم.</li>
+      <li><b>دسترسی ریشه</b> یا کاربری با <code>sudo</code>.</li>
+      <li><b>توکن ربات</b> از BotFather.</li>
+      <li><b>آیدی عددی خودت</b> برای پنل مدیریت.</li>
+    </ul>
+    <div class="note"><b>اکانت کلادفلر</b>خودت به اکانت کلادفلر نیازی نداری. هر کاربر توکن اکانت شخصی‌اش را می‌فرستد و ورکر روی اکانت خودش ساخته می‌شود.</div>
+  </div>
+</section>
+
+<section id="token">
+  <div class="head"><div class="n">۱</div><div><h2>ربات را در تلگرام بساز</h2><p class="sub">توکن کلید همه‌چیز است؛ جایی امن نگه‌اش دار.</p></div></div>
+  <div class="body">
+    <ol class="num">
+      <li><a href="https://t.me/BotFather">@BotFather</a> را باز کن و <code>/newbot</code> بفرست.</li>
+      <li>یک نام نمایشی بده، مثل <code>AutoVless</code>.</li>
+      <li>یک یوزرنیم بده که به <code>bot</code> ختم شود.</li>
+      <li>توکن را کپی کن. شکلش شبیه <code>8123456789:AAF-Example...</code> است.</li>
+    </ol>
+  </div>
+</section>
+
+<section id="id">
+  <div class="head"><div class="n">۲</div><div><h2>آیدی عددی ادمین را بگیر</h2><p class="sub">بدون این عدد، پنل مدیریت برای هیچ‌کس باز نمی‌شود.</p></div></div>
+  <div class="body">
+    <p>به <a href="https://t.me/userinfobot">@userinfobot</a> پیام بده. عدد فیلد <code>Id</code> آیدی توست.</p>
+    <div class="note"><b>چند ادمین</b>آیدی‌ها را با کاما جدا کن: <code>111111111,222222222</code></div>
+  </div>
+</section>
+
+<section id="ssh">
+  <div class="head"><div class="n">۳</div><div><h2>به سرور وصل شو</h2><p class="sub">ساعت غلط سرور باعث خطای TLS در اسکنر می‌شود؛ این بخش را رد نکن.</p></div></div>
+  <div class="body">
+    <div class="snippet"><p>آماده‌سازی</p><pre><code>ssh root@SERVER_IP
+apt update &amp;&amp; apt upgrade -y
+apt install -y curl git ca-certificates
+timedatectl set-timezone Asia/Tehran</code></pre><button class="copy" type="button">کپی</button></div>
+    <div class="note warn"><b>رم یک گیگ</b>اگر سواپ نداری یک گیگ بساز: <code>fallocate -l 1G /swapfile &amp;&amp; chmod 600 /swapfile &amp;&amp; mkswap /swapfile &amp;&amp; swapon /swapfile</code></div>
+  </div>
+</section>
+
+<section id="install">
+  <div class="head"><div class="n">۴</div><div><h2>نصب یک‌خطی</h2><p class="sub">داکر را نصب می‌کند، پروژه را می‌گیرد، env می‌سازد و ربات را بالا می‌آورد.</p></div></div>
+  <div class="body">
+    <div class="snippet"><p>با دسترسی ریشه</p><pre><code>bash &lt;(curl -fsSL https://raw.githubusercontent.com/arjeyproject/AutoVless/main/install.sh)</code></pre><button class="copy" type="button">کپی</button></div>
+    <p>دو سوال می‌پرسد: توکن ربات و آیدی عددی ادمین.</p>
+    <div class="note good"><b>تست سریع</b>در تلگرام به ربات خودت <code>/start</code> بفرست. باید منوی شیشه‌ای را ببینی.</div>
+  </div>
+</section>
+
+<section id="manual">
+  <div class="head"><div class="n">۵</div><div><h2>نصب دستی</h2><p class="sub">همان کار، ولی هر مرحله زیر دست خودت.</p></div></div>
+  <div class="body">
+    <div class="snippet"><p>چهار گام</p><pre><code>curl -fsSL https://get.docker.com | sh
+systemctl enable --now docker
+
+git clone https://github.com/arjeyproject/AutoVless.git /opt/autovless
+cd /opt/autovless
+
+cp .env.example .env
+nano .env        <span class="cm"># BOT_TOKEN and ADMIN_IDS</span>
+chmod 600 .env
+
+mkdir -p data
+docker compose up -d --build
+docker compose logs -f</code></pre><button class="copy" type="button">کپی</button></div>
+    <p>برای خروج از لاگ <code>Ctrl + C</code> بزن؛ ربات در پس‌زمینه روشن می‌ماند.</p>
+  </div>
+</section>
+
+<section id="env">
+  <div class="head"><div class="n">۶</div><div><h2>راهنمای فایل env</h2><p class="sub">فقط دو مقدار اول اجباری‌اند. بقیه برای سرور یک هسته تنطیم شده‌اند.</p></div></div>
+  <div class="body">
+    <div class="tw"><table>
+      <thead><tr><th>کلید</th><th>پیش‌فرض</th><th>توضیح</th></tr></thead>
+      <tbody>
+        <tr><td><code>BOT_TOKEN</code></td><td class="v">—</td><td>توکن BotFather. اجباری.</td></tr>
+        <tr><td><code>ADMIN_IDS</code></td><td class="v">—</td><td>آیدی عددی ادمین‌ها با کاما. اجباری.</td></tr>
+        <tr><td><code>BRAND</code></td><td class="v">AutoVless</td><td>نامی که در اسم کانفیگ‌ها می‌آید.</td></tr>
+        <tr><td><code>DEFAULT_LANG</code></td><td class="v">fa</td><td>زبان پیش‌فرض؛ fa یا en.</td></tr>
+        <tr><td><code>TLS_CONFIG_COUNT</code></td><td class="v">3</td><td>تعداد کانفیگ روی پورت‌های TLS.</td></tr>
+        <tr><td><code>HTTP_CONFIG_COUNT</code></td><td class="v">3</td><td>تعداد کانفیگ روی پورت ۸۰.</td></tr>
+        <tr><td><code>TLS_PORTS</code></td><td class="v">443</td><td>مجاز: 443, 2053, 2083, 2087, 2096, 8443</td></tr>
+        <tr><td><code>HTTP_PORTS</code></td><td class="v">80</td><td>مجاز: 80, 8080, 8880, 2052, 2082, 2086, 2095</td></tr>
+        <tr><td><code>SCAN_INTERVAL</code></td><td class="v">600</td><td>فاصله هر دور اسکن، به ثانیه.</td></tr>
+        <tr><td><code>SCAN_BATCH</code></td><td class="v">1200</td><td>تعداد آدرس در هر دور، برای هر پورت.</td></tr>
+        <tr><td><code>SCAN_CONCURRENCY</code></td><td class="v">160</td><td>سوکت هم‌زمان. روی یک هسته بیش از ۲۰۰ نبر.</td></tr>
+        <tr><td><code>POOL_SIZE</code></td><td class="v">120</td><td>تعداد اندپوینت در استخر.</td></tr>
+        <tr><td><code>PROXY_IP</code></td><td class="v">خالی</td><td>رله اختیاری برای مقصدهای دور از دسترس کلادفلر.</td></tr>
+        <tr><td><code>STORE_TOKENS</code></td><td class="v">true</td><td>نگه‌داری رمزنگاری‌شده توکن برای بازسازی و حذف.</td></tr>
+        <tr><td><code>SECRET_KEY</code></td><td class="v">خالی</td><td>خالی بگذار؛ در <code>data/.secret</code> ساخته می‌شود.</td></tr>
+      </tbody>
+    </table></div>
+    <div class="note warn"><b>بعد از هر تغییر</b>سرویس را ری‌استارت کن: <code>docker compose restart</code></div>
+  </div>
+</section>
+
+<section id="first">
+  <div class="head"><div class="n">۷</div><div><h2>اولین اجرا و پنل مدیریت</h2><p class="sub">اسکنر همان لحطه بوت شروع می‌کند؛ یک دقیقه به او وقت بده.</p></div></div>
+  <div class="body">
+    <ol class="num">
+      <li><code>/start</code> بفرست. دکمه <b>پنل مدیریت</b> فقط برای آیدی‌های <code>ADMIN_IDS</code> دیده می‌شود.</li>
+      <li>در <b>موتور اسکن</b>، اگر استخر صفر است <b>اسکن فوری</b> را بزن.</li>
+      <li>در <b>قفل کانال</b> کانال‌های اجباری را اضافه کن. ربات باید از قبل ادمین باشد.</li>
+      <li>در <b>تنطیمات</b> حالت سرویس، اجازه ساخت پنل و عضویت اجباری را خاموش و روشن کن.</li>
+      <li><b>پشتیبان‌گیری</b> فایل دیتابیس را برایت می‌فرستد.</li>
+    </ol>
+  </div>
+</section>
+
+<section id="flow">
+  <div class="head"><div class="n">۸</div><div><h2>مسیر کاربر، از توکن تا کانفیگ</h2><p class="sub">یک بار خودت کامل تستش کن.</p></div></div>
+  <div class="body">
+    <ol class="num">
+      <li>کاربر <b>ساخت پنل توربو</b> را می‌زند: دو دکمه ثبت نام و دریافت توکن.</li>
+      <li>دکمه دریافت توکن، صفحه کلادفلر را با دسترسی‌های آماده باز می‌کند.</li>
+      <li><code>Continue to summary</code> و بعد <code>Create Token</code>.</li>
+      <li>توکن را در چت ربات پیست می‌کند. ربات پیام توکن را فوراً پاک می‌کند.</li>
+      <li>ربات توکن را اعتبارسنجی می‌کند، دامنه workers.dev را آماده می‌کند، ورکر را آپلود و سلامتش را تست می‌کند.</li>
+      <li>شش کانفیگ به همراه لینک اشتراک، بارکد QR و خروجی Clash و sing-box تحویل داده می‌شود.</li>
+    </ol>
+    <h3>چرا این کانفیگ‌ها کار می‌کنند</h3>
+    <p>آدرس اتصال یک آی‌پی تمیز کلادفلر است، ولی <code>Host</code> و <code>sni</code> روی دامنه ورکر کاربر تنطیم شده‌اند. به همین دلیل عوض کردن آی‌پی هیچ‌وقت کانفیگ را نمی‌شکند؛ فقط درِ ورود تغییر می‌کند.</p>
+    <div class="snippet"><p>شکل نهایی کانفیگ پورت ۴۴۳</p><pre><code>vless://UUID@104.16.1.55:443?encryption=none&amp;security=tls
+&amp;type=ws&amp;host=auto-565414.avl-9f2c.workers.dev
+&amp;sni=auto-565414.avl-9f2c.workers.dev&amp;fp=chrome
+&amp;path=%2F%3Fed%3D2560#@AutoVless | VLESS | 18ms | CDG | #2</code></pre><button class="copy" type="button">کپی</button></div>
+    <div class="note"><b>کانفیگ‌های پورت ۸۰</b>همان ساختار، ولی <code>security=none</code> و بدون <code>sni</code>.</div>
+  </div>
+</section>
+
+<section id="ops">
+  <div class="head"><div class="n">۹</div><div><h2>نگهداری روزمره</h2><p class="sub">پنج دستوری که واقعاً لازمت می‌شود.</p></div></div>
+  <div class="body">
+    <div class="snippet"><p>از داخل /opt/autovless</p><pre><code>docker compose logs -f          <span class="cm"># live logs</span>
+docker compose restart         <span class="cm"># restart</span>
+docker compose down            <span class="cm"># stop</span>
+git pull &amp;&amp; docker compose up -d --build   <span class="cm"># update</span>
+cp data/autovless.db ~/backup.db          <span class="cm"># backup</span></code></pre><button class="copy" type="button">کپی</button></div>
+    <p>مصرف منابع را با <code>docker stats autovless</code> ببین. در حالت عادی نباید از ۳۰۰ مگابایت رم عبور کند.</p>
+  </div>
+</section>
+
+<section id="faq">
+  <div class="head"><div class="n">۱۰</div><div><h2>رفع اشکال</h2><p class="sub">هر مشکلی که واقعاً پیش می‌آید، با علت و راه‌حل.</p></div></div>
+  <div class="body">
+    <details><summary>ربات به <code>/start</code> جواب نمی‌دهد</summary><div class="a"><p><code>docker compose logs --tail=50</code> را بگیر. پیام <code>BOT_TOKEN is missing</code> یعنی فایل env پر نشده؛ <code>Unauthorized</code> یعنی توکن غلط است.</p></div></details>
+    <details><summary>پیام «کلادفلر این توکن را قبول نکرد»</summary><div class="a"><p>توکن ناقص کپی شده، کاربر <code>Create Token</code> را نزده، یا دسترسی‌ها را دستی عوض کرده. دوباره از همان دکمه ربات شروع کند.</p></div></details>
+    <details><summary>کانفیگ ساخته شد ولی وصل نمی‌شود</summary><div class="a"><p>اول در کلاینت Real Delay بگیر. اگر همه تایم‌اوت دادند:</p><ul class="dot"><li>Fragment را روشن کن.</li><li>کانفیگ‌های پورت ۸۰ را امتحان کن.</li><li>در ربات اسکن مجدد و بعد بازسازی پنل را بزن.</li></ul><p>اگر <code>https://HOST/healthz</code> در مرورگر باز شد ولی کانفیگ کار نکرد، مشکل آی‌پی ورودی است نه ورکر.</p></div></details>
+    <details><summary>آدرس ورکر خطای 404 یا 522 می‌دهد</summary><div class="a"><p>کلادفلر برای انتشار یک دامنه workers.dev تازه تا یک دقیقه وقت می‌خواهد. صبر کن و بازسازی پنل را بزن. اگر ادامه داشت، کاربر یک بار بخش Workers را در داشبورد باز کند.</p></div></details>
+    <details><summary>استخر آی‌پی تمیز خالی می‌ماند</summary><div class="a"><p>خروجی سرور به رنج‌های کلادفلر بسته است. تست: <code>curl -sI https://104.16.1.1 --resolve cloudflare.com:443:104.16.1.1</code>. اگر جواب داد ولی استخر خالی ماند، <code>SCAN_TIMEOUT_MS</code> را به <code>2500</code> ببر.</p></div></details>
+    <details><summary>قفل کانال کار نمی‌کند</summary><div class="a"><p>ربات باید در کانال ادمین باشد، وگرنه عضویت را نمی‌خواند و آن کانال را نادیده می‌گیرد. کانال را حذف کن، ربات را ادمین کن، دوباره اضافه کن.</p></div></details>
+    <details><summary>کانتینر مدام ری‌استارت می‌شود یا رم پر می‌شود</summary><div class="a"><p>سواپ بساز و این مقادیر را کم کن:</p><div class="snippet"><pre><code>SCAN_CONCURRENCY=90
+SCAN_BATCH=600
+SCAN_INTERVAL=900</code></pre><button class="copy" type="button">کپی</button></div><p>بعد <code>docker compose restart</code>.</p></div></details>
+    <details><summary>می‌خواهم پورت‌های بیشتری بدهم</summary><div class="a"><div class="snippet"><pre><code>TLS_PORTS=443,8443,2053
+HTTP_PORTS=80,8080
+TLS_CONFIG_COUNT=4
+HTTP_CONFIG_COUNT=4</code></pre><button class="copy" type="button">کپی</button></div><p>هر پورت اضافه یک دور اسکن بیشتر است. روی یک هسته از چهار پورت جلوتر نرو.</p></div></details>
+    <details><summary>سرور را عوض کردم، چطور مهاجرت کنم</summary><div class="a"><p>پوشه <code>data</code> و فایل <code>.env</code> را کامل کپی کن، بعد <code>docker compose up -d --build</code>. کلید رمزنگاری در <code>data/.secret</code> است؛ بدون آن توکن‌های ذخیره‌شده باز نمی‌شوند.</p></div></details>
+  </div>
+</section>
+</main>
+</div>
+
+<footer>
+  <p>AutoVless · ساخته شده برای دسترسی آزاد مردم ایران به اینترنت</p>
+  <p><a href="https://github.com/arjeyproject/AutoVless">github.com/arjeyproject/AutoVless</a></p>
+</footer>
+
+<script>
+(function(){
+  document.querySelectorAll('.copy').forEach(function(button){
+    button.addEventListener('click',function(){
+      var pre=button.parentElement.querySelector('pre');
+      if(!pre)return;
+      var text=pre.innerText.replace(/\s+#\s.*$/gm,'').trim();
+      var ok=function(){
+        button.dataset.state='ok'; button.textContent='\u06a9\u067e\u06cc \u0634\u062f';
+        setTimeout(function(){delete button.dataset.state; button.textContent='\u06a9\u067e\u06cc';},1600);
+      };
+      if(navigator.clipboard&&window.isSecureContext){
+        navigator.clipboard.writeText(text).then(ok,function(){button.textContent='\u0646\u0627\u0645\u0648\u0641\u0642';});
+      }else{
+        var field=document.createElement('textarea');
+        field.value=text; document.body.appendChild(field); field.select();
+        try{document.execCommand('copy'); ok();}catch(e){button.textContent='\u0646\u0627\u0645\u0648\u0641\u0642';}
+        document.body.removeChild(field);
+      }
+    });
+  });
+
+  var links=Array.prototype.slice.call(document.querySelectorAll('nav a'));
+  if('IntersectionObserver' in window){
+    var observer=new IntersectionObserver(function(entries){
+      entries.forEach(function(entry){
+        if(!entry.isIntersecting)return;
+        links.forEach(function(link){
+          link.setAttribute('aria-current',link.getAttribute('href')==='#'+entry.target.id?'true':'false');
+        });
+      });
+    },{rootMargin:'-80px 0px -65% 0px'});
+    document.querySelectorAll('main section').forEach(function(section){observer.observe(section);});
+  }
+})();
+</script>
+</body>
+</html>
