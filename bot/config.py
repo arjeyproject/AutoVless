@@ -75,6 +75,14 @@ def _ids(name: str) -> tuple[int, ...]:
     return tuple(dict.fromkeys(out))
 
 
+def _int_list(name: str, default: tuple[int, ...] = ()) -> tuple[int, ...]:
+    raw = _str(name)
+    if not raw:
+        return default
+    out = [int(chunk) for chunk in raw.replace(";", ",").split(",") if chunk.strip().isdigit()]
+    return tuple(dict.fromkeys(out)) or default
+
+
 def _ports(name: str, default: tuple[int, ...], allowed: tuple[int, ...]) -> tuple[int, ...]:
     raw = _str(name)
     if not raw:
@@ -125,6 +133,21 @@ class Settings:
     dns_server: str
     fallback_host: str
     health_attempts: int
+
+    # ---------------------------------------------------------------- warp
+    warp_enabled: bool
+    warp_amnezia: bool
+    warp_mtu: int
+    warp_dns: str
+    warp_license: str
+    warp_ports: tuple[int, ...]
+    warp_scan_interval: int
+    warp_scan_sample: int
+    warp_scan_concurrency: int
+    warp_scan_timeout: float
+    warp_verify_top: int
+    warp_pool_size: int
+    warp_per_config: int
 
     store_tokens: bool
     request_timeout: float
@@ -195,6 +218,19 @@ def load_settings() -> Settings:
         dns_server=_str("DNS_SERVER", "8.8.8.8"),
         fallback_host=_str("FALLBACK_HOST", "www.wikipedia.org"),
         health_attempts=max(2, _int("HEALTH_ATTEMPTS", 6)),
+        warp_enabled=_bool("WARP_ENABLED", True),
+        warp_amnezia=_bool("WARP_AMNEZIA", True),
+        warp_mtu=max(1000, min(1420, _int("WARP_MTU", 1280))),
+        warp_dns=_str("WARP_DNS", "1.1.1.1, 1.0.0.1"),
+        warp_license=_str("WARP_LICENSE"),
+        warp_ports=_int_list("WARP_PORTS"),
+        warp_scan_interval=max(300, _int("WARP_SCAN_INTERVAL", 1800)),
+        warp_scan_sample=max(2, _int("WARP_SCAN_SAMPLE", 6)),
+        warp_scan_concurrency=max(8, _int("WARP_SCAN_CONCURRENCY", 64)),
+        warp_scan_timeout=max(0.5, float(_int("WARP_SCAN_TIMEOUT_MS", 1500)) / 1000.0),
+        warp_verify_top=max(4, _int("WARP_VERIFY_TOP", 16)),
+        warp_pool_size=max(8, _int("WARP_POOL_SIZE", 60)),
+        warp_per_config=max(1, _int("WARP_PER_CONFIG", 4)),
         store_tokens=_bool("STORE_TOKENS", True),
         request_timeout=max(5.0, float(_int("REQUEST_TIMEOUT", 30))),
         log_level=_str("LOG_LEVEL", "INFO").upper(),
