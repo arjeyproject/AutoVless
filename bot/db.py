@@ -59,6 +59,25 @@ CREATE TABLE IF NOT EXISTS clean_ips (
     PRIMARY KEY (ip, port)
 );
 
+CREATE TABLE IF NOT EXISTS warp_endpoints (
+    ip         TEXT    NOT NULL,
+    port       INTEGER NOT NULL,
+    latency    REAL    NOT NULL,
+    stable     INTEGER NOT NULL DEFAULT 0,
+    checked_at INTEGER NOT NULL,
+    PRIMARY KEY (ip, port)
+);
+
+CREATE TABLE IF NOT EXISTS warp_users (
+    tg_id        INTEGER PRIMARY KEY,
+    identity_enc TEXT    NOT NULL,
+    endpoints    TEXT    NOT NULL DEFAULT '[]',
+    account_type TEXT    NOT NULL DEFAULT 'free',
+    refreshes    INTEGER NOT NULL DEFAULT 0,
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
 CREATE TABLE IF NOT EXISTS options (
     key   TEXT PRIMARY KEY,
     value TEXT NOT NULL
@@ -93,6 +112,7 @@ CREATE TABLE IF NOT EXISTS ticket_messages (
 );
 
 CREATE INDEX IF NOT EXISTS idx_clean_latency ON clean_ips (port, verified, latency);
+CREATE INDEX IF NOT EXISTS idx_warp_latency ON warp_endpoints (stable, latency);
 CREATE INDEX IF NOT EXISTS idx_events_at ON events (at DESC);
 CREATE INDEX IF NOT EXISTS idx_users_seen ON users (seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tickets_updated ON tickets (status, updated_at DESC);
@@ -186,6 +206,7 @@ DEFAULT_OPTIONS: dict[str, str] = {
     "builds_enabled": "1",
     "force_join": "1",
     "support_enabled": "1",
+    "warp_enabled": "1",
     "welcome_extra": "",
     "support_note": "",
 }
@@ -534,6 +555,124 @@ async def pool_stats() -> dict:
 
 
 # --------------------------------------------------------------------- #
+# warp endpoint pool
+# --------------------------------------------------------------------- #
+
+
+async def store_warp_endpoints(rows: list[dict]) -> None:
+    if not rows:
+        return
+    ts = now()
+    payload = [
+        (r["ip"], int(r["port"]), float(r["latency"]), 1 if r.get("stable") else 0, ts)
+        for r in rows
+    ]
+    await conn().executemany(
+        "INSERT INTO warp_endpoints (ip, port, latency, stable, checked_at) "
+        "VALUES (?, ?, ?, ?, ?) "
+        "ON CONFLICT(ip, port) DO UPDATE SET "
+        "latency = excluded.latency, stable = excluded.stable, checked_at = excluded.checked_at",
+        payload,
+    )
+    await conn().commit()
+
+
+async def best_warp_endpoints(limit: int, stable_only: bool = True) -> list[dict]:
+    sql = (
+        "SELECT ip, port, latency, stable, checked_at FROM warp_endpoints "
+        + ("WHERE stable = 1 " if stable_only else "")
+        + "ORDER BY latency ASC LIMIT ?"
+    )
+    return [dict(row) for row in await fetch_all(sql, (limit,))]
+
+
+async def trim_warp_pool(keep: int) -> None:
+    await execute(
+        "DELETE FROM warp_endpoints WHERE rowid NOT IN "
+        "(SELECT rowid FROM warp_endpoints ORDER BY stable DESC, latency ASC LIMIT ?)",
+        (keep,),
+    )
+
+
+async def warp_pool_stats() -> dict:
+    total = await scalar("SELECT COUNT(*) FROM warp_endpoints")
+    stable = await scalar("SELECT COUNT(*) FROM warp_endpoints WHERE stable = 1")
+    fast = await scalar("SELECT COUNT(*) FROM warp_endpoints WHERE latency < 300")
+    best = await scalar("SELECT MIN(latency) FROM warp_endpoints WHERE stable = 1", default=None)
+    updated = await scalar("SELECT MAX(checked_at) FROM warp_endpoints", default=0)
+    return {
+        "total": int(total),
+        "stable": int(stable),
+        "fast": int(fast),
+        "best": round(float(best), 1) if best is not None else None,
+        "updated_at": int(updated or 0),
+        "users": int(await scalar("SELECT COUNT(*) FROM warp_users")),
+    }
+
+
+# --------------------------------------------------------------------- #
+# warp identities
+# --------------------------------------------------------------------- #
+
+
+async def save_warp_user(tg_id: int, identity: dict, endpoints: list[dict]) -> None:
+    ts = now()
+    blob = encrypt(json.dumps(identity, ensure_ascii=False))
+    await execute(
+        """
+        INSERT INTO warp_users (tg_id, identity_enc, endpoints, account_type,
+                                refreshes, created_at, updated_at)
+        VALUES (?, ?, ?, ?, 0, ?, ?)
+        ON CONFLICT(tg_id) DO UPDATE SET
+            identity_enc = excluded.identity_enc,
+            endpoints    = excluded.endpoints,
+            account_type = excluded.account_type,
+            refreshes    = warp_users.refreshes + 1,
+            updated_at   = excluded.updated_at
+        """,
+        (
+            tg_id,
+            blob,
+            json.dumps(endpoints, ensure_ascii=False),
+            str(identity.get("account_type") or "free"),
+            ts,
+            ts,
+        ),
+    )
+
+
+async def update_warp_endpoints(tg_id: int, endpoints: list[dict]) -> None:
+    await execute(
+        "UPDATE warp_users SET endpoints = ?, refreshes = refreshes + 1, updated_at = ? "
+        "WHERE tg_id = ?",
+        (json.dumps(endpoints, ensure_ascii=False), now(), tg_id),
+    )
+
+
+async def get_warp_user(tg_id: int) -> Optional[dict]:
+    row = await fetch_one("SELECT * FROM warp_users WHERE tg_id = ?", (tg_id,))
+    if row is None:
+        return None
+    record = dict(row)
+    raw = decrypt(record.get("identity_enc") or "")
+    if not raw:
+        return None
+    try:
+        record["identity"] = json.loads(raw)
+    except ValueError:
+        return None
+    try:
+        record["endpoints"] = json.loads(record.get("endpoints") or "[]")
+    except ValueError:
+        record["endpoints"] = []
+    return record
+
+
+async def delete_warp_user(tg_id: int) -> None:
+    await execute("DELETE FROM warp_users WHERE tg_id = ?", (tg_id,))
+
+
+# --------------------------------------------------------------------- #
 # events / stats
 # --------------------------------------------------------------------- #
 
@@ -563,4 +702,5 @@ async def global_stats() -> dict:
         "avg_build_ms": int(await scalar("SELECT COALESCE(AVG(build_ms), 0) FROM panels")),
         "channels": int(await scalar("SELECT COUNT(*) FROM channels")),
         "tickets_waiting": int(await scalar("SELECT COUNT(*) FROM tickets WHERE unread_admin > 0")),
+        "warp_users": int(await scalar("SELECT COUNT(*) FROM warp_users")),
     }
