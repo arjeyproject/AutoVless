@@ -23,6 +23,7 @@ const VLESS_RESPONSE = new Uint8Array([0, 0]);
 const TLS_PORTS = [443, 2053, 2083, 2087, 2096, 8443];
 const WS_OPEN = 1;
 const MAX_BUFFERED_CHUNKS = 64;
+const CONNECT_TIMEOUT_MS = 8000;
 const ENCODER = new TextEncoder();
 const DECODER = new TextDecoder();
 
@@ -324,6 +325,9 @@ function openTcp(state, head) {
     try {
       socket = connect({ hostname: target.hostname, port: target.port });
       state.socket = socket;
+      // opened settles on the handshake, which keeps failover in the
+      // hundreds of milliseconds instead of waiting out a write timeout.
+      if (socket.opened) await withTimeout(socket.opened, CONNECT_TIMEOUT_MS);
       const writer = socket.writable.getWriter();
       await writer.write(head.payload);
       outbox.writer = writer;
