@@ -105,6 +105,57 @@ def simple_back(lang: str, target: str = "nav:menu") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[back_row(lang, target)])
 
 
+# ------------------------------------------------------------------- warp
+
+
+def _warp_export_rows(lang: str) -> list[list[InlineKeyboardButton]]:
+    return [
+        [_b(t(lang, "btn.warp_awg"), "wg:file:awg"), _b(t(lang, "btn.warp_awg2"), "wg:file:awg2")],
+        [_b(t(lang, "btn.warp_link"), "wg:link"), _b(t(lang, "btn.warp_plain"), "wg:file:plain")],
+        [
+            _b(t(lang, "btn.warp_singbox"), "wg:file:singbox"),
+            _b(t(lang, "btn.warp_clash"), "wg:file:clash"),
+        ],
+    ]
+
+
+def warp_menu(lang: str, has_identity: bool) -> InlineKeyboardMarkup:
+    rows: list[list[InlineKeyboardButton]] = []
+    if has_identity:
+        rows += _warp_export_rows(lang)
+        rows.append([_b(t(lang, "btn.warp_rebuild"), "wg:rebuild")])
+    else:
+        rows.append([_b(t(lang, "btn.warp_build"), "wg:build")])
+    rows.append(
+        [_b(t(lang, "btn.warp_eps"), "wg:eps"), _b(t(lang, "btn.warp_rescan"), "wg:rescan")]
+    )
+    rows.append([_b(t(lang, "btn.warp_why"), "wg:why"), _b(t(lang, "btn.warp_apps"), "wg:apps")])
+    if has_identity:
+        rows.append(
+            [
+                _b(t(lang, "btn.warp_license"), "wg:license"),
+                _b(t(lang, "btn.warp_delete"), "wg:del"),
+            ]
+        )
+    rows.append(back_row(lang))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def warp_exports(lang: str) -> InlineKeyboardMarkup:
+    rows = _warp_export_rows(lang)
+    rows.append(back_row(lang, "nav:warp"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def warp_endpoints(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_b(t(lang, "btn.warp_rescan"), "wg:rescan")],
+            back_row(lang, "nav:warp"),
+        ]
+    )
+
+
 # ---------------------------------------------------------------- support
 
 
@@ -215,6 +266,7 @@ def admin_engine(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_b(t(lang, "btn.scan_now"), "adm:scan")],
+            [_b(t(lang, "btn.warp_rescan"), "wg:rescan")],
             back_row(lang, "adm:menu"),
         ]
     )

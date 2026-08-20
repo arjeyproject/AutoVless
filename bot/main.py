@@ -15,12 +15,14 @@ from aiogram.types import BotCommand
 from . import db, handlers, middlewares
 from .config import settings
 from .scanner import proxy_scanner, scanner
+from .warpscan import warp_scanner
 
 log = logging.getLogger("autovless")
 
 COMMANDS = [
     BotCommand(command="start", description="Start / \u0634\u0631\u0648\u0639"),
     BotCommand(command="menu", description="Main menu / \u0645\u0646\u0648\u06cc \u0627\u0635\u0644\u06cc"),
+    BotCommand(command="warp", description="WARP / \u0648\u0627\u0631\u067e"),
     BotCommand(command="cancel", description="Cancel / \u0644\u063a\u0648"),
 ]
 
@@ -61,10 +63,12 @@ async def seed_options() -> None:
 async def notify_admins(bot: Bot) -> None:
     pool = await db.pool_stats()
     relays = await proxy_scanner.stats()
+    warp = await warp_scanner.stats()
     message = (
         f"\u2705 <b>{settings.brand}</b> is up.\n"
         f"\U0001f4e1 clean ip pool: <b>{pool['total']}</b>\n"
         f"\U0001f6e1 relays ready: <b>{relays['verified']}</b>\n"
+        f"\U0001f9ec warp endpoints: <b>{warp['stable']}</b>\n"
         f"\U0001f50c ports: <b>{', '.join(str(p) for p in scanner.ports)}</b>"
     )
     for admin_id in settings.admin_ids:
@@ -92,6 +96,7 @@ async def run() -> None:
 
     await scanner.start()
     await proxy_scanner.start()
+    await warp_scanner.start()
 
     try:
         await bot.set_my_commands(COMMANDS)
@@ -99,6 +104,7 @@ async def run() -> None:
         log.info("%s is polling", settings.brand)
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
     finally:
+        await warp_scanner.stop()
         await proxy_scanner.stop()
         await scanner.stop()
         await db.close()
