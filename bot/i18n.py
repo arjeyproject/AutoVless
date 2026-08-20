@@ -8,13 +8,14 @@ from .locales.admin import ADMIN
 from .locales.en import EN
 from .locales.fa import FA
 from .locales.support import SUPPORT
+from .locales.warp import WARP
 
 LANGS: tuple[str, ...] = ("fa", "en")
 RULE = "\u2501" * 14
 
 CATALOG: dict[str, dict[str, str]] = {
-    "fa": {**FA, **ADMIN["fa"], **SUPPORT["fa"]},
-    "en": {**EN, **ADMIN["en"], **SUPPORT["en"]},
+    "fa": {**FA, **ADMIN["fa"], **SUPPORT["fa"], **WARP["fa"]},
+    "en": {**EN, **ADMIN["en"], **SUPPORT["en"], **WARP["en"]},
 }
 
 _PERSIAN_DIGITS = str.maketrans(
