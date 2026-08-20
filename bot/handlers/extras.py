@@ -1,4 +1,8 @@
-"""Extras: WARP / WireGuard generation and link conversion."""
+"""Extras: converting links between client formats.
+
+WARP and WireGuard used to live here. They now have their own module in
+``handlers/warp.py`` because the engine behind them grew a lot.
+"""
 
 from __future__ import annotations
 
@@ -11,10 +15,10 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from .. import keyboards, vless, warp
+from .. import keyboards, vless
 from ..config import settings
 from ..i18n import num, t
-from ..utils import edit, esc
+from ..utils import edit
 
 log = logging.getLogger("autovless.extras")
 router = Router(name="extras")
@@ -22,36 +26,6 @@ router = Router(name="extras")
 
 class ConvertFlow(StatesGroup):
     link = State()
-
-
-@router.callback_query(F.data == "nav:warp")
-async def on_warp(call: CallbackQuery, lang: str) -> None:
-    await call.answer()
-    notice = await call.message.answer(t(lang, "warp_building"))
-
-    try:
-        identity = await warp.provision()
-    except warp.WarpError as error:
-        log.warning("warp provisioning failed: %s", error)
-        await notice.edit_text(t(lang, "warp_failed"))
-        return
-
-    conf = warp.wireguard_conf(identity)
-    await notice.edit_text(
-        t(
-            lang,
-            "warp_ready",
-            account=esc(identity["account_type"]),
-            endpoint=esc(identity["endpoint"]),
-        )
-    )
-    await call.message.answer_document(
-        BufferedInputFile(conf.encode("utf-8"), filename=f"{settings.brand}-warp.conf"),
-    )
-    await call.message.answer(
-        f"<code>{esc(warp.warp_link(identity, f'{settings.brand}-WARP'))}</code>",
-        reply_markup=keyboards.simple_back(lang),
-    )
 
 
 @router.callback_query(F.data == "nav:convert")
