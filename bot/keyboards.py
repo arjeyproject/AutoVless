@@ -19,11 +19,16 @@ CF_TOKEN_URL = (
     "&accountId=*&zoneId=all&name=AutoVless"
 )
 
+BULLET = "\u2022"
 TICKET_MARKS = {"open": "\U0001f7e0", "answered": "\u2705", "closed": "\U0001f512"}
 
 
 def _b(text: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=data)
+
+
+def ticket_mark(status: object) -> str:
+    return TICKET_MARKS.get(str(status), BULLET)
 
 
 def back_row(lang: str, target: str = "nav:menu") -> list[InlineKeyboardButton]:
@@ -126,18 +131,26 @@ def support_user_reply(lang: str) -> InlineKeyboardMarkup:
     )
 
 
-def support_list(lang: str, tickets: list[dict], scope: str = "open") -> InlineKeyboardMarkup:
+def support_list(
+    lang: str,
+    tickets: list[dict],
+    scope: str = "open",
+    enabled: bool = True,
+) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for ticket in tickets:
-        mark = TICKET_MARKS.get(str(ticket.get("status")), "\u2022")
         who = ticket.get("username") or ticket.get("first_name") or ticket.get("tg_id")
-        badge = f" \u00b7 {ticket['unread_admin']} new" if ticket.get("unread_admin") else ""
-        rows.append([_b(f"{mark} #{ticket['id']} \u00b7 {who}{badge}", f"sup:open:{ticket['id']}")])
+        unread = ticket.get("unread_admin") or 0
+        badge = f" ({unread})" if unread else ""
+        label = f"{ticket_mark(ticket.get('status'))} #{ticket['id']} \u00b7 {who}{badge}"
+        rows.append([_b(label, f"sup:open:{ticket['id']}")])
     toggle = (
-        ("btn.tickets_all", "sup:list:all") if scope != "all" else ("btn.tickets_open", "sup:list:open")
+        ("btn.tickets_all", "sup:list:all")
+        if scope != "all"
+        else ("btn.tickets_open", "sup:list:open")
     )
     rows.append([_b(t(lang, toggle[0]), toggle[1])])
-    rows.append([_b(t(lang, "support.toggle_switch"), "sup:toggle")])
+    rows.append([_b(t(lang, "support.toggle_on" if enabled else "support.toggle_off"), "sup:toggle")])
     rows.append(back_row(lang, "adm:menu"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 

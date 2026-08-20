@@ -72,7 +72,8 @@ def render_thread(rows: list[dict], lang: str, user_label: Optional[str] = None)
             who = t(lang, "support_admin")
         else:
             who = user_label or t(lang, "support_you")
-        blocks.append(f"<b>{who}</b> \u00b7 {ago(row['at'], lang)}\n{esc(row['body'])}")
+        stamp = ago(row["at"], lang)
+        blocks.append(f"<b>{who}</b> \u00b7 {stamp}\n{esc(row['body'])}")
     return "\n\n".join(blocks)
 
 
@@ -205,14 +206,21 @@ async def on_support_compose(
 # ------------------------------------------------------------ admin side
 
 
+def _inbox_line(ticket: dict, lang: str) -> str:
+    mark = keyboards.ticket_mark(ticket.get("status"))
+    return (
+        f"{mark} <b>#{ticket['id']}</b> \u00b7 {esc(_who(ticket))} "
+        f"\u00b7 {ago(ticket['updated_at'], lang)}"
+    )
+
+
 async def show_inbox(call: CallbackQuery, lang: str, scope: str) -> None:
     stats = await db.ticket_stats()
     tickets = await db.tickets(scope, LIST_LIMIT)
-    listing = "\n".join(
-        f"{keyboards.TICKET_MARKS.get(str(ticket['status']), '\u2022')} "
-        f"<b>#{ticket['id']}</b> \u00b7 {esc(_who(ticket))} \u00b7 {ago(ticket['updated_at'], lang)}"
-        for ticket in tickets
-    ) or t(lang, "support.list_empty")
+    enabled = await db.get_flag("support_enabled")
+    listing = "\n".join(_inbox_line(ticket, lang) for ticket in tickets) or t(
+        lang, "support.list_empty"
+    )
     text = t(
         lang,
         "support.list",
@@ -222,7 +230,7 @@ async def show_inbox(call: CallbackQuery, lang: str, scope: str) -> None:
         waiting=num(stats["waiting"], lang),
         list=listing,
     )
-    await edit(call, text, keyboards.support_list(lang, tickets, scope))
+    await edit(call, text, keyboards.support_list(lang, tickets, scope, enabled))
 
 
 async def show_card(call: CallbackQuery, lang: str, ticket_id: int) -> None:
@@ -338,7 +346,10 @@ async def on_admin_reply(
     ticket = await db.get_ticket(int(raw_id)) if raw_id else None
     if ticket is None:
         await state.clear()
-        await message.answer(t(lang, "support.gone"), reply_markup=keyboards.simple_back(lang, "sup:list:open"))
+        await message.answer(
+            t(lang, "support.gone"),
+            reply_markup=keyboards.simple_back(lang, "sup:list:open"),
+        )
         return
 
     ticket_id = int(ticket["id"])
