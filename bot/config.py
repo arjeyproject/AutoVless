@@ -16,6 +16,28 @@ load_dotenv(BASE_DIR / ".env")
 TLS_PORTS: tuple[int, ...] = (443, 2053, 2083, 2087, 2096, 8443)
 HTTP_PORTS: tuple[int, ...] = (80, 8080, 8880, 2052, 2082, 2086, 2095)
 
+# Public lists of Cloudflare edges that are known to behave well from Iran.
+DEFAULT_CLEAN_SOURCES: tuple[str, ...] = (
+    "https://ipdb.030101.xyz/api/bestcf.txt",
+)
+
+# Public lists of relays that forward TCP to the Cloudflare edge.
+DEFAULT_PROXY_SOURCES: tuple[str, ...] = (
+    "https://ipdb.030101.xyz/api/bestproxy.txt",
+)
+
+# Long lived community relays, used as a floor under the scanner.
+DEFAULT_PROXY_SEEDS: tuple[str, ...] = (
+    "proxyip.fxxk.dedyn.io",
+    "proxyip.aliyun.fxxk.dedyn.io",
+    "proxyip.oracle.fxxk.dedyn.io",
+    "proxyip.digitalocean.fxxk.dedyn.io",
+    "cdn.xn--b6gac.eu.org",
+    "cdn-all.xn--b6gac.eu.org",
+    "bpb.yousef.isegaro.com",
+    "edgetunnel.anycast.eu.org",
+)
+
 
 def _str(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
@@ -34,6 +56,14 @@ def _bool(name: str, default: bool) -> bool:
     if not raw:
         return default
     return raw in {"1", "true", "yes", "on"}
+
+
+def _list(name: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
+    raw = _str(name)
+    if not raw:
+        return default
+    parts = [chunk.strip() for chunk in raw.replace(";", ",").replace("\n", ",").split(",")]
+    return tuple(dict.fromkeys(part for part in parts if part))
 
 
 def _ids(name: str) -> tuple[int, ...]:
@@ -81,8 +111,21 @@ class Settings:
     scan_timeout: float
     verify_top: int
     pool_size: int
+    clean_ip_sources: tuple[str, ...]
 
     proxy_ip: str
+    proxy_seeds: tuple[str, ...]
+    proxy_sources: tuple[str, ...]
+    proxy_ports: tuple[int, ...]
+    proxy_scan_interval: int
+    proxy_scan_limit: int
+    proxy_pool_size: int
+    proxy_per_panel: int
+
+    dns_server: str
+    fallback_host: str
+    health_attempts: int
+
     store_tokens: bool
     request_timeout: float
     log_level: str
@@ -115,6 +158,9 @@ def load_settings() -> Settings:
     if lang not in {"fa", "en"}:
         lang = "fa"
 
+    proxy_ip = _str("PROXY_IP")
+    proxy_seeds = _list("PROXY_IP", DEFAULT_PROXY_SEEDS)
+
     return Settings(
         bot_token=_str("BOT_TOKEN"),
         admin_ids=_ids("ADMIN_IDS"),
@@ -137,7 +183,18 @@ def load_settings() -> Settings:
         scan_timeout=max(0.3, float(_int("SCAN_TIMEOUT_MS", 1200)) / 1000.0),
         verify_top=max(6, _int("VERIFY_TOP", 24)),
         pool_size=max(12, _int("POOL_SIZE", 120)),
-        proxy_ip=_str("PROXY_IP"),
+        clean_ip_sources=_list("CLEAN_IP_SOURCES", DEFAULT_CLEAN_SOURCES),
+        proxy_ip=proxy_ip,
+        proxy_seeds=proxy_seeds,
+        proxy_sources=_list("PROXY_IP_SOURCES", DEFAULT_PROXY_SOURCES),
+        proxy_ports=_ports("PROXY_PORTS", (443,), TLS_PORTS),
+        proxy_scan_interval=max(300, _int("PROXY_SCAN_INTERVAL", 1800)),
+        proxy_scan_limit=max(16, _int("PROXY_SCAN_LIMIT", 240)),
+        proxy_pool_size=max(4, _int("PROXY_POOL_SIZE", 40)),
+        proxy_per_panel=max(1, _int("PROXY_PER_PANEL", 3)),
+        dns_server=_str("DNS_SERVER", "8.8.8.8"),
+        fallback_host=_str("FALLBACK_HOST", "www.wikipedia.org"),
+        health_attempts=max(2, _int("HEALTH_ATTEMPTS", 6)),
         store_tokens=_bool("STORE_TOKENS", True),
         request_timeout=max(5.0, float(_int("REQUEST_TIMEOUT", 30))),
         log_level=_str("LOG_LEVEL", "INFO").upper(),

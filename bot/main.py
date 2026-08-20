@@ -1,4 +1,4 @@
-"""Entrypoint: wire the dispatcher, start the scanner, poll Telegram."""
+"""Entrypoint: wire the dispatcher, start the scanners, poll Telegram."""
 
 from __future__ import annotations
 
@@ -14,7 +14,7 @@ from aiogram.types import BotCommand
 
 from . import db, handlers, middlewares
 from .config import settings
-from .scanner import scanner
+from .scanner import proxy_scanner, scanner
 
 log = logging.getLogger("autovless")
 
@@ -59,10 +59,12 @@ async def seed_options() -> None:
 
 
 async def notify_admins(bot: Bot) -> None:
-    stats = await db.pool_stats()
+    pool = await db.pool_stats()
+    relays = await proxy_scanner.stats()
     message = (
         f"\u2705 <b>{settings.brand}</b> is up.\n"
-        f"\U0001f4e1 clean ip pool: <b>{stats['total']}</b>\n"
+        f"\U0001f4e1 clean ip pool: <b>{pool['total']}</b>\n"
+        f"\U0001f6e1 relays ready: <b>{relays['verified']}</b>\n"
         f"\U0001f50c ports: <b>{', '.join(str(p) for p in scanner.ports)}</b>"
     )
     for admin_id in settings.admin_ids:
@@ -89,6 +91,7 @@ async def run() -> None:
     handlers.register(dispatcher)
 
     await scanner.start()
+    await proxy_scanner.start()
 
     try:
         await bot.set_my_commands(COMMANDS)
@@ -96,6 +99,7 @@ async def run() -> None:
         log.info("%s is polling", settings.brand)
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
     finally:
+        await proxy_scanner.stop()
         await scanner.stop()
         await db.close()
         await bot.session.close()
