@@ -1,0 +1,21 @@
+services:
+  autovless:
+    build: .
+    image: autovless:latest
+    container_name: autovless
+    restart: unless-stopped
+    env_file: .env
+    environment:
+      TZ: ${TZ:-Asia/Tehran}
+      DATA_DIR: /app/data
+    volumes:
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    deploy:
+      resources:
+        limits:
+          memory: 640M
