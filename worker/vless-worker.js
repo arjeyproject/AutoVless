@@ -17,6 +17,11 @@
  * hostname entries keep working even when every raw address in the list ages
  * out.
  *
+ * HTTP responses carry permissive CORS headers so the Telegram Mini App, which
+ * is served from a different origin, can read /health, /probe and /endpoints.
+ * Nothing here is secret: the path already contains the account UUID, and
+ * without that UUID every request lands on the landing page.
+ *
  * Bindings (plain text vars, all optional except UUID):
  *   UUID           the single account id allowed on this worker
  *   PROXY_IP       comma separated relay list, e.g. "1.2.3.4:443,proxy.example.com"
@@ -66,6 +71,12 @@ const DECODER = new TextDecoder();
 export default {
   async fetch(request, env) {
     try {
+      // Preflight is answered before anything else so a browser probe never
+      // needs a configured worker to get an answer.
+      if (request.method === "OPTIONS") {
+        return new Response(null, { status: 204, headers: corsHeaders() });
+      }
+
       const cfg = readConfig(env, request);
       if (!cfg.uuidBytes) return textResponse("worker is not configured", 500);
 
@@ -718,7 +729,7 @@ async function handleHttp(request, cfg) {
 
   if (kind === "clash") {
     return new Response(buildClash(cfg, endpoints), {
-      headers: { "content-type": "text/yaml; charset=utf-8" },
+      headers: { "content-type": "text/yaml; charset=utf-8", ...corsHeaders() },
     });
   }
 
@@ -729,7 +740,9 @@ async function handleHttp(request, cfg) {
   const links = buildLinks(cfg, endpoints).join("\n");
 
   if (kind === "raw") {
-    return new Response(links, { headers: { "content-type": "text/plain; charset=utf-8" } });
+    return new Response(links, {
+      headers: { "content-type": "text/plain; charset=utf-8", ...corsHeaders() },
+    });
   }
 
   return new Response(btoa(unescape(encodeURIComponent(links))), {
@@ -738,6 +751,7 @@ async function handleHttp(request, cfg) {
       "profile-update-interval": "6",
       "profile-title": cfg.brand,
       "cache-control": "no-store",
+      ...corsHeaders(),
     },
   });
 }
@@ -937,16 +951,29 @@ function buildSingbox(cfg, endpoints) {
 
 /* --------------------------------------------------------------- responses */
 
+/**
+ * Permissive CORS. The mini app lives on another origin and only ever reads
+ * data that is already gated behind the UUID in the path.
+ */
+function corsHeaders() {
+  return {
+    "access-control-allow-origin": "*",
+    "access-control-allow-methods": "GET, HEAD, OPTIONS",
+    "access-control-allow-headers": "content-type",
+    "access-control-max-age": "86400",
+  };
+}
+
 function textResponse(body, status) {
   return new Response(body, {
     status: status || 200,
-    headers: { "content-type": "text/plain; charset=utf-8" },
+    headers: { "content-type": "text/plain; charset=utf-8", ...corsHeaders() },
   });
 }
 
 function jsonResponse(payload, status) {
   return new Response(JSON.stringify(payload, null, 2), {
     status: status || 200,
-    headers: { "content-type": "application/json; charset=utf-8" },
+    headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders() },
   });
 }
