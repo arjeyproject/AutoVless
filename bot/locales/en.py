@@ -23,8 +23,9 @@ EN: dict[str, str] = {
     "btn.singbox": "\U0001f4e6 sing-box export",
     "btn.single": "\U0001f4dd Individual configs",
     "btn.ping": "\U0001f4e1 Live ping test",
-    "btn.rescan": "\u26a1 Rescan clean IPs",
-    "btn.rebuild": "\U0001f504 Rebuild panel",
+    "btn.apply": "\u26a1 Apply fresh clean IPs",
+    "btn.rescan": "\U0001f50e Rescan the network",
+    "btn.rebuild": "\U0001f504 Full rebuild",
     "btn.delete": "\U0001f5d1 Delete panel",
     "btn.confirm": "\u2705 Yes, do it",
     "btn.cancel": "\u2716\ufe0f Cancel",
@@ -39,23 +40,28 @@ EN: dict[str, str] = {
     "btn.logs": "\U0001f9fe Events",
     "btn.backup": "\U0001f4be Backup",
     "btn.add": "\u2795 Add",
-    "btn.scan_now": "\u26a1 Scan now",
+    "btn.scan_now": "\u26a1 Scan IPs now",
+    "btn.sync_now": "\U0001f916 Push IPs to every panel",
     # ---------------------------------------------------------------- main
     "main_menu": (
-        "\u26a1 <b>{brand}</b> \u00b7 turbo build \u26a1\n{rule}\n"
+        "\u26a1 <b>{brand}</b> \u00b7 turbo build\n{rule}\n"
         "\U0001f44b Hey <b>{name}</b>!\n"
-        "I build a private panel on your own Cloudflare account and mount the fastest clean IPs "
-        "on your configs automatically.\n\n"
+        "I build a private panel on <b>your own</b> Cloudflare account, hunt down clean IPs and\n"
+        "mount them on <b>every config</b> automatically. You do nothing.\n"
+        "{rule}\n"
         "\U0001f525 <b>Live engine</b>\n"
-        "\U0001f4e1 Clean IPs ready: <b>{pool}</b>\n"
+        "\U0001f4e1 Clean IPs: <b>{pool}</b> \u00b7 verified: <b>{verified}</b>\n"
         "\U0001f680 Under 700 ms: <b>{fast}</b>\n"
         "\U0001f3c6 Best ping: <b>{best}</b>\n"
-        "\U0001f6e1 Healthy relays: <b>{healthy}</b>\n\n"
+        "\U0001f300 Self-healing hostnames: <b>{domains}</b>\n"
+        "\U0001f6e1 Healthy relays: <b>{relays}</b>\n"
+        "\U0001f916 Automatic IP rotation: <b>{pilot}</b>\n"
+        "{rule}\n"
+        "\U0001f49a Free, and staying free. If it works, pass it to one more person.\n"
         "\U0001f447 Pick an option:"
     ),
     "welcome_note": (
-        "\U0001f331 <b>{brand}</b> is free and built so people can reach an open internet.\n"
-        "We ask for nothing. If it works for you, pass it on to one more person. \u2764\ufe0f"
+        "\U0001f331 <b>{brand}</b> is free and built so people can reach an open internet."
     ),
     "support_us": (
         "\u2764\ufe0f <b>Support us</b>\n{rule}\n"
@@ -75,7 +81,7 @@ EN: dict[str, str] = {
         "\U0001f512 The token only works on your own account and is used only to create the Worker.\n"
         "\u23f1 Typical delivery time: 20 to 45 seconds \u26a1"
     ),
-    "token_bad_format": "\u26a0\ufe0f That does not look like a Cloudflare token. Send the token only, without links or extra text.",
+    "token_bad_format": "\u26a0\ufe0f That does not look like a Cloudflare token. Send the token only.",
     "token_rejected": (
         "\u274c Cloudflare rejected this token.\n\n<b>Reason:</b> <code>{reason}</code>\n\n"
         "Use the \u201cGet Cloudflare token\u201d button again so the permissions are set correctly."
@@ -88,7 +94,7 @@ EN: dict[str, str] = {
     "step_health": "Health checking the panel",
     "no_clean_ip": "\u23f3 The clean IP pool is still warming up. Try again in about a minute.",
     "panel_ready": (
-        "\U0001f389 <b>Your panel is ready!</b> \U0001f680\n{rule}\n"
+        "\U0001f389 <b>Your panel is ready!</b>\n{rule}\n"
         "\u23f1 Build time: <b>{seconds}</b> s\n"
         "\U0001f3c6 Best ping: <b>{best}</b>\n"
         "\U0001f680 Under 700 ms: <b>{fast}</b> endpoints\n"
@@ -96,8 +102,11 @@ EN: dict[str, str] = {
         "\U0001f9ea Protocol: <b>VLESS / WS</b>\n"
         "\U0001f50c Ports: <b>{ports}</b>\n"
         "\U0001f4f6 Operator: <b>{operator}</b>\n"
-        "\U0001f310 Host: <code>{host}</code>\n\n"
-        "\U0001f4a1 Run <b>Real Delay</b> in your client and pick the fastest entry.\n"
+        "\U0001f310 Host: <code>{host}</code>\n"
+        "{rule}\n"
+        "\U0001f916 Nothing left to do: the bot keeps mounting fresh clean IPs on this same\n"
+        "subscription link. Just hit Update in your client now and then.\n"
+        "\U0001f4a1 Run <b>Real Delay</b> and connect to the fastest entry.\n"
         "\U0001f525 Turn <b>Fragment</b> on for a steadier connection."
     ),
     "health_warn": (
@@ -111,28 +120,45 @@ EN: dict[str, str] = {
         "\U0001f194 User id: <code>{uuid}</code>\n"
         "\U0001f4e6 Configs: <b>{count}</b>\n"
         "\U0001f3c6 Best ping: <b>{best}</b>\n"
-        "\U0001f504 Rebuilds: <b>{rebuilds}</b>\n"
-        "\U0001f552 Updated: <b>{updated}</b>"
+        "\U0001f49f Tunnel: <b>{health}</b>\n"
+        "\U0001f916 Last auto apply: <b>{synced}</b> ({syncs} total)\n"
+        "\U0001f504 Rebuilds: <b>{rebuilds}</b> \u00b7 updated: <b>{updated}</b>\n"
+        "{rule}\n"
+        "\U0001f4a1 The subscription link never changes; what it serves refreshes on its own."
     ),
+    "panel_health_ok": "\u2705 healthy",
+    "panel_health_bad": "\u26a0\ufe0f checking",
     "sub_links": (
         "\U0001f517 <b>Subscription links</b>\n{rule}\n"
         "<b>v2rayNG / Streisand / NekoBox</b>\n<code>{sub}</code>\n\n"
         "<b>Clash / Mihomo</b>\n<code>{clash}</code>\n\n"
         "<b>sing-box</b>\n<code>{singbox}</code>\n\n"
-        "\u267b\ufe0f The link is permanent and refreshes after every rebuild."
+        "\u267b\ufe0f The link is permanent. Every Update pulls the freshest clean IPs."
     ),
-    "single_configs": "\U0001f4dd <b>Individual configs</b>\n{rule}\nTap a config to copy it.",
+    "single_configs": (
+        "\U0001f4dd <b>Individual configs</b>\n{rule}\nTap a config to copy it.\n"
+        "\u26a1 port 443 \u00b7 \U0001f7e1 port 80 \u00b7 \U0001f300 self-healing hostname"
+    ),
     "qr_caption": "\U0001f4f7 {brand} subscription QR code",
     "ping_result": (
         "\U0001f4e1 <b>Live ping test</b>\n{rule}\n{rows}\n\n"
-        "\u2139\ufe0f Measured from the bot server. Check real delay in your own client as well."
+        "\u2139\ufe0f Measured from the bot server. Dead entries are demoted from the pool automatically."
     ),
+    "applying": "\u26a1 Mounting the freshest clean IPs on this panel...",
+    "applied": (
+        "\u2705 <b>Clean IPs applied</b>\n{rule}\n"
+        "\U0001f4e6 Fresh configs: <b>{count}</b>\n"
+        "\U0001f3c6 Best ping: <b>{best}</b>\n"
+        "\U0001f49f Tunnel: <b>{health}</b>\n\n"
+        "\U0001f517 Your subscription link is unchanged. Hit Update in your client to pull them."
+    ),
+    "apply_failed": "\u274c Could not apply: <code>{reason}</code>",
     "delete_confirm": (
         "\U0001f5d1 Are you sure? Worker <code>{script}</code> will be removed from your Cloudflare "
         "account and the configs will stop working."
     ),
     "deleted": "\u2705 Panel deleted.",
-    "rebuilding": "\u267b\ufe0f Mounting fresh clean IPs...",
+    "rebuilding": "\u267b\ufe0f Rebuilding the panel...",
     "rebuilt": "\u2705 Panel updated with fresh clean IPs.",
     "token_missing": "\U0001f511 I need your Cloudflare token again for this. Send it now.",
     "scan_started": "\u26a1 A fresh scan started, hold on a moment...",
@@ -143,27 +169,25 @@ EN: dict[str, str] = {
         "\u2705 Verified: <b>{verified}</b>\n"
         "\U0001f680 Under 700 ms: <b>{fast}</b>\n"
         "\U0001f3c6 Best ping: <b>{best}</b>\n"
+        "\U0001f300 Self-healing hostnames: <b>{domains}</b>\n"
+        "\U0001f6e1 Healthy relays: <b>{relays}</b>\n"
         "\U0001f50c Active ports: <b>{ports}</b>\n"
         "\u23f3 Last scan: <b>{updated}</b>\n"
-        "\u2699\ufe0f Scanner: <b>{state}</b>\n\n"
+        "\u2699\ufe0f Scanner: <b>{state}</b> \u00b7 \U0001f916 autopilot: <b>{pilot}</b>\n"
+        "{rule}\n"
         "\U0001f4cd Top datacenters: {colos}"
     ),
-    "apps": (
-        "\U0001f4f1 <b>Apps and downloads</b>\n{rule}\n"
-        "\u2022 <b>Android:</b> v2rayNG \u00b7 NekoBox \u00b7 Hiddify\n"
-        "\u2022 <b>iOS:</b> Streisand \u00b7 Shadowrocket \u00b7 FoXray\n"
-        "\u2022 <b>Windows:</b> v2rayN \u00b7 Hiddify \u00b7 Nekoray\n"
-        "\u2022 <b>macOS:</b> V2Box \u00b7 Streisand \u00b7 Hiddify\n\n"
-        "\U0001f4a1 Paste the subscription link into the app's Subscription section, not the manual config field."
-    ),
+    "apps": "\U0001f4f1 <b>Apps and downloads</b>\n{rule}\nPick your device.",
     "guide": (
         "\U0001f4d6 <b>Connection guide</b>\n{rule}\n"
-        "1\ufe0f\u20e3 Install one of the recommended apps.\n"
-        "2\ufe0f\u20e3 Add the subscription link under Subscription and hit Update.\n"
+        "1\ufe0f\u20e3 Install an app from the Apps section.\n"
+        "2\ufe0f\u20e3 Add the subscription link under <b>Subscription</b> and hit Update.\n"
         "3\ufe0f\u20e3 Run a Real Delay test and select the fastest config.\n"
-        "4\ufe0f\u20e3 Still stuck? Enable Fragment, then try the port 80 configs.\n"
-        "5\ufe0f\u20e3 Nothing works? Use \u201cRescan clean IPs\u201d and then \u201cRebuild panel\u201d.\n\n"
-        "\U0001f527 On mobile data, port 80 often behaves better; on fixed lines, port 443 usually wins."
+        "4\ufe0f\u20e3 Stuck? Enable Fragment, then try the \U0001f7e1 port 80 configs.\n"
+        "5\ufe0f\u20e3 Still nothing? Tap <b>Apply fresh clean IPs</b>; your link stays the same.\n"
+        "{rule}\n"
+        "\U0001f527 On mobile data port 80 often wins; on fixed lines port 443 usually does.\n"
+        "\U0001f300 A config marked \U0001f300 rides a self-healing hostname and outlives the rest."
     ),
     "operator_menu": (
         "\U0001f4f6 <b>My operator</b>\n{rule}\n"
@@ -178,14 +202,6 @@ EN: dict[str, str] = {
     ),
     "convert_bad": "\u26a0\ufe0f No valid VLESS link found. The text must start with <code>vless://</code>.",
     "convert_done": "\u2705 Converted <b>{count}</b> configs.",
-    "warp_building": "\U0001f6e1 Registering a fresh WARP identity...",
-    "warp_ready": (
-        "\U0001f6e1 <b>WARP / WireGuard ready</b>\n{rule}\n"
-        "\U0001f511 Account type: <b>{account}</b>\n"
-        "\U0001f4e1 Endpoint: <code>{endpoint}</code>\n\n"
-        "Import the attached file into WireGuard or Hiddify."
-    ),
-    "warp_failed": "\u274c WARP registration failed. Try again in a moment.",
     # --------------------------------------------------------------- gating
     "join_required": (
         "\U0001f512 <b>Membership required</b>\n{rule}\n"

@@ -118,6 +118,8 @@ async def run_build(
         token=token,
         endpoints=panel.endpoints,
         build_ms=panel.build_ms,
+        relays=panel.relays,
+        healthy=panel.healthy,
     )
     await db.log_event("build_ok", tg_id, panel.host)
 
@@ -132,7 +134,7 @@ async def run_build(
         lang,
         "panel_ready",
         seconds=num(round(panel.build_ms / 1000, 1), lang),
-        best=ping_label(min(latencies) if latencies else None, lang),
+        best=ping_label(min((v for v in latencies if v), default=None), lang),
         fast=num(sum(1 for value in latencies if value and value < 700), lang),
         count=num(len(panel.endpoints), lang),
         ports=" \u00b7 ".join(num(p, lang) for p in ports),
