@@ -1,36 +1,45 @@
 """WARP / WireGuard: automatic identity, healthy endpoints, every export format.
 
 The engine in ``warpscan`` maintains a pool of endpoints that answered a real
-handshake more than once. This module hands a user their own WARP identity,
-mounts the best endpoints on it and renders the config in whatever shape their
-client understands. Why the obfuscation defaults look the way they do is
-explained at the top of ``bot/warp.py``.
+handshake more than once, scored on latency, jitter and loss. This module hands a
+user their own WARP identity, mounts the healthiest endpoints on it and renders
+the config in whatever shape their client understands. Why the obfuscation
+defaults look the way they do is explained at the top of ``bot/warp.py``.
+
+Nothing here waits on a scan. The rescan button answers straight away and the
+sweep reports back into the same message when it finishes.
 """
 
 from __future__ import annotations
 
+import asyncio
 import logging
 import time
 from typing import Optional
 
 from aiogram import F, Router
+from aiogram.exceptions import TelegramBadRequest
 from aiogram.filters import Command
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from .. import db, keyboards
+from .. import db, keyboards, warpstore
 from .. import warp as warpcore
 from ..config import settings
 from ..i18n import num, t
 from ..utils import ago, chunked, edit, esc, ping_label
-from ..warpscan import warp_scanner
+from ..warpscan import ScanReport, warp_scanner
+from ..warptune import TUNE
 
 log = logging.getLogger("autovless.handlers.warp")
 router = Router(name="warp")
 
-RESCAN_COOLDOWN = 90
+# Monotonic stamp of the last accepted rescan, per user.
 _last_rescan: dict[int, float] = {}
+
+# Live scan jobs. Held so the event loop cannot garbage collect them mid-sweep.
+_scan_jobs: set[asyncio.Task] = set()
 
 
 class WarpFlow(StatesGroup):
@@ -46,6 +55,13 @@ def _profile(identity: dict) -> dict:
 
 def _filename(suffix: str) -> str:
     return f"{settings.brand}-warp{suffix}"
+
+
+def _loss_note(row: dict, lang: str) -> str:
+    loss = float(row.get("loss") or 0)
+    if loss <= 0:
+        return ""
+    return " \u00b7 " + t(lang, "warp.loss", pct=num(round(loss * 100), lang))
 
 
 async def show_menu(event: CallbackQuery | Message, lang: str) -> None:
@@ -71,7 +87,7 @@ async def show_menu(event: CallbackQuery | Message, lang: str) -> None:
         stable=num(stats["stable"], lang),
         total=num(stats["total"], lang),
         best=ping_label(stats["best"], lang),
-        ports=" \u00b7 ".join(num(port, lang) for port in stats["ports"]) or "-",
+        ports=" \u00b7 ".join(num(port, lang) for port in stats["ports"][:3]) or "-",
         updated=ago(stats["updated_at"], lang),
         state=t(lang, "admin.on" if stats["scanning"] else "admin.off"),
         status=status,
@@ -117,6 +133,7 @@ async def on_build(call: CallbackQuery, lang: str) -> None:
         await notice.edit_text(t(lang, "warp.failed", reason=esc(error)))
         return
 
+    # Reads the pool only: a build is never held up by a running scan.
     endpoints = await warp_scanner.pick()
     await db.save_warp_user(call.from_user.id, identity, endpoints)
     await db.log_event("warp_build", call.from_user.id, identity.get("account_type", "free"))
@@ -138,7 +155,7 @@ async def on_build(call: CallbackQuery, lang: str) -> None:
         ),
         reply_markup=keyboards.warp_exports(lang),
     )
-    if not endpoints:
+    if not any(row.get("stable") for row in endpoints):
         await call.message.answer(t(lang, "warp.no_endpoint"))
 
 
@@ -149,14 +166,20 @@ async def on_rebuild(call: CallbackQuery, lang: str) -> None:
         await call.answer(t(lang, "warp.none"), show_alert=True)
         return
 
-    endpoints = await warp_scanner.pick()
-    await db.update_warp_endpoints(call.from_user.id, endpoints)
-    best = endpoints[0]["latency"] if endpoints else None
     await call.answer()
+    current = record.get("endpoints") or []
+    # Keeps a working endpoint at the front and only replaces the spares.
+    endpoints = await warp_scanner.failover(current)
+    await db.update_warp_endpoints(call.from_user.id, endpoints)
+
+    before = str(current[0]["ip"]) if current else ""
+    after = str(endpoints[0]["ip"]) if endpoints else ""
+    key = "warp.refreshed" if before != after else "warp.refreshed_same"
+    best = endpoints[0]["latency"] if endpoints else None
     await call.message.answer(
         t(
             lang,
-            "warp.refreshed",
+            key,
             endpoint=esc(warpcore.endpoint_label(endpoints)),
             ping=ping_label(best, lang),
         ),
@@ -242,9 +265,9 @@ async def on_why(call: CallbackQuery, lang: str) -> None:
 
 @router.callback_query(F.data == "wg:eps")
 async def on_endpoints(call: CallbackQuery, lang: str) -> None:
-    rows = await db.best_warp_endpoints(12, stable_only=True)
+    rows = await warpstore.best(12, stable_only=True)
     if not rows:
-        rows = await db.best_warp_endpoints(12, stable_only=False)
+        rows = await warpstore.best(12, stable_only=False)
     if not rows:
         await edit(call, t(lang, "warp.eps_empty"), keyboards.warp_endpoints(lang))
         await call.answer()
@@ -252,29 +275,76 @@ async def on_endpoints(call: CallbackQuery, lang: str) -> None:
 
     lines = []
     for row in rows:
-        mark = "\u2705" if row.get("stable") else "\u26aa\ufe0f"
+        mark = "\u2705" if row.get("stable") and not row.get("fails") else "\u26aa\ufe0f"
         address = f"{row['ip']}:{row['port']}"
-        lines.append(f"{mark} <code>{esc(address)}</code> \u00b7 {ping_label(row['latency'], lang)}")
+        lines.append(
+            f"{mark} <code>{esc(address)}</code> \u00b7 {ping_label(row['latency'], lang)}"
+            f"{_loss_note(row, lang)}"
+        )
 
     await edit(call, t(lang, "warp.eps", list="\n".join(lines)), keyboards.warp_endpoints(lang))
     await call.answer()
 
 
+def _report_text(report: ScanReport, lang: str) -> str:
+    """One report, one message. No more guessing what a zero meant."""
+    if report.status == "disabled":
+        return t(lang, "warp.off")
+    if report.status == "cooldown":
+        return t(lang, "warp.rescan_cooldown", wait=num(max(1, report.wait), lang))
+    if report.status == "failed":
+        return t(lang, "warp.rescan_failed", reason=esc(report.reason or "-"))
+    if not report.found:
+        return t(lang, "warp.rescan_empty")
+    return t(
+        lang,
+        "warp.rescan_joined" if report.status == "joined" else "warp.rescan_done",
+        count=num(report.found, lang),
+        alive=num(report.alive, lang),
+        ping=ping_label(report.best, lang),
+        ports=" \u00b7 ".join(num(port, lang) for port in report.ports[:3]) or "-",
+        secs=num(max(1, round(report.elapsed)), lang),
+    )
+
+
+async def _run_scan(notice: Message, lang: str, quick: bool, force: bool) -> None:
+    report = await warp_scanner.scan(quick=quick, force=force)
+    try:
+        await notice.edit_text(
+            _report_text(report, lang), reply_markup=keyboards.warp_endpoints(lang)
+        )
+    except TelegramBadRequest as error:
+        log.info("could not update the scan notice: %s", error)
+
+
 @router.callback_query(F.data == "wg:rescan")
 async def on_rescan(call: CallbackQuery, lang: str, is_admin: bool) -> None:
-    moment = time.monotonic()
-    previous = _last_rescan.get(call.from_user.id, 0.0)
-    if not is_admin and moment - previous < RESCAN_COOLDOWN:
-        await call.answer(t(lang, "warp.rescan_wait"), show_alert=True)
+    if not await db.get_flag("warp_enabled"):
+        await call.answer(t(lang, "warp.off"), show_alert=True)
         return
+
+    moment = time.monotonic()
+    previous: Optional[float] = _last_rescan.get(call.from_user.id)
+    if not is_admin and previous is not None:
+        left = int(TUNE.user_cooldown - (moment - previous))
+        if left > 0:
+            await call.answer(
+                t(lang, "warp.rescan_cooldown", wait=num(left, lang)), show_alert=True
+            )
+            return
     _last_rescan[call.from_user.id] = moment
 
     await call.answer(t(lang, "warp.rescanning"))
-    found = await warp_scanner.scan_once()
-    if not found:
-        await call.message.answer(t(lang, "warp.rescan_wait"))
-        return
-    await call.message.answer(t(lang, "warp.rescan_done", count=num(found, lang)))
+    notice = await call.message.answer(t(lang, "warp.rescan_started"))
+
+    # The sweep runs beside this handler. The button returns immediately, other
+    # users keep building configs, and the notice is edited when the scan lands.
+    task = asyncio.create_task(
+        _run_scan(notice, lang, quick=not is_admin, force=is_admin),
+        name=f"warp-rescan-{call.from_user.id}",
+    )
+    _scan_jobs.add(task)
+    task.add_done_callback(_scan_jobs.discard)
 
 
 # --------------------------------------------------------------- license

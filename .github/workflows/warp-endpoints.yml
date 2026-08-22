@@ -1,0 +1,80 @@
+name: WARP endpoint seeds
+
+# Measures WARP endpoints from GitHub's own network and commits the result as a
+# seed list. It does not replace the scan your VPS runs, because endpoint health
+# is relative to the network you measure from, but it gives every fresh
+# deployment a warm list to start from instead of four hardcoded defaults.
+#
+# The list your bot publishes lives in endpoints/warp-endpoints.*, written by
+# scripts/publish_endpoints.sh. This workflow only ever touches
+# endpoints/warp-seed.*, so the two can never fight over the same file.
+
+on:
+  schedule:
+    - cron: "17 */6 * * *"
+  workflow_dispatch:
+    inputs:
+      sample:
+        description: "Addresses probed per Cloudflare prefix"
+        required: false
+        default: "6"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: warp-endpoints
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 25
+    env:
+      WARP_SCAN_SAMPLE: ${{ github.event.inputs.sample || '6' }}
+      WARP_SCAN_CONCURRENCY: "96"
+      WARP_SCAN_TIMEOUT_MS: "2500"
+      WARP_PROBES: "3"
+      WARP_WATCH: "0"
+      WARP_EXPORT_LIMIT: "40"
+      LOG_LEVEL: "INFO"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Scan and export
+        # --allow-empty keeps the job green when the runner cannot get UDP out.
+        run: python scripts/publish_warp.py --mode scan --out endpoints/warp-seed --allow-empty
+
+      - name: Commit when the list changed
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add endpoints/warp-seed.json endpoints/warp-seed.txt
+          if git diff --cached --quiet; then
+            echo "seed list unchanged"
+            exit 0
+          fi
+          count=$(sed -n 's/.*"count": *\([0-9]*\).*/\1/p' endpoints/warp-seed.json | head -1)
+          git commit -m "chore(warp): refresh endpoint seed list (${count:-0} endpoints)"
+          git push
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### WARP seed list" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          head -n 12 endpoints/warp-seed.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null || echo "no list produced" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
