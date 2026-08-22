@@ -120,6 +120,30 @@ CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets (tg_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_ticket_messages ON ticket_messages (ticket_id, id);
 """
 
+# Columns added after 1.0. Existing databases are patched in place on boot.
+MIGRATIONS: dict[str, dict[str, str]] = {
+    "clean_ips": {
+        "fails": "INTEGER NOT NULL DEFAULT 0",
+        "jitter": "REAL NOT NULL DEFAULT 0",
+        "score": "REAL NOT NULL DEFAULT 0",
+        "kind": "TEXT NOT NULL DEFAULT 'ip'",
+    },
+    "panels": {
+        "relays": "TEXT NOT NULL DEFAULT '[]'",
+        "healthy": "INTEGER NOT NULL DEFAULT 0",
+        "synced_at": "INTEGER NOT NULL DEFAULT 0",
+        "syncs": "INTEGER NOT NULL DEFAULT 0",
+    },
+    "warp_endpoints": {
+        "fails": "INTEGER NOT NULL DEFAULT 0",
+    },
+}
+
+LATE_INDEXES = (
+    "CREATE INDEX IF NOT EXISTS idx_clean_score ON clean_ips (port, verified, fails, score)",
+    "CREATE INDEX IF NOT EXISTS idx_panels_sync ON panels (synced_at ASC)",
+)
+
 
 def now() -> int:
     return int(time.time())
@@ -141,6 +165,20 @@ def decrypt(value: str) -> Optional[str]:
         return None
 
 
+async def _migrate() -> None:
+    """Add any column a newer release expects, without touching existing rows."""
+    for table, columns in MIGRATIONS.items():
+        async with conn().execute(f"PRAGMA table_info({table})") as cur:
+            present = {row[1] for row in await cur.fetchall()}
+        for name, ddl in columns.items():
+            if name in present:
+                continue
+            await conn().execute(f"ALTER TABLE {table} ADD COLUMN {name} {ddl}")
+    for statement in LATE_INDEXES:
+        await conn().execute(statement)
+    await conn().commit()
+
+
 async def init() -> None:
     global _conn
     settings.db_path.parent.mkdir(parents=True, exist_ok=True)
@@ -151,6 +189,7 @@ async def init() -> None:
     await _conn.execute("PRAGMA foreign_keys=ON")
     await _conn.executescript(SCHEMA)
     await _conn.commit()
+    await _migrate()
 
 
 async def close() -> None:
@@ -207,6 +246,7 @@ DEFAULT_OPTIONS: dict[str, str] = {
     "force_join": "1",
     "support_enabled": "1",
     "warp_enabled": "1",
+    "autopilot": "1",
     "welcome_extra": "",
     "support_note": "",
 }
@@ -309,14 +349,17 @@ async def save_panel(
     token: Optional[str],
     endpoints: list[dict],
     build_ms: int,
+    relays: Optional[list[str]] = None,
+    healthy: bool = False,
 ) -> None:
     ts = now()
     token_enc = encrypt(token) if (token and settings.store_tokens) else None
     await execute(
         """
         INSERT INTO panels (tg_id, account_id, script_name, host, uuid, token_enc,
-                            endpoints, build_ms, rebuilds, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?)
+                            endpoints, relays, healthy, build_ms, rebuilds,
+                            synced_at, syncs, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)
         ON CONFLICT(tg_id) DO UPDATE SET
             account_id  = excluded.account_id,
             script_name = excluded.script_name,
@@ -324,33 +367,106 @@ async def save_panel(
             uuid        = excluded.uuid,
             token_enc   = COALESCE(excluded.token_enc, panels.token_enc),
             endpoints   = excluded.endpoints,
+            relays      = excluded.relays,
+            healthy     = excluded.healthy,
             build_ms    = excluded.build_ms,
             rebuilds    = panels.rebuilds + 1,
+            synced_at   = excluded.synced_at,
             updated_at  = excluded.updated_at
         """,
-        (tg_id, account_id, script_name, host, uuid, token_enc,
-         json.dumps(endpoints, ensure_ascii=False), build_ms, ts, ts),
+        (
+            tg_id,
+            account_id,
+            script_name,
+            host,
+            uuid,
+            token_enc,
+            json.dumps(endpoints, ensure_ascii=False),
+            json.dumps(relays or [], ensure_ascii=False),
+            1 if healthy else 0,
+            build_ms,
+            ts,
+            ts,
+            ts,
+        ),
     )
     await execute("UPDATE users SET builds = builds + 1 WHERE tg_id = ?", (tg_id,))
 
 
-async def get_panel(tg_id: int) -> Optional[dict]:
-    row = await fetch_one("SELECT * FROM panels WHERE tg_id = ?", (tg_id,))
-    if row is None:
-        return None
+def _panel_row(row: aiosqlite.Row) -> dict:
     panel = dict(row)
-    panel["endpoints"] = json.loads(panel.get("endpoints") or "[]")
+    try:
+        panel["endpoints"] = json.loads(panel.get("endpoints") or "[]")
+    except ValueError:
+        panel["endpoints"] = []
+    try:
+        panel["relays"] = json.loads(panel.get("relays") or "[]")
+    except ValueError:
+        panel["relays"] = []
     panel["token"] = decrypt(panel["token_enc"]) if panel.get("token_enc") else None
     return panel
+
+
+async def get_panel(tg_id: int) -> Optional[dict]:
+    row = await fetch_one("SELECT * FROM panels WHERE tg_id = ?", (tg_id,))
+    return _panel_row(row) if row is not None else None
 
 
 async def delete_panel(tg_id: int) -> None:
     await execute("DELETE FROM panels WHERE tg_id = ?", (tg_id,))
 
 
+async def panels_due(limit: int, max_age: int) -> list[dict]:
+    """Panels the autopilot should re-point at fresher entry addresses.
+
+    Only panels with a stored token can be refreshed silently, and the oldest
+    sync goes first so a large user base rotates evenly.
+    """
+    cutoff = now() - max(60, max_age)
+    rows = await fetch_all(
+        "SELECT * FROM panels WHERE token_enc IS NOT NULL "
+        "AND (synced_at <= ? OR healthy = 0) ORDER BY synced_at ASC LIMIT ?",
+        (cutoff, limit),
+    )
+    return [_panel_row(row) for row in rows]
+
+
+async def due_count(max_age: int) -> int:
+    cutoff = now() - max(60, max_age)
+    return int(
+        await scalar(
+            "SELECT COUNT(*) FROM panels WHERE token_enc IS NOT NULL "
+            "AND (synced_at <= ? OR healthy = 0)",
+            (cutoff,),
+        )
+    )
+
+
+async def mark_panel_synced(
+    tg_id: int,
+    endpoints: list[dict],
+    relays: Optional[list[str]] = None,
+    healthy: bool = False,
+) -> None:
+    ts = now()
+    await execute(
+        "UPDATE panels SET endpoints = ?, relays = ?, healthy = ?, synced_at = ?, "
+        "syncs = syncs + 1, updated_at = ? WHERE tg_id = ?",
+        (
+            json.dumps(endpoints, ensure_ascii=False),
+            json.dumps(relays or [], ensure_ascii=False),
+            1 if healthy else 0,
+            ts,
+            ts,
+            tg_id,
+        ),
+    )
+
+
 async def update_panel_endpoints(tg_id: int, endpoints: list[dict], build_ms: int) -> None:
     await execute(
-        "UPDATE panels SET endpoints = ?, build_ms = ?, rebuilds = rebuilds + 1, updated_at = ? WHERE tg_id = ?",
+        "UPDATE panels SET endpoints = ?, build_ms = ?, rebuilds = rebuilds + 1, "
+        "updated_at = ? WHERE tg_id = ?",
         (json.dumps(endpoints, ensure_ascii=False), build_ms, now(), tg_id),
     )
 
@@ -508,50 +624,102 @@ async def store_clean_ips(rows: list[dict]) -> None:
         return
     ts = now()
     payload = [
-        (r["ip"], int(r["port"]), float(r["latency"]), r.get("colo"), 1 if r.get("verified") else 0, ts)
+        (
+            r["ip"],
+            int(r["port"]),
+            float(r["latency"]),
+            float(r.get("jitter") or 0),
+            float(r.get("score") or r["latency"]),
+            str(r.get("kind") or "ip"),
+            r.get("colo"),
+            1 if r.get("verified") else 0,
+            ts,
+        )
         for r in rows
     ]
     await conn().executemany(
-        "INSERT INTO clean_ips (ip, port, latency, colo, verified, checked_at) "
-        "VALUES (?, ?, ?, ?, ?, ?) "
+        "INSERT INTO clean_ips (ip, port, latency, jitter, score, kind, colo, verified, fails, checked_at) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?) "
         "ON CONFLICT(ip, port) DO UPDATE SET "
-        "latency = excluded.latency, colo = COALESCE(excluded.colo, clean_ips.colo), "
-        "verified = excluded.verified, checked_at = excluded.checked_at",
+        "latency = excluded.latency, jitter = excluded.jitter, score = excluded.score, "
+        "kind = excluded.kind, colo = COALESCE(excluded.colo, clean_ips.colo), "
+        "verified = excluded.verified, fails = 0, checked_at = excluded.checked_at",
         payload,
     )
     await conn().commit()
 
 
-async def best_ips(port: int, limit: int, verified_only: bool = True) -> list[dict]:
+async def best_ips(
+    port: int,
+    limit: int,
+    verified_only: bool = True,
+    max_fails: Optional[int] = None,
+) -> list[dict]:
+    """Best entry addresses for a port, cheapest score first."""
+    ceiling = settings.max_fails if max_fails is None else max_fails
     sql = (
-        "SELECT ip, port, latency, colo FROM clean_ips WHERE port = ? "
+        "SELECT ip, port, latency, jitter, score, kind, colo, verified, fails "
+        "FROM clean_ips WHERE port = ? AND fails < ? "
         + ("AND verified = 1 " if verified_only else "")
-        + "ORDER BY latency ASC LIMIT ?"
+        + "ORDER BY score ASC, latency ASC LIMIT ?"
     )
-    return [dict(row) for row in await fetch_all(sql, (port, limit))]
+    return [dict(row) for row in await fetch_all(sql, (port, ceiling, limit))]
 
 
-async def trim_pool(keep: int) -> None:
+async def mark_ip_fail(ip: str, port: int) -> None:
     await execute(
-        "DELETE FROM clean_ips WHERE rowid NOT IN "
-        "(SELECT rowid FROM clean_ips ORDER BY verified DESC, latency ASC LIMIT ?)",
-        (keep,),
+        "UPDATE clean_ips SET fails = fails + 1 WHERE ip = ? AND port = ?", (ip, int(port))
+    )
+
+
+async def trim_pool(keep: int, per_port: bool = True) -> None:
+    """Keep the best rows. Trimming per port matters: a single global ranking
+    lets the faster TLS rows evict every plain-HTTP row, which quietly turns the
+    port 80 configs into dead entries."""
+    if not per_port:
+        await execute(
+            "DELETE FROM clean_ips WHERE rowid NOT IN "
+            "(SELECT rowid FROM clean_ips ORDER BY verified DESC, fails ASC, score ASC LIMIT ?)",
+            (keep,),
+        )
+        return
+
+    ports = max(1, len(settings.all_ports))
+    per_port_keep = max(8, keep // ports)
+    await execute(
+        "DELETE FROM clean_ips WHERE rowid NOT IN ("
+        "  SELECT rowid FROM ("
+        "    SELECT rowid, ROW_NUMBER() OVER ("
+        "      PARTITION BY port ORDER BY verified DESC, fails ASC, score ASC"
+        "    ) AS rank FROM clean_ips"
+        "  ) WHERE rank <= ?"
+        ")",
+        (per_port_keep,),
     )
 
 
 async def pool_stats() -> dict:
     total = await scalar("SELECT COUNT(*) FROM clean_ips")
     verified = await scalar("SELECT COUNT(*) FROM clean_ips WHERE verified = 1")
-    fast = await scalar("SELECT COUNT(*) FROM clean_ips WHERE latency < 700")
-    best = await scalar("SELECT MIN(latency) FROM clean_ips WHERE verified = 1", default=None)
+    fast = await scalar("SELECT COUNT(*) FROM clean_ips WHERE verified = 1 AND score < 700")
+    best = await scalar("SELECT MIN(score) FROM clean_ips WHERE verified = 1", default=None)
     updated = await scalar("SELECT MAX(checked_at) FROM clean_ips", default=0)
+    domains = await scalar("SELECT COUNT(*) FROM clean_ips WHERE kind = 'domain' AND verified = 1")
     return {
         "total": int(total),
         "verified": int(verified),
         "fast": int(fast),
+        "domains": int(domains),
         "best": round(float(best), 1) if best is not None else None,
         "updated_at": int(updated or 0),
     }
+
+
+async def port_coverage() -> dict[int, int]:
+    rows = await fetch_all(
+        "SELECT port, COUNT(*) AS hits FROM clean_ips WHERE verified = 1 GROUP BY port"
+    )
+    return {int(row["port"]): int(row["hits"]) for row in rows}
 
 
 # --------------------------------------------------------------------- #
@@ -568,10 +736,11 @@ async def store_warp_endpoints(rows: list[dict]) -> None:
         for r in rows
     ]
     await conn().executemany(
-        "INSERT INTO warp_endpoints (ip, port, latency, stable, checked_at) "
-        "VALUES (?, ?, ?, ?, ?) "
+        "INSERT INTO warp_endpoints (ip, port, latency, stable, fails, checked_at) "
+        "VALUES (?, ?, ?, ?, 0, ?) "
         "ON CONFLICT(ip, port) DO UPDATE SET "
-        "latency = excluded.latency, stable = excluded.stable, checked_at = excluded.checked_at",
+        "latency = excluded.latency, stable = excluded.stable, fails = 0, "
+        "checked_at = excluded.checked_at",
         payload,
     )
     await conn().commit()
@@ -580,16 +749,23 @@ async def store_warp_endpoints(rows: list[dict]) -> None:
 async def best_warp_endpoints(limit: int, stable_only: bool = True) -> list[dict]:
     sql = (
         "SELECT ip, port, latency, stable, checked_at FROM warp_endpoints "
-        + ("WHERE stable = 1 " if stable_only else "")
+        "WHERE fails < 3 "
+        + ("AND stable = 1 " if stable_only else "")
         + "ORDER BY latency ASC LIMIT ?"
     )
     return [dict(row) for row in await fetch_all(sql, (limit,))]
 
 
+async def mark_warp_fail(ip: str, port: int) -> None:
+    await execute(
+        "UPDATE warp_endpoints SET fails = fails + 1 WHERE ip = ? AND port = ?", (ip, int(port))
+    )
+
+
 async def trim_warp_pool(keep: int) -> None:
     await execute(
         "DELETE FROM warp_endpoints WHERE rowid NOT IN "
-        "(SELECT rowid FROM warp_endpoints ORDER BY stable DESC, latency ASC LIMIT ?)",
+        "(SELECT rowid FROM warp_endpoints ORDER BY stable DESC, fails ASC, latency ASC LIMIT ?)",
         (keep,),
     )
 
@@ -698,7 +874,9 @@ async def global_stats() -> dict:
         "banned": int(await scalar("SELECT COUNT(*) FROM users WHERE is_banned = 1")),
         "panels": int(await scalar("SELECT COUNT(*) FROM panels")),
         "panels_today": int(await scalar("SELECT COUNT(*) FROM panels WHERE created_at >= ?", (day,))),
+        "panels_healthy": int(await scalar("SELECT COUNT(*) FROM panels WHERE healthy = 1")),
         "rebuilds": int(await scalar("SELECT COALESCE(SUM(rebuilds), 0) FROM panels")),
+        "syncs": int(await scalar("SELECT COALESCE(SUM(syncs), 0) FROM panels")),
         "avg_build_ms": int(await scalar("SELECT COALESCE(AVG(build_ms), 0) FROM panels")),
         "channels": int(await scalar("SELECT COUNT(*) FROM channels")),
         "tickets_waiting": int(await scalar("SELECT COUNT(*) FROM tickets WHERE unread_admin > 0")),
