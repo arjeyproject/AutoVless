@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .locales.admin import ADMIN
+from .locales.apps import APPS
 from .locales.en import EN
 from .locales.fa import FA
 from .locales.support import SUPPORT
@@ -14,8 +15,8 @@ LANGS: tuple[str, ...] = ("fa", "en")
 RULE = "\u2501" * 14
 
 CATALOG: dict[str, dict[str, str]] = {
-    "fa": {**FA, **ADMIN["fa"], **SUPPORT["fa"], **WARP["fa"]},
-    "en": {**EN, **ADMIN["en"], **SUPPORT["en"], **WARP["en"]},
+    "fa": {**FA, **ADMIN["fa"], **SUPPORT["fa"], **WARP["fa"], **APPS["fa"]},
+    "en": {**EN, **ADMIN["en"], **SUPPORT["en"], **WARP["en"], **APPS["en"]},
 }
 
 _PERSIAN_DIGITS = str.maketrans(

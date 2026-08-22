@@ -5,6 +5,7 @@ from __future__ import annotations
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
+from . import apps as catalogue
 from .config import settings
 from .i18n import t
 from .operators import OPERATORS
@@ -27,6 +28,10 @@ def _b(text: str, data: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, callback_data=data)
 
 
+def _u(text: str, url: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=text, url=url)
+
+
 def ticket_mark(status: object) -> str:
     return TICKET_MARKS.get(str(status), BULLET)
 
@@ -40,8 +45,8 @@ def main_menu(lang: str, is_admin: bool = False) -> InlineKeyboardMarkup:
         [_b(t(lang, "btn.build"), "nav:build")],
         [_b(t(lang, "btn.panel"), "nav:panel")],
         [_b(t(lang, "btn.warp"), "nav:warp")],
-        [_b(t(lang, "btn.convert"), "nav:convert")],
-        [_b(t(lang, "btn.apps"), "nav:apps"), _b(t(lang, "btn.guide"), "nav:guide")],
+        [_b(t(lang, "btn.apps"), "nav:apps")],
+        [_b(t(lang, "btn.guide"), "nav:guide"), _b(t(lang, "btn.convert"), "nav:convert")],
         [_b(t(lang, "btn.status"), "nav:status"), _b(t(lang, "btn.operator"), "nav:operator")],
         [_b(t(lang, "btn.support"), "nav:support"), _b(t(lang, "btn.donate"), "nav:donate")],
         [_b(t(lang, "btn.lang"), "nav:lang")],
@@ -54,8 +59,8 @@ def main_menu(lang: str, is_admin: bool = False) -> InlineKeyboardMarkup:
 def token_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [InlineKeyboardButton(text=t(lang, "btn.cf_signup"), url=CF_SIGNUP_URL)],
-            [InlineKeyboardButton(text=t(lang, "btn.cf_token"), url=CF_TOKEN_URL)],
+            [_u(t(lang, "btn.cf_signup"), CF_SIGNUP_URL)],
+            [_u(t(lang, "btn.cf_token"), CF_TOKEN_URL)],
             back_row(lang),
         ]
     )
@@ -67,9 +72,10 @@ def panel_menu(lang: str) -> InlineKeyboardMarkup:
             [_b(t(lang, "btn.qr"), "panel:qr"), _b(t(lang, "btn.sub"), "panel:sub")],
             [_b(t(lang, "btn.clash"), "panel:clash"), _b(t(lang, "btn.singbox"), "panel:singbox")],
             [_b(t(lang, "btn.single"), "panel:single"), _b(t(lang, "btn.ping"), "panel:ping")],
+            [_b(t(lang, "btn.apply"), "panel:apply")],
             [_b(t(lang, "btn.rescan"), "panel:rescan")],
             [_b(t(lang, "btn.rebuild"), "panel:rebuild")],
-            [_b(t(lang, "btn.delete"), "panel:delete")],
+            [_b(t(lang, "btn.apps"), "nav:apps"), _b(t(lang, "btn.delete"), "panel:delete")],
             back_row(lang),
         ]
     )
@@ -96,13 +102,51 @@ def join_menu(lang: str, channels: list[dict]) -> InlineKeyboardMarkup:
         title = channel.get("title") or channel.get("chat_id")
         invite = channel.get("invite")
         if invite:
-            rows.append([InlineKeyboardButton(text=f"\U0001f4e2 {title}", url=invite)])
+            rows.append([_u(f"\U0001f4e2 {title}", invite)])
     rows.append([_b(t(lang, "btn.joined"), "join:check")])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def simple_back(lang: str, target: str = "nav:menu") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=[back_row(lang, target)])
+
+
+# -------------------------------------------------------------------- apps
+
+
+def apps_platforms(lang: str) -> InlineKeyboardMarkup:
+    """Device picker. Two per row so the labels stay readable."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _b(t(lang, "btn.apps_android"), "apps:android"),
+                _b(t(lang, "btn.apps_ios"), "apps:ios"),
+            ],
+            [
+                _b(t(lang, "btn.apps_windows"), "apps:windows"),
+                _b(t(lang, "btn.apps_macos"), "apps:macos"),
+            ],
+            [_b(t(lang, "btn.apps_linux"), "apps:linux")],
+            [_b(t(lang, "btn.guide"), "nav:guide")],
+            back_row(lang),
+        ]
+    )
+
+
+def apps_list(lang: str, platform: str, tag: str = "") -> InlineKeyboardMarkup:
+    """One tappable link per app, recommended first, then the other platforms."""
+    rows: list[list[InlineKeyboardButton]] = []
+    for item in catalogue.listing(platform, tag):
+        rows.append([_u(catalogue.label(item), item["url"])])
+
+    others = [code for code in catalogue.PLATFORMS if code != platform]
+    switch = [_b(t(lang, f"btn.apps_{code}"), f"apps:{code}:{tag}" if tag else f"apps:{code}") for code in others]
+    for index in range(0, len(switch), 2):
+        rows.append(switch[index : index + 2])
+
+    rows.append([_b(t(lang, "btn.guide"), "nav:guide")])
+    rows.append(back_row(lang, "nav:apps"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 # ------------------------------------------------------------------- warp
@@ -143,6 +187,7 @@ def warp_menu(lang: str, has_identity: bool) -> InlineKeyboardMarkup:
 
 def warp_exports(lang: str) -> InlineKeyboardMarkup:
     rows = _warp_export_rows(lang)
+    rows.append([_b(t(lang, "btn.warp_apps"), "wg:apps")])
     rows.append(back_row(lang, "nav:warp"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -165,9 +210,7 @@ def support_menu(lang: str, has_thread: bool) -> InlineKeyboardMarkup:
     if has_thread:
         rows.append([_b(t(lang, "btn.support_thread"), "sup:thread")])
     if settings.support_url:
-        rows.append(
-            [InlineKeyboardButton(text=t(lang, "btn.support_direct"), url=settings.support_url)]
-        )
+        rows.append([_u(t(lang, "btn.support_direct"), settings.support_url)])
     rows.append(back_row(lang))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -266,6 +309,7 @@ def admin_engine(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_b(t(lang, "btn.scan_now"), "adm:scan")],
+            [_b(t(lang, "btn.sync_now"), "adm:sync")],
             [_b(t(lang, "btn.warp_rescan"), "wg:rescan")],
             back_row(lang, "adm:menu"),
         ]
