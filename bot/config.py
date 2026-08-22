@@ -118,6 +118,7 @@ class Settings:
     channel_url: str
     donate_url: str
     github_url: str
+    webapp_url: str
     default_lang: str
 
     tls_ports: tuple[int, ...]
@@ -230,6 +231,7 @@ def load_settings() -> Settings:
         channel_url=_str("CHANNEL_URL", "https://t.me/AutoVless"),
         donate_url=_str("DONATE_URL"),
         github_url=_str("GITHUB_URL", "https://github.com/arjeyproject/AutoVless"),
+        webapp_url=_str("WEBAPP_URL"),
         default_lang=lang,
         tls_ports=_ports("TLS_PORTS", (443,), TLS_PORTS),
         http_ports=_ports("HTTP_PORTS", (80,), HTTP_PORTS),
