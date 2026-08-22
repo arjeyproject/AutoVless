@@ -2,15 +2,20 @@
 
 Two independent background jobs, both tuned for a 1 vCPU / 1 GB box:
 
-  CleanIPScanner   entry points the client dials: curated seed lists mixed with
-                   a random sweep of Cloudflare prefixes, then verified with a
-                   real request to /cdn-cgi/trace so we also learn the colo.
-                   TLS ports get extra effort when the initial pass is lean.
+  CleanIPScanner   entry points the client dials. Three sources feed it:
+                   curated public lists, self-healing clean-IP hostnames, and a
+                   weighted random sweep of Cloudflare's prefixes. Survivors are
+                   verified twice through /cdn-cgi/trace so latency and jitter
+                   are both real, then scored and stored per port.
 
   ProxyIPScanner   relays the worker uses to reach hosts that sit behind
                    Cloudflare. A Worker cannot open a socket to a
                    Cloudflare-owned address, so anything resolving into a
                    Cloudflare prefix is rejected outright.
+
+Why per-port matters: a config on port 80 is only as good as a port 80 probe.
+Every port keeps its own target and its own slice of the pool, so the plain
+HTTP configs are never shipped on addresses that were only ever tested on 443.
 """
 
 from __future__ import annotations
@@ -78,6 +83,15 @@ def is_cloudflare(address: str) -> bool:
     return any(parsed in net for net in _NETWORKS)
 
 
+def subnet_of(address: str) -> str:
+    """The /24 an address belongs to, or the hostname itself for domains."""
+    try:
+        ipaddress.ip_address(address)
+    except ValueError:
+        return address.lower()
+    return address.rsplit(".", 1)[0]
+
+
 def random_ips(count: int) -> list[str]:
     """Sample addresses across Cloudflare prefixes, weighted by prefix size."""
     picked: set[str] = set()
@@ -94,7 +108,7 @@ async def fetch_list(url: str) -> list[tuple[str, Optional[int]]]:
     """Pull a community list and pick every host / host:port pair out of it."""
     try:
         async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
-            response = await client.get(url, headers={"User-Agent": f"{settings.brand}/1.0"})
+            response = await client.get(url, headers={"User-Agent": f"{settings.brand}/1.1"})
         if response.status_code != 200:
             return []
         body = response.text
@@ -135,7 +149,8 @@ def _extract_colo(response: str) -> Optional[str]:
     lowered = response.lower()
     if "cf-ray:" in lowered:
         start = lowered.index("cf-ray:") + len("cf-ray:")
-        line = response[start : response.find("\n", start)].strip()
+        end = response.find("\n", start)
+        line = response[start : end if end != -1 else len(response)].strip()
         if "-" in line:
             colo = line.rsplit("-", 1)[-1].strip().upper()
             if colo.isalpha() and 2 <= len(colo) <= 4:
@@ -179,7 +194,7 @@ async def trace_probe(
         request = (
             "GET /cdn-cgi/trace HTTP/1.1\r\n"
             f"Host: {sni}\r\n"
-            f"User-Agent: {settings.brand}/1.0\r\n"
+            f"User-Agent: {settings.brand}/1.1\r\n"
             "Accept: */*\r\n"
             "Connection: close\r\n\r\n"
         ).encode("ascii")
@@ -205,6 +220,20 @@ async def trace_probe(
     return {"latency": round((time.perf_counter() - start) * 1000, 1), "colo": colo}
 
 
+def score_of(latency: float, jitter: float, kind: str) -> float:
+    """One number the whole pool can be ranked by.
+
+    Jitter is weighted heavily on purpose: an address that answers in 90 ms and
+    then 900 ms is a worse entry point than one that always answers in 300 ms.
+    Self-healing hostnames get a small credit because the address behind them
+    keeps being replaced upstream, so they age far better than a raw IP.
+    """
+    base = float(latency) + (float(jitter) * 2.0)
+    if kind == "domain":
+        base -= 60.0
+    return round(max(1.0, base), 1)
+
+
 # ===================================================================== #
 # clean entry points
 # ===================================================================== #
@@ -212,7 +241,7 @@ async def trace_probe(
 
 class CleanIPScanner:
     def __init__(self) -> None:
-        self.ports: tuple[int, ...] = tuple(dict.fromkeys(settings.tls_ports + settings.http_ports))
+        self.ports: tuple[int, ...] = settings.all_ports
         self._task: Optional[asyncio.Task] = None
         self._lock = asyncio.Lock()
         self._stop = asyncio.Event()
@@ -220,6 +249,7 @@ class CleanIPScanner:
         self._seeds_at: float = 0.0
         self.last_run: int = 0
         self.last_found: int = 0
+        self.waves: int = 0
         self.running: bool = False
 
     # ------------------------------------------------------------------ #
@@ -257,7 +287,7 @@ class CleanIPScanner:
                 continue
 
     # ------------------------------------------------------------------ #
-    # scanning
+    # candidate sources
     # ------------------------------------------------------------------ #
 
     async def seeds(self) -> list[str]:
@@ -280,69 +310,133 @@ class CleanIPScanner:
             log.info("loaded %s seed addresses", len(self._seeds))
         return self._seeds
 
+    # ------------------------------------------------------------------ #
+    # scanning
+    # ------------------------------------------------------------------ #
+
     async def scan_once(self, batch: Optional[int] = None) -> int:
-        """Run one full sweep. Returns the number of verified endpoints stored."""
+        """Run one full sweep. Returns the number of verified endpoints stored.
+
+        Ports are swept in parallel and each one keeps going, with a bigger
+        random batch every time, until it holds enough verified addresses of its
+        own or the wave budget runs out.
+        """
         if self._lock.locked():
             return 0
 
         async with self._lock:
             self.running = True
+            self.waves = 0
             started = time.perf_counter()
-            batch = batch or settings.scan_batch
+            base_batch = batch or settings.scan_batch
             semaphore = asyncio.Semaphore(settings.scan_concurrency)
+            verify_sem = asyncio.Semaphore(max(8, min(24, settings.scan_concurrency // 4)))
             seeds = await self.seeds()
             stored = 0
 
             try:
-                for port in self.ports:
-                    candidates = list(dict.fromkeys(seeds + random_ips(batch)))
+                pending = list(self.ports)
+                for wave in range(settings.scan_waves):
+                    if not pending:
+                        break
+                    self.waves = wave + 1
+                    size = int(base_batch * (1 + wave))
                     results = await asyncio.gather(
-                        *(self._tcp_probe(ip, port, semaphore) for ip in candidates),
-                        return_exceptions=False,
+                        *(
+                            self._sweep_port(port, size, seeds, wave, semaphore, verify_sem)
+                            for port in pending
+                        ),
+                        return_exceptions=True,
                     )
-                    alive = sorted((r for r in results if r), key=lambda r: r["latency"])
-                    shortlist = alive[: settings.verify_top]
-
-                    # TLS ports need extra help to fill the pool
-                    is_tls = port in settings.tls_ports
-                    if len(shortlist) < 4 and is_tls and alive:
-                        log.info("port %s light on alive (%s), running second pass", port, len(alive))
-                        more = await asyncio.gather(
-                            *(self._tcp_probe(ip, port, semaphore) for ip in random_ips(batch * 2)),
-                            return_exceptions=False,
-                        )
-                        alive.extend(sorted((r for r in more if r), key=lambda r: r["latency"]))
-                        alive.sort(key=lambda r: r["latency"])
-                        shortlist = alive[: settings.verify_top]
-
-                    verify_sem = asyncio.Semaphore(min(24, settings.scan_concurrency))
-                    verified = await asyncio.gather(
-                        *(self._verify(item, verify_sem) for item in shortlist),
-                        return_exceptions=False,
-                    )
-                    good = [v for v in verified if v]
-                    await db.store_clean_ips(good)
-                    stored += len(good)
-                    log.info("port %s: %s alive, %s verified", port, len(alive), len(good))
+                    still: list[int] = []
+                    for port, outcome in zip(pending, results):
+                        if isinstance(outcome, BaseException):
+                            log.warning("port %s sweep failed: %s", port, outcome)
+                            still.append(port)
+                            continue
+                        stored += outcome
+                        coverage = await db.best_ips(port, settings.scan_min_verified)
+                        if len(coverage) < settings.scan_min_verified:
+                            still.append(port)
+                    pending = still
 
                 await db.trim_pool(settings.pool_size)
                 self.last_run = db.now()
                 self.last_found = stored
                 await db.log_event(
                     "scan",
-                    detail=f"stored={stored} elapsed={time.perf_counter() - started:.1f}s",
+                    detail=(
+                        f"stored={stored} waves={self.waves} "
+                        f"short={','.join(str(p) for p in pending) or '-'} "
+                        f"elapsed={time.perf_counter() - started:.1f}s"
+                    ),
                 )
                 return stored
             finally:
                 self.running = False
 
-    async def _tcp_probe(self, ip: str, port: int, semaphore: asyncio.Semaphore) -> Optional[dict]:
+    async def _sweep_port(
+        self,
+        port: int,
+        batch: int,
+        seeds: list[str],
+        wave: int,
+        semaphore: asyncio.Semaphore,
+        verify_sem: asyncio.Semaphore,
+    ) -> int:
+        """One pass over a single port: connect, shortlist, verify, store."""
+        candidates: list[tuple[str, str]] = []
+        if wave == 0:
+            candidates += [(domain, "domain") for domain in settings.clean_domains]
+            candidates += [(ip, "ip") for ip in seeds]
+        candidates += [(ip, "ip") for ip in random_ips(batch)]
+
+        unique: dict[str, str] = {}
+        for host, kind in candidates:
+            unique.setdefault(host, kind)
+
+        alive = await asyncio.gather(
+            *(self._tcp_probe(host, port, kind, semaphore) for host, kind in unique.items())
+        )
+        found = [item for item in alive if item]
+        if not found:
+            return 0
+
+        # Hostnames are cheap to keep and age well, so they always get verified.
+        domains = [item for item in found if item["kind"] == "domain"]
+        addresses = sorted(
+            (item for item in found if item["kind"] != "domain"), key=lambda r: r["latency"]
+        )
+        shortlist = domains + addresses[: settings.verify_top]
+
+        verified = await asyncio.gather(
+            *(self._verify(item, port, verify_sem) for item in shortlist)
+        )
+        good = [item for item in verified if item]
+        await db.store_clean_ips(good)
+        log.info(
+            "port %s wave %s: %s alive, %s verified (%s hostnames)",
+            port,
+            wave + 1,
+            len(found),
+            len(good),
+            sum(1 for item in good if item["kind"] == "domain"),
+        )
+        return len(good)
+
+    async def _tcp_probe(
+        self,
+        host: str,
+        port: int,
+        kind: str,
+        semaphore: asyncio.Semaphore,
+    ) -> Optional[dict]:
         async with semaphore:
             start = time.perf_counter()
             writer = None
             try:
                 _, writer = await asyncio.wait_for(
-                    asyncio.open_connection(ip, port), timeout=settings.scan_timeout
+                    asyncio.open_connection(host, port), timeout=settings.scan_timeout
                 )
             except (OSError, asyncio.TimeoutError):
                 return None
@@ -353,23 +447,54 @@ class CleanIPScanner:
                         await writer.wait_closed()
                     except (OSError, asyncio.TimeoutError):
                         pass
-            return {"ip": ip, "port": port, "latency": (time.perf_counter() - start) * 1000}
+            return {
+                "ip": host,
+                "port": port,
+                "kind": kind,
+                "latency": (time.perf_counter() - start) * 1000,
+            }
 
-    async def _verify(self, candidate: dict, semaphore: asyncio.Semaphore) -> Optional[dict]:
-        """Confirm the address is a live Cloudflare edge and read its colo."""
-        ip, port = candidate["ip"], int(candidate["port"])
+    async def _verify(
+        self,
+        candidate: dict,
+        port: int,
+        semaphore: asyncio.Semaphore,
+    ) -> Optional[dict]:
+        """Confirm this is a live Cloudflare edge, twice, and measure the spread.
+
+        A single probe cannot tell a genuinely fast edge from one that answered
+        once and then stalls. Every probe has to succeed; the gap between them
+        becomes the jitter that feeds the score.
+        """
+        host = candidate["ip"]
+        kind = candidate.get("kind") or "ip"
         use_tls = port in settings.tls_ports
+        timeout = settings.scan_timeout * 3
+        samples: list[float] = []
+        colo: Optional[str] = None
 
         async with semaphore:
-            result = await trace_probe(ip, port, use_tls, settings.scan_timeout * 3)
+            for attempt in range(settings.verify_probes):
+                if attempt:
+                    await asyncio.sleep(0.25)
+                result = await trace_probe(host, port, use_tls, timeout)
+                if result is None:
+                    return None
+                samples.append(float(result["latency"]))
+                colo = colo or result["colo"]
 
-        if result is None:
+        if not samples:
             return None
+        latency = round(sum(samples) / len(samples), 1)
+        jitter = round(max(samples) - min(samples), 1)
         return {
-            "ip": ip,
+            "ip": host,
             "port": port,
-            "latency": round(min(result["latency"], candidate["latency"] * 6), 1),
-            "colo": result["colo"],
+            "kind": kind,
+            "latency": latency,
+            "jitter": jitter,
+            "score": score_of(latency, jitter, kind),
+            "colo": colo or "CF",
             "verified": True,
         }
 
@@ -382,18 +507,46 @@ class CleanIPScanner:
         pool["scanning"] = self.running
         pool["last_run"] = self.last_run
         pool["ports"] = list(self.ports)
+        pool["coverage"] = await db.port_coverage()
         return pool
 
-    async def pick(self, port: int, count: int) -> list[dict]:
-        """Best verified endpoints for a port, with a graceful fallback."""
-        rows = await db.best_ips(port, count, verified_only=True)
-        if len(rows) < count:
+    async def pick(self, port: int, count: int, verified_only: bool = True) -> list[dict]:
+        """Best verified endpoints for a port, spread over different /24s.
+
+        Handing a user six addresses out of one subnet is the same as handing
+        them one address: when that block gets throttled, every config dies at
+        the same moment.
+        """
+        rows = await db.best_ips(port, max(count * 8, 24), verified_only=True)
+        if len(rows) < count and not verified_only:
+            known = {row["ip"] for row in rows}
             rows += [
-                r
-                for r in await db.best_ips(port, count * 3, verified_only=False)
-                if r["ip"] not in {x["ip"] for x in rows}
-            ][: count - len(rows)]
-        return rows[:count]
+                row
+                for row in await db.best_ips(port, count * 8, verified_only=False)
+                if row["ip"] not in known
+            ]
+
+        spread: list[dict] = []
+        seen: set[str] = set()
+        for row in rows:
+            subnet = subnet_of(str(row["ip"]))
+            if subnet in seen:
+                continue
+            seen.add(subnet)
+            spread.append(row)
+            if len(spread) >= count:
+                return spread
+
+        for row in rows:  # relax the spread rather than return short
+            if len(spread) >= count:
+                break
+            if row not in spread:
+                spread.append(row)
+        return spread[:count]
+
+    async def demote(self, ip: str, port: int) -> None:
+        """Called when a shipped endpoint turns out to be unreachable."""
+        await db.mark_ip_fail(ip, port)
 
 
 # ===================================================================== #
@@ -520,8 +673,13 @@ class ProxyIPScanner:
 
     async def pick(self, count: int) -> list[dict]:
         rows = await proxies.best(count, verified_only=True)
-        if not rows:
-            rows = await proxies.best(count, verified_only=False)
+        if len(rows) < count:
+            known = {(row["host"], int(row["port"])) for row in rows}
+            rows += [
+                row
+                for row in await proxies.best(count * 2, verified_only=False)
+                if (row["host"], int(row["port"])) not in known
+            ]
         return rows[:count]
 
     async def stats(self) -> dict:

@@ -20,36 +20,85 @@ def is_tls(port: int) -> bool:
     return int(port) in settings.tls_ports
 
 
+def _normalise(row: dict, kind: str = "") -> dict:
+    return {
+        "ip": str(row["ip"]),
+        "port": int(row["port"]),
+        "latency": round(float(row.get("latency") or 0), 1),
+        "jitter": round(float(row.get("jitter") or 0), 1),
+        "colo": row.get("colo") or "CF",
+        "kind": kind or str(row.get("kind") or "ip"),
+        "verified": bool(row.get("verified", True)),
+    }
+
+
 async def collect_endpoints(scanner) -> list[dict]:
-    """Pick the fastest verified endpoints: TLS ports first, then plain HTTP ports."""
+    """Pick the entry points a panel ships with.
+
+    Two rules decide the shape of this list:
+
+      * every group gets the count it asked for. A short TLS pool used to mean
+        fewer configs, and a short HTTP pool used to mean configs pinned to
+        addresses that were never tested on port 80.
+      * at least one self-healing hostname rides along whenever the pool has
+        one, so a panel keeps working after its raw addresses go stale.
+    """
     endpoints: list[dict] = []
-    seen: set[str] = set()
+    used: set[str] = set()
 
     plans = (
         (settings.tls_ports, settings.tls_config_count),
         (settings.http_ports, settings.http_config_count),
     )
+
     for ports, needed in plans:
         if needed <= 0 or not ports:
             continue
+
         bucket: list[dict] = []
         for port in ports:
-            bucket.extend(await scanner.pick(port, needed * 2))
-        bucket.sort(key=lambda row: row["latency"])
-        for row in bucket:
-            if row["ip"] in seen:
-                continue
-            seen.add(row["ip"])
-            endpoints.append(
-                {
-                    "ip": row["ip"],
-                    "port": int(row["port"]),
-                    "latency": round(float(row["latency"]), 1),
-                    "colo": row.get("colo") or "CF",
-                }
-            )
-            if len([e for e in endpoints if int(e["port"]) in ports]) >= needed:
+            for row in await scanner.pick(port, needed * 3):
+                bucket.append(_normalise(row))
+        bucket.sort(key=lambda row: (row["latency"] + row["jitter"] * 2))
+
+        chosen: list[dict] = []
+        hostnames = [row for row in bucket if row["kind"] == "domain"]
+        addresses = [row for row in bucket if row["kind"] != "domain"]
+
+        # one hostname up front when we can afford it
+        if hostnames and needed >= 2:
+            chosen.append(hostnames[0])
+            used.add(hostnames[0]["ip"])
+
+        for row in addresses + hostnames:
+            if len(chosen) >= needed:
                 break
+            if row["ip"] in used:
+                continue
+            used.add(row["ip"])
+            chosen.append(row)
+
+        # still short: allow an address already used on another port group
+        if len(chosen) < needed:
+            for row in addresses + hostnames:
+                if len(chosen) >= needed:
+                    break
+                if any(row["ip"] == item["ip"] and row["port"] == item["port"] for item in chosen):
+                    continue
+                chosen.append(row)
+
+        # last resort: unverified rows, so the user still gets a full set
+        if len(chosen) < needed:
+            for port in ports:
+                for row in await scanner.pick(port, needed * 2, verified_only=False):
+                    item = _normalise(row)
+                    if len(chosen) >= needed:
+                        break
+                    if any(item["ip"] == existing["ip"] for existing in chosen):
+                        continue
+                    chosen.append(item)
+
+        endpoints.extend(chosen[:needed])
 
     return endpoints
 
@@ -57,10 +106,16 @@ async def collect_endpoints(scanner) -> list[dict]:
 def remark(endpoint: dict, index: int, brand: str = "") -> str:
     brand = brand or settings.brand
     secure = is_tls(endpoint["port"])
-    badge = "\u26a1" if secure else "\U0001f7e1"
-    ping = f"{round(float(endpoint.get('latency') or 0))}ms" if endpoint.get("latency") else "-"
+    if endpoint.get("kind") == "domain":
+        badge = "\U0001f300"
+    else:
+        badge = "\u26a1" if secure else "\U0001f7e1"
+    ping = f"{round(float(endpoint.get('latency') or 0))}ms" if endpoint.get("latency") else "auto"
     tail = "" if secure else f" | \U0001f50c{endpoint['port']}"
-    return f"@{brand} | {badge} VLESS | \U0001f30d GLOBAL | {ping} | {endpoint.get('colo') or 'CF'}{tail} | #{index}"
+    return (
+        f"@{brand} | {badge} VLESS | \U0001f30d GLOBAL | {ping} | "
+        f"{endpoint.get('colo') or 'CF'}{tail} | #{index}"
+    )
 
 
 def build_link(uuid: str, host: str, endpoint: dict, index: int, brand: str = "") -> str:
@@ -195,5 +250,7 @@ def parse_vless(link: str) -> dict:
         "security": query.get("security") or "none",
         "name": unquote(parsed.fragment or "config"),
         "latency": 0,
+        "jitter": 0,
+        "kind": "ip",
         "colo": "CF",
     }

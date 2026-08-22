@@ -7,6 +7,9 @@ The whole build is five steps, each reported back to the user:
   3. pick clean entry points and relays
   4. upload the worker and expose it on workers.dev
   5. prove the tunnel is alive before calling it ready
+
+``refresh`` does steps 3 to 5 only. It keeps the script name and the panel uuid,
+so the subscription link never changes while the addresses under it do.
 """
 
 from __future__ import annotations
@@ -97,7 +100,7 @@ async def _select_endpoints(force_scan: bool) -> list[dict]:
         await scanner.scan_once()
 
     endpoints = await vless.collect_endpoints(scanner)
-    if not endpoints:
+    if len(endpoints) < settings.config_count:
         await scanner.scan_once()
         endpoints = await vless.collect_endpoints(scanner)
     if not endpoints:
@@ -108,8 +111,9 @@ async def _select_endpoints(force_scan: bool) -> list[dict]:
 async def _select_relays() -> list[str]:
     """Relays let the worker reach Cloudflare-fronted destinations.
 
-    Several are handed to the worker, which walks the list in order, so one
-    dead relay never takes the panel down with it.
+    The worker walks this list in order, so one dead relay never takes the panel
+    down with it. Scanned relays lead, long-lived seeds sit underneath as a
+    floor, and the chain is always at least two deep.
     """
     rows = await proxy_scanner.pick(settings.proxy_per_panel)
     if not rows:
@@ -121,9 +125,34 @@ async def _select_relays() -> list[str]:
         for row in rows
     ]
     for seed in settings.proxy_seeds:
+        if len(relays) >= settings.proxy_per_panel + 2:
+            break
         if seed not in relays:
             relays.append(seed)
-    return relays[: max(settings.proxy_per_panel, 1)]
+    return relays[: settings.proxy_per_panel + 2]
+
+
+def _bindings(uuid: str, host: str, endpoints: list[dict], relays: list[str]) -> dict[str, str]:
+    """Plain text vars handed to the worker. Shared by build and refresh so the
+    two paths can never drift apart."""
+    return {
+        "UUID": uuid,
+        "PROXY_IP": ",".join(relays),
+        "SUB_HOST": host,
+        "BRAND": settings.brand,
+        "WS_PATH": vless.WS_PATH,
+        "ENDPOINTS": json.dumps(endpoints, ensure_ascii=False),
+        "SUB_SOURCES": ",".join(settings.sub_sources),
+        "CLEAN_DOMAINS": ",".join(settings.clean_domains),
+        "SUB_REFRESH": str(settings.sub_refresh),
+        "TLS_PORTS": ",".join(str(p) for p in settings.tls_ports),
+        "HTTP_PORTS": ",".join(str(p) for p in settings.http_ports),
+        "TLS_COUNT": str(settings.tls_config_count),
+        "HTTP_COUNT": str(settings.http_config_count),
+        "DNS_SERVER": settings.dns_server,
+        "FALLBACK_HOST": settings.fallback_host,
+        "BUILD_ID": str(int(time.time())),
+    }
 
 
 # --------------------------------------------------------------------- #
@@ -131,14 +160,15 @@ async def _select_relays() -> list[str]:
 # --------------------------------------------------------------------- #
 
 
-async def _health(host: str, uuid: str) -> tuple[bool, dict]:
+async def _health(host: str, uuid: str, attempts: Optional[int] = None) -> tuple[bool, dict]:
     """Wait for the hostname to publish, then prove outbound traffic works."""
     health_url = f"https://{host}/{uuid}/health"
     probe_url = f"https://{host}/{uuid}/probe"
+    tries = attempts or settings.health_attempts
 
     async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
         live = False
-        for attempt in range(settings.health_attempts):
+        for attempt in range(tries):
             try:
                 response = await client.get(health_url)
                 if response.status_code == 200 and response.json().get("ok"):
@@ -157,6 +187,9 @@ async def _health(host: str, uuid: str) -> tuple[bool, dict]:
         except Exception:  # noqa: BLE001
             probe = {}
 
+    # A panel is healthy when the worker can open an outbound socket at all.
+    # Relays are a bonus path, not the gate: plenty of destinations are reached
+    # directly, and demanding a live relay used to mark working panels as dead.
     return bool(probe.get("ok")), probe
 
 
@@ -175,6 +208,13 @@ async def _demote_dead_relays(probe: dict) -> None:
 # --------------------------------------------------------------------- #
 
 
+def _read_worker() -> str:
+    try:
+        return settings.worker_file.read_text(encoding="utf-8")
+    except OSError as error:
+        raise DeployError(f"worker bundle unreadable: {error}") from error
+
+
 async def build(
     token: str,
     reuse: Optional[dict] = None,
@@ -183,11 +223,7 @@ async def build(
 ) -> Panel:
     started = time.perf_counter()
     reuse = reuse or {}
-
-    try:
-        code = settings.worker_file.read_text(encoding="utf-8")
-    except OSError as error:
-        raise DeployError(f"worker bundle unreadable: {error}") from error
+    code = _read_worker()
 
     await _announce(progress, 0)
     try:
@@ -216,17 +252,7 @@ async def build(
                 account_id,
                 script,
                 code,
-                {
-                    "UUID": panel_uuid,
-                    "PROXY_IP": ",".join(relays),
-                    "SUB_HOST": host,
-                    "BRAND": settings.brand,
-                    "WS_PATH": vless.WS_PATH,
-                    "ENDPOINTS": json.dumps(endpoints, ensure_ascii=False),
-                    "DNS_SERVER": settings.dns_server,
-                    "FALLBACK_HOST": settings.fallback_host,
-                    "BUILD_ID": str(int(time.time())),
-                },
+                _bindings(panel_uuid, host, endpoints, relays),
             )
             await cf.enable_workers_dev(account_id, script)
     except CloudflareError as error:
@@ -255,6 +281,53 @@ async def build(
         endpoints=endpoints,
         relays=relays,
         build_ms=build_ms,
+        healthy=healthy,
+        probe=probe,
+    )
+
+
+async def refresh(panel: dict, force_scan: bool = False) -> Panel:
+    """Re-point an existing panel at fresh entry addresses.
+
+    Same account, same script, same uuid, same subscription URL: only the
+    endpoint list and the relay chain change. This is what lets clean IPs be
+    applied to every live config without anyone pressing rebuild.
+    """
+    token = panel.get("token")
+    if not token:
+        raise DeployError("no stored token for this panel")
+
+    started = time.perf_counter()
+    code = _read_worker()
+    endpoints = await _select_endpoints(force_scan)
+    relays = await _select_relays()
+    host = str(panel["host"])
+    panel_uuid = str(panel["uuid"])
+
+    try:
+        async with CloudflareClient(token) as cf:
+            await cf.upload_script(
+                str(panel["account_id"]),
+                str(panel["script_name"]),
+                code,
+                _bindings(panel_uuid, host, endpoints, relays),
+            )
+            await cf.enable_workers_dev(str(panel["account_id"]), str(panel["script_name"]))
+    except CloudflareError as error:
+        raise DeployError(error.message) from error
+
+    healthy, probe = await _health(host, panel_uuid, attempts=3)
+    if probe:
+        await _demote_dead_relays(probe)
+
+    return Panel(
+        account_id=str(panel["account_id"]),
+        script=str(panel["script_name"]),
+        host=host,
+        uuid=panel_uuid,
+        endpoints=endpoints,
+        relays=relays,
+        build_ms=int((time.perf_counter() - started) * 1000),
         healthy=healthy,
         probe=probe,
     )
