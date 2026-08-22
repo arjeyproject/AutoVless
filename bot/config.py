@@ -17,13 +17,19 @@ TLS_PORTS: tuple[int, ...] = (443, 2053, 2083, 2087, 2096, 8443)
 HTTP_PORTS: tuple[int, ...] = (80, 8080, 8880, 2052, 2082, 2086, 2095)
 
 # Public lists of Cloudflare edges that are known to behave well from Iran.
+#
+# ipdb.030101.xyz/api/*.txt used to serve plain text and now answers with the
+# project's HTML landing page, which silently starved the scanner of seeds.
+# These are the documented API endpoints, with a raw mirror behind them.
 DEFAULT_CLEAN_SOURCES: tuple[str, ...] = (
-    "https://ipdb.030101.xyz/api/bestcf.txt",
+    "https://ipdb.api.030101.xyz/?type=bestcf",
+    "https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestcf.txt",
 )
 
 # Public lists of relays that forward TCP to the Cloudflare edge.
 DEFAULT_PROXY_SOURCES: tuple[str, ...] = (
-    "https://ipdb.030101.xyz/api/bestproxy.txt",
+    "https://ipdb.api.030101.xyz/?type=bestproxy",
+    "https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestproxy.txt",
 )
 
 # Long lived community relays, used as a floor under the scanner.
@@ -47,6 +53,14 @@ def _int(name: str, default: int) -> int:
     raw = _str(name)
     try:
         return int(raw) if raw else default
+    except ValueError:
+        return default
+
+
+def _float(name: str, default: float) -> float:
+    raw = _str(name)
+    try:
+        return float(raw) if raw else default
     except ValueError:
         return default
 
@@ -101,6 +115,7 @@ class Settings:
     data_dir: Path
     db_path: Path
     worker_file: Path
+    sweep_state: Path
 
     brand: str
     support_url: str
@@ -117,9 +132,16 @@ class Settings:
     scan_batch: int
     scan_concurrency: int
     scan_timeout: float
+    scan_rounds: int
+    scan_ttl: int
+    stale_factor: int
+    sweep_per_subnet: int
     verify_top: int
     pool_size: int
     clean_ip_sources: tuple[str, ...]
+    source_ttl: int
+    source_retry: int
+    seed_limit: int
 
     proxy_ip: str
     proxy_seeds: tuple[str, ...]
@@ -129,6 +151,12 @@ class Settings:
     proxy_scan_limit: int
     proxy_pool_size: int
     proxy_per_panel: int
+
+    refresh_enabled: bool
+    refresh_interval: int
+    refresh_min_gain: float
+    refresh_gap: float
+    refresh_notify: bool
 
     dns_server: str
     fallback_host: str
@@ -184,6 +212,8 @@ def load_settings() -> Settings:
     proxy_ip = _str("PROXY_IP")
     proxy_seeds = _list("PROXY_IP", DEFAULT_PROXY_SEEDS)
 
+    scan_ttl = max(300, _int("SCAN_TTL", 1800))
+
     return Settings(
         bot_token=_str("BOT_TOKEN"),
         admin_ids=_ids("ADMIN_IDS"),
@@ -191,6 +221,7 @@ def load_settings() -> Settings:
         data_dir=data_dir,
         db_path=Path(_str("DB_PATH", str(data_dir / "autovless.db"))),
         worker_file=Path(_str("WORKER_FILE", str(BASE_DIR / "worker" / "vless-worker.js"))),
+        sweep_state=Path(_str("SWEEP_STATE", str(data_dir / "sweep.json"))),
         brand=_str("BRAND", "AutoVless"),
         support_url=_str("SUPPORT_URL", "https://t.me/AutoVless"),
         channel_url=_str("CHANNEL_URL", "https://t.me/AutoVless"),
@@ -204,9 +235,16 @@ def load_settings() -> Settings:
         scan_batch=max(64, _int("SCAN_BATCH", 1200)),
         scan_concurrency=max(16, _int("SCAN_CONCURRENCY", 160)),
         scan_timeout=max(0.3, float(_int("SCAN_TIMEOUT_MS", 1200)) / 1000.0),
+        scan_rounds=max(2, min(6, _int("SCAN_ROUNDS", 3))),
+        scan_ttl=scan_ttl,
+        stale_factor=max(2, _int("STALE_FACTOR", 8)),
+        sweep_per_subnet=max(1, min(8, _int("SWEEP_PER_SUBNET", 2))),
         verify_top=max(6, _int("VERIFY_TOP", 32)),
-        pool_size=max(12, _int("POOL_SIZE", 120)),
+        pool_size=max(12, _int("POOL_SIZE", 60)),
         clean_ip_sources=_list("CLEAN_IP_SOURCES", DEFAULT_CLEAN_SOURCES),
+        source_ttl=max(300, _int("SOURCE_TTL", 3600)),
+        source_retry=max(60, _int("SOURCE_RETRY", 300)),
+        seed_limit=max(50, _int("SEED_LIMIT", 400)),
         proxy_ip=proxy_ip,
         proxy_seeds=proxy_seeds,
         proxy_sources=_list("PROXY_IP_SOURCES", DEFAULT_PROXY_SOURCES),
@@ -215,6 +253,11 @@ def load_settings() -> Settings:
         proxy_scan_limit=max(16, _int("PROXY_SCAN_LIMIT", 240)),
         proxy_pool_size=max(4, _int("PROXY_POOL_SIZE", 40)),
         proxy_per_panel=max(1, _int("PROXY_PER_PANEL", 3)),
+        refresh_enabled=_bool("REFRESH_ENABLED", True),
+        refresh_interval=max(600, _int("REFRESH_INTERVAL", 3600)),
+        refresh_min_gain=max(0.0, _float("REFRESH_MIN_GAIN", 120.0)),
+        refresh_gap=max(0.5, _float("REFRESH_GAP", 2.0)),
+        refresh_notify=_bool("REFRESH_NOTIFY", False),
         dns_server=_str("DNS_SERVER", "8.8.8.8"),
         fallback_host=_str("FALLBACK_HOST", "www.wikipedia.org"),
         health_attempts=max(2, _int("HEALTH_ATTEMPTS", 6)),
