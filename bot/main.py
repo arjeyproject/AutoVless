@@ -1,4 +1,4 @@
-"""Entrypoint: wire the dispatcher, start the scanners, poll Telegram."""
+"""Entrypoint: wire the dispatcher, start the background jobs, poll Telegram."""
 
 from __future__ import annotations
 
@@ -14,6 +14,7 @@ from aiogram.types import BotCommand
 
 from . import db, handlers, middlewares
 from .config import settings
+from .refresher import refresher
 from .scanner import proxy_scanner, scanner
 from .warpscan import warp_scanner
 
@@ -47,6 +48,8 @@ def preflight() -> None:
         problems.append(f"worker bundle not found at {settings.worker_file}")
     if settings.config_count <= 0:
         problems.append("TLS_CONFIG_COUNT + HTTP_CONFIG_COUNT must be greater than zero")
+    if not settings.clean_ip_sources:
+        log.warning("CLEAN_IP_SOURCES is empty; the scanner will run on the sweep alone")
     if problems:
         for problem in problems:
             log.error("configuration error: %s", problem)
@@ -61,14 +64,19 @@ async def seed_options() -> None:
 
 
 async def notify_admins(bot: Bot) -> None:
-    pool = await db.pool_stats()
+    pool = await scanner.stats()
     relays = await proxy_scanner.stats()
     warp = await warp_scanner.stats()
+    by_port = pool.get("by_port") or {}
+    breakdown = " \u00b7 ".join(f"{port}:{count}" for port, count in sorted(by_port.items())) or "-"
     message = (
         f"\u2705 <b>{settings.brand}</b> is up.\n"
-        f"\U0001f4e1 clean ip pool: <b>{pool['total']}</b>\n"
+        f"\U0001f4e1 clean ip pool: <b>{pool['total']}</b> "
+        f"(fresh <b>{pool.get('fresh', 0)}</b> \u00b7 {breakdown})\n"
         f"\U0001f6e1 relays ready: <b>{relays['verified']}</b>\n"
         f"\U0001f9ec warp endpoints: <b>{warp['stable']}</b>\n"
+        f"\U0001f50d sweep: <b>{pool.get('sweep', 0)}%</b> of "
+        f"{pool.get('blocks', 0)} blocks \u00b7 lap {pool.get('laps', 0) + 1}\n"
         f"\U0001f50c ports: <b>{', '.join(str(p) for p in scanner.ports)}</b>"
     )
     for admin_id in settings.admin_ids:
@@ -97,6 +105,8 @@ async def run() -> None:
     await scanner.start()
     await proxy_scanner.start()
     await warp_scanner.start()
+    refresher.attach(bot)
+    await refresher.start()
 
     try:
         await bot.set_my_commands(COMMANDS)
@@ -104,6 +114,7 @@ async def run() -> None:
         log.info("%s is polling", settings.brand)
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
     finally:
+        await refresher.stop()
         await warp_scanner.stop()
         await proxy_scanner.stop()
         await scanner.stop()
