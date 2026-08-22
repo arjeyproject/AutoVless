@@ -22,9 +22,10 @@ async def on_start(message: Message, state: FSMContext, lang: str, is_admin: boo
     name = message.from_user.first_name or message.from_user.username or ""
     await db.log_event("start", message.from_user.id, f"@{message.from_user.username or '-'}")
 
+    # One screen, not two. The old flow sent the menu and then a second note
+    # underneath it, which pushed the buttons up the chat and looked broken.
     text, markup = await screens.main_menu(name, lang, is_admin)
     await message.answer(text, reply_markup=markup, disable_web_page_preview=True)
-    await message.answer(t(lang, "welcome_note", brand=esc(settings.brand)))
 
 
 @router.message(Command("menu"))
@@ -67,15 +68,9 @@ async def on_status(call: CallbackQuery, lang: str) -> None:
     await call.answer()
 
 
-@router.callback_query(F.data == "nav:apps")
-async def on_apps(call: CallbackQuery, lang: str) -> None:
-    await edit(call, t(lang, "apps"), keyboards.simple_back(lang))
-    await call.answer()
-
-
 @router.callback_query(F.data == "nav:guide")
 async def on_guide(call: CallbackQuery, lang: str) -> None:
-    await edit(call, t(lang, "guide"), keyboards.simple_back(lang))
+    await edit(call, t(lang, "guide"), keyboards.apps_platforms(lang))
     await call.answer()
 
 
