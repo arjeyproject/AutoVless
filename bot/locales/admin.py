@@ -16,8 +16,8 @@ ADMIN: dict[str, dict[str, str]] = {
             "\U0001f195 \u062c\u062f\u06cc\u062f \u0627\u0645\u0631\u0648\u0632: <b>{users_today}</b>\n"
             "\u26a1 \u0641\u0639\u0627\u0644 \u06f7 \u0631\u0648\u0632: <b>{active_week}</b>\n"
             "\u26d4\ufe0f \u0645\u0633\u062f\u0648\u062f: <b>{banned}</b>\n"
-            "\U0001f5c2 \u067e\u0646\u0644 \u0641\u0639\u0627\u0644: <b>{panels}</b>\n"
-            "\U0001f504 \u0628\u0627\u0632\u0633\u0627\u0632\u06cc: <b>{rebuilds}</b>\n"
+            "\U0001f5c2 \u067e\u0646\u0644 \u0641\u0639\u0627\u0644: <b>{panels}</b> \u00b7 \u0633\u0627\u0644\u0645: <b>{healthy}</b>\n"
+            "\U0001f504 \u0628\u0627\u0632\u0633\u0627\u0632\u06cc: <b>{rebuilds}</b> \u00b7 \U0001f916 \u0627\u0639\u0645\u0627\u0644 \u062e\u0648\u062f\u06a9\u0627\u0631: <b>{syncs}</b>\n"
             "\u23f1 \u0645\u06cc\u0627\u0646\u06af\u06cc\u0646 \u0632\u0645\u0627\u0646 \u0633\u0627\u062e\u062a: <b>{avg_build}</b> \u062b\u0627\u0646\u06cc\u0647\n"
             "\U0001f4e1 \u0622\u06cc\u200c\u067e\u06cc \u062a\u0627\u06cc\u06cc\u062f\u0634\u062f\u0647: <b>{verified}</b> \u0627\u0632 <b>{pool}</b>"
         ),
@@ -54,13 +54,20 @@ ADMIN: dict[str, dict[str, str]] = {
         "admin.engine": (
             "\u2699\ufe0f <b>\u0645\u0648\u062a\u0648\u0631 \u0627\u0633\u06a9\u0646</b>\n{rule}\n"
             "\U0001f4e1 \u0627\u0633\u062a\u062e\u0631: <b>{total}</b> \u00b7 \u062a\u0627\u06cc\u06cc\u062f\u0634\u062f\u0647: <b>{verified}</b>\n"
+            "\U0001f300 \u062f\u0627\u0645\u0646\u0647\u0654 \u062e\u0648\u062f\u062a\u0631\u0645\u06cc\u0645: <b>{domains}</b>\n"
             "\U0001f3c6 \u0628\u0647\u062a\u0631\u06cc\u0646 \u067e\u06cc\u0646\u06af: <b>{best}</b>\n"
             "\U0001f50c \u067e\u0648\u0631\u062a\u200c\u0647\u0627: <b>{ports}</b>\n"
             "\u23f3 \u0622\u062e\u0631\u06cc\u0646 \u0627\u0633\u06a9\u0646: <b>{updated}</b>\n"
             "\u2699\ufe0f \u062f\u0631 \u062d\u0627\u0644 \u0627\u062c\u0631\u0627: <b>{state}</b>\n"
             "\U0001f501 \u0641\u0627\u0635\u0644\u0647 \u0627\u0633\u06a9\u0646: <b>{interval}</b> \u062b\u0627\u0646\u06cc\u0647\n"
-            "\U0001f4e6 \u062f\u0633\u062a\u0647 \u0647\u0631 \u0627\u0633\u06a9\u0646: <b>{batch}</b> \u00b7 \u0647\u0645\u0632\u0645\u0627\u0646\u06cc: <b>{concurrency}</b>"
+            "\U0001f4e6 \u062f\u0633\u062a\u0647 \u0647\u0631 \u0627\u0633\u06a9\u0646: <b>{batch}</b> \u00b7 \u0647\u0645\u0632\u0645\u0627\u0646\u06cc: <b>{concurrency}</b>\n"
+            "{rule}\n"
+            "\U0001f916 <b>\u0627\u0639\u0645\u0627\u0644 \u062e\u0648\u062f\u06a9\u0627\u0631 \u0631\u0648\u06cc \u067e\u0646\u0644\u200c\u0647\u0627</b>\n"
+            "\u0648\u0636\u0639\u06cc\u062a: <b>{pilot}</b> \u00b7 \u0647\u0631 <b>{pilot_interval}</b> \u062b\u0627\u0646\u06cc\u0647\n"
+            "\u062f\u0631 \u0646\u0648\u0628\u062a: <b>{due}</b> \u067e\u0646\u0644 \u00b7 \u0622\u062e\u0631\u06cc\u0646 \u062f\u0648\u0631: <b>{last_synced}</b> \u0645\u0648\u0641\u0642"
         ),
+        "admin.sync_started": "\U0001f916 \u0627\u0639\u0645\u0627\u0644 \u062e\u0648\u062f\u06a9\u0627\u0631 \u0634\u0631\u0648\u0639 \u0634\u062f\u060c \u06a9\u0645\u06cc \u0637\u0648\u0644 \u0645\u06cc\u200c\u06a9\u0634\u062f...",
+        "admin.sync_done": "\u2705 \u0631\u0648\u06cc <b>{count}</b> \u067e\u0646\u0644 \u0622\u06cc\u200c\u067e\u06cc \u062a\u0627\u0632\u0647 \u0627\u0639\u0645\u0627\u0644 \u0634\u062f.",
         "admin.options": (
             "\U0001f39a <b>\u062a\u0646\u0637\u06cc\u0645\u0627\u062a</b>\n{rule}\n"
             "\u0631\u0648\u06cc \u0647\u0631 \u06af\u0632\u06cc\u0646\u0647 \u0628\u0632\u0646 \u062a\u0627 \u0648\u0636\u0639\u06cc\u062a\u0634 \u0639\u0648\u0636 \u0634\u0648\u062f."
@@ -79,6 +86,9 @@ ADMIN: dict[str, dict[str, str]] = {
         "opt.maintenance": "\u062d\u0627\u0644\u062a \u0633\u0631\u0648\u06cc\u0633",
         "opt.builds_enabled": "\u0627\u062c\u0627\u0632\u0647 \u0633\u0627\u062e\u062a \u067e\u0646\u0644",
         "opt.force_join": "\u0639\u0636\u0648\u06cc\u062a \u0627\u062c\u0628\u0627\u0631\u06cc",
+        "opt.warp_enabled": "\u0628\u062e\u0634 \u0648\u0627\u0631\u067e",
+        "opt.support_enabled": "\u067e\u0634\u062a\u06cc\u0628\u0627\u0646\u06cc \u062f\u0631\u0648\u0646 \u0631\u0628\u0627\u062a",
+        "opt.autopilot": "\u0627\u0639\u0645\u0627\u0644 \u062e\u0648\u062f\u06a9\u0627\u0631 \u0622\u06cc\u200c\u067e\u06cc \u062a\u0645\u06cc\u0632",
     },
     "en": {
         "admin.menu": (
@@ -95,8 +105,8 @@ ADMIN: dict[str, dict[str, str]] = {
             "\U0001f195 New today: <b>{users_today}</b>\n"
             "\u26a1 Active 7d: <b>{active_week}</b>\n"
             "\u26d4\ufe0f Banned: <b>{banned}</b>\n"
-            "\U0001f5c2 Live panels: <b>{panels}</b>\n"
-            "\U0001f504 Rebuilds: <b>{rebuilds}</b>\n"
+            "\U0001f5c2 Live panels: <b>{panels}</b> \u00b7 healthy: <b>{healthy}</b>\n"
+            "\U0001f504 Rebuilds: <b>{rebuilds}</b> \u00b7 \U0001f916 auto applies: <b>{syncs}</b>\n"
             "\u23f1 Average build: <b>{avg_build}</b> s\n"
             "\U0001f4e1 Verified IPs: <b>{verified}</b> of <b>{pool}</b>"
         ),
@@ -133,13 +143,20 @@ ADMIN: dict[str, dict[str, str]] = {
         "admin.engine": (
             "\u2699\ufe0f <b>Scan engine</b>\n{rule}\n"
             "\U0001f4e1 Pool: <b>{total}</b> \u00b7 verified: <b>{verified}</b>\n"
+            "\U0001f300 Self-healing hostnames: <b>{domains}</b>\n"
             "\U0001f3c6 Best ping: <b>{best}</b>\n"
             "\U0001f50c Ports: <b>{ports}</b>\n"
             "\u23f3 Last scan: <b>{updated}</b>\n"
             "\u2699\ufe0f Running: <b>{state}</b>\n"
             "\U0001f501 Interval: <b>{interval}</b> s\n"
-            "\U0001f4e6 Batch: <b>{batch}</b> \u00b7 concurrency: <b>{concurrency}</b>"
+            "\U0001f4e6 Batch: <b>{batch}</b> \u00b7 concurrency: <b>{concurrency}</b>\n"
+            "{rule}\n"
+            "\U0001f916 <b>Autopilot</b>\n"
+            "State: <b>{pilot}</b> \u00b7 every <b>{pilot_interval}</b> s\n"
+            "Queued: <b>{due}</b> panels \u00b7 last cycle: <b>{last_synced}</b> applied"
         ),
+        "admin.sync_started": "\U0001f916 Autopilot cycle started, this takes a moment...",
+        "admin.sync_done": "\u2705 Fresh clean IPs applied to <b>{count}</b> panels.",
         "admin.options": "\U0001f39a <b>Options</b>\n{rule}\nTap an option to flip it.",
         "admin.panels": "\U0001f5c2 <b>Recent panels</b>\n{rule}\n{list}",
         "admin.logs": "\U0001f9fe <b>Recent events</b>\n{rule}\n{list}",
@@ -155,5 +172,8 @@ ADMIN: dict[str, dict[str, str]] = {
         "opt.maintenance": "Maintenance mode",
         "opt.builds_enabled": "Panel building",
         "opt.force_join": "Forced membership",
+        "opt.warp_enabled": "WARP section",
+        "opt.support_enabled": "In-bot support",
+        "opt.autopilot": "Automatic clean IP apply",
     },
 }

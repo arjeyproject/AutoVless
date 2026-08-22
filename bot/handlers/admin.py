@@ -12,6 +12,7 @@ from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
 from .. import db, keyboards
+from ..autopilot import autopilot
 from ..config import settings
 from ..i18n import num, t
 from ..scanner import scanner
@@ -20,7 +21,14 @@ from ..utils import ago, edit, esc, ping_label
 log = logging.getLogger("autovless.admin")
 router = Router(name="admin")
 
-OPTION_KEYS = ("maintenance", "builds_enabled", "force_join")
+OPTION_KEYS = (
+    "maintenance",
+    "builds_enabled",
+    "force_join",
+    "warp_enabled",
+    "support_enabled",
+    "autopilot",
+)
 
 
 class AdminFlow(StatesGroup):
@@ -73,6 +81,13 @@ async def dispatch(call: CallbackQuery, state: FSMContext, lang: str, is_admin: 
     elif action == "scan":
         await call.answer(t(lang, "scan_started"))
         await scanner.scan_once(batch=max(320, settings.scan_batch // 2))
+        await show_engine(call, lang)
+        return
+    elif action == "sync":
+        # Run the autopilot cycle now instead of waiting for the timer.
+        await call.answer(t(lang, "admin.sync_started"))
+        synced = await autopilot.cycle()
+        await call.message.answer(t(lang, "admin.sync_done", count=num(synced, lang)))
         await show_engine(call, lang)
         return
     elif action == "options":
@@ -133,7 +148,9 @@ async def show_stats(call: CallbackQuery, lang: str) -> None:
         active_week=num(stats["active_week"], lang),
         banned=num(stats["banned"], lang),
         panels=num(stats["panels"], lang),
+        healthy=num(stats["panels_healthy"], lang),
         rebuilds=num(stats["rebuilds"], lang),
+        syncs=num(stats["syncs"], lang),
         avg_build=num(round(stats["avg_build_ms"] / 1000, 1), lang),
         verified=num(pool["verified"], lang),
         pool=num(pool["total"], lang),
@@ -158,11 +175,13 @@ async def show_channels(call: CallbackQuery, lang: str) -> None:
 
 async def show_engine(call: CallbackQuery, lang: str) -> None:
     stats = await scanner.stats()
+    pilot = await autopilot.stats()
     text = t(
         lang,
         "admin.engine",
         total=num(stats["total"], lang),
         verified=num(stats["verified"], lang),
+        domains=num(stats["domains"], lang),
         best=ping_label(stats["best"], lang),
         ports=" \u00b7 ".join(num(port, lang) for port in stats["ports"]),
         updated=ago(stats["updated_at"], lang),
@@ -170,6 +189,10 @@ async def show_engine(call: CallbackQuery, lang: str) -> None:
         interval=num(settings.scan_interval, lang),
         batch=num(settings.scan_batch, lang),
         concurrency=num(settings.scan_concurrency, lang),
+        pilot=t(lang, "admin.on" if pilot["enabled"] else "admin.off"),
+        pilot_interval=num(pilot["interval"], lang),
+        due=num(pilot["due"], lang),
+        last_synced=num(pilot["last_synced"], lang),
     )
     await edit(call, text, keyboards.admin_engine(lang))
 
@@ -181,14 +204,15 @@ async def show_options(call: CallbackQuery, lang: str) -> None:
 
 async def show_panels(call: CallbackQuery, lang: str) -> None:
     rows = await db.fetch_all(
-        "SELECT p.host, p.rebuilds, p.updated_at, u.username, u.tg_id "
+        "SELECT p.host, p.rebuilds, p.syncs, p.healthy, p.updated_at, u.username, u.tg_id "
         "FROM panels p LEFT JOIN users u ON u.tg_id = p.tg_id "
         "ORDER BY p.updated_at DESC LIMIT 15"
     )
     listing = "\n".join(
-        f"\u2022 <code>{esc(row['host'])}</code>\n  "
+        f"\u2022 {'\u2705' if row['healthy'] else '\u26a0\ufe0f'} <code>{esc(row['host'])}</code>\n  "
         f"@{esc(row['username'] or row['tg_id'])} \u00b7 "
-        f"\U0001f504 {num(row['rebuilds'], lang)} \u00b7 {ago(row['updated_at'], lang)}"
+        f"\U0001f504 {num(row['rebuilds'], lang)} \u00b7 "
+        f"\U0001f916 {num(row['syncs'], lang)} \u00b7 {ago(row['updated_at'], lang)}"
         for row in rows
     ) or "-"
     await edit(call, t(lang, "admin.panels", list=listing), keyboards.simple_back(lang, "adm:menu"))
