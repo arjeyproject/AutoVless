@@ -12,6 +12,10 @@ So the engine works in three passes:
   3. stability       a second, spaced handshake per survivor; anything that
                      stops answering is dropped instead of handed to a user
 
+If all three passes come back empty the long-lived default endpoints are probed
+and stored anyway. An empty pool is worse than a mediocre one: it means every
+user gets the same hardcoded address with no measurement behind it.
+
 The scanner keeps its own throwaway WARP identity so nobody's personal account
 is burned on probing.
 """
@@ -190,6 +194,7 @@ class WarpScanner:
             return list(settings.warp_ports)
 
         probes = sample_addresses(1)[:4] or ["162.159.192.1"]
+        probes = list(dict.fromkeys(probes + ["162.159.192.1"]))
         for wave in (COMMON_PORTS, tuple(p for p in ALL_PORTS if p not in COMMON_PORTS)):
             results = await asyncio.gather(
                 *(
@@ -208,6 +213,16 @@ class WarpScanner:
                 return alive[:6]
         log.warning("no warp port answered, falling back to the common list")
         return list(COMMON_PORTS[:3])
+
+    async def _rescue(self, identity: dict, semaphore: asyncio.Semaphore) -> list[dict]:
+        """Last resort: measure the long-lived defaults and keep whatever answers."""
+        results = await asyncio.gather(
+            *(
+                self._probe(host, port, identity, semaphore)
+                for host, port in warp.FALLBACK_ENDPOINTS
+            )
+        )
+        return [dict(row, stable=False) for row in results if row]
 
     async def scan_once(self, sample: Optional[int] = None) -> int:
         """One full sweep. Returns how many stable endpoints were stored."""
@@ -250,13 +265,24 @@ class WarpScanner:
                 verify_sem = asyncio.Semaphore(min(24, settings.warp_scan_concurrency))
                 confirmed = await asyncio.gather(
                     *(
-                        self._probe(row["ip"], row["port"], identity, verify_sem, attempts=3)
+                        self._probe(
+                            row["ip"],
+                            row["port"],
+                            identity,
+                            verify_sem,
+                            attempts=max(2, settings.warp_scan_attempts),
+                        )
                         for row in shortlist
                     ),
                     return_exceptions=False,
                 )
 
                 stable = [dict(row, stable=True) for row in confirmed if row]
+                if not stable:
+                    stable = await self._rescue(identity, verify_sem)
+                    if stable:
+                        log.info("warp sweep found nothing stable, kept %s defaults", len(stable))
+
                 await db.store_warp_endpoints(stable)
                 await db.trim_warp_pool(settings.warp_pool_size)
 
@@ -282,6 +308,18 @@ class WarpScanner:
     # ------------------------------------------------------------------ #
     # reads
     # ------------------------------------------------------------------ #
+
+    async def verify_one(self, host: str, port: int) -> Optional[float]:
+        """Probe a single endpoint on demand, demoting it when it stays silent."""
+        identity = await self.identity()
+        if identity is None:
+            return None
+        semaphore = asyncio.Semaphore(2)
+        result = await self._probe(host, port, identity, semaphore, attempts=2)
+        if result is None:
+            await db.mark_warp_fail(host, port)
+            return None
+        return float(result["latency"])
 
     async def pick(self, count: Optional[int] = None) -> list[dict]:
         """Best endpoints, spread across pools so one bad subnet cannot sink a user."""

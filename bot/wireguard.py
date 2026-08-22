@@ -79,14 +79,20 @@ def _tai64n(moment: Optional[float] = None) -> bytes:
     return struct.pack(">QI", TAI64N_BASE + seconds, nanos)
 
 
-def _raw(value: str) -> bytes:
+def decode_key(value: str) -> bytes:
+    """Raw bytes behind a base64 key or client id, padding tolerant."""
     padded = value + "=" * (-len(value) % 4)
     return base64.b64decode(padded)
 
 
+# Kept as a private alias: several call sites reached for it before it had a
+# public name.
+_raw = decode_key
+
+
 def public_of(private_key: str) -> str:
     """The public half of a base64 X25519 private key."""
-    private = X25519PrivateKey.from_private_bytes(_raw(private_key))
+    private = X25519PrivateKey.from_private_bytes(decode_key(private_key))
     raw = private.public_key().public_bytes(
         encoding=serialization.Encoding.Raw,
         format=serialization.PublicFormat.Raw,
@@ -124,8 +130,8 @@ def build_initiation(
     to route the session to the right account, so we send the real ones instead
     of zeros: that makes the probe a genuine end to end test.
     """
-    static_private_raw = _raw(private_key)
-    peer_public_raw = _raw(peer_public_key)
+    static_private_raw = decode_key(private_key)
+    peer_public_raw = decode_key(peer_public_key)
 
     static_private = X25519PrivateKey.from_private_bytes(static_private_raw)
     static_public_raw = static_private.public_key().public_bytes(
@@ -263,18 +269,27 @@ async def stable_handshake(
     timeout: float = 1.5,
     attempts: int = 2,
     gap: float = 0.9,
+    retries: int = 1,
 ) -> Optional[float]:
-    """Average RTT across several spaced handshakes, or None if any one fails.
+    """Average RTT across several spaced handshakes, or None if one round fails.
 
     DPI often lets the first handshake through and kills the session a moment
-    later. A single probe cannot see that; a second one a beat later can. Every
-    attempt has to answer, otherwise the endpoint is not offered to anyone.
+    later. A single probe cannot see that; a second one a beat later can.
+
+    UDP being UDP, one lost datagram is not evidence of anything, so each round
+    gets a second try before the endpoint is written off. Without that retry a
+    healthy endpoint on a busy link gets thrown away and the pool stays empty.
     """
     samples: list[float] = []
     for index in range(max(1, attempts)):
         if index:
             await asyncio.sleep(gap)
-        rtt = await handshake_rtt(host, port, private_key, peer_public_key, reserved, timeout)
+        rtt: Optional[float] = None
+        for attempt in range(max(1, retries + 1)):
+            rtt = await handshake_rtt(host, port, private_key, peer_public_key, reserved, timeout)
+            if rtt is not None:
+                break
+            await asyncio.sleep(0.2)
         if rtt is None:
             return None
         samples.append(rtt)

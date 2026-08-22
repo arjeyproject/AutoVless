@@ -16,10 +16,16 @@ So we emit AmneziaWG configs that stay byte compatible with a plain peer:
 That is what lets an obfuscated client talk to an unmodified WARP endpoint.
 Parameters are derived per user and cached, so a rebuild keeps the same
 fingerprint instead of looking like a brand new client every time.
+
+Registration is the fragile part. Cloudflare rotates its client API without
+notice and a single hardcoded version is how this feature dies quietly, so
+several profiles are tried in order and each one carries the client version that
+actually belongs to it.
 """
 
 from __future__ import annotations
 
+import asyncio
 import datetime as dt
 import json
 import logging
@@ -35,12 +41,20 @@ from .config import settings
 log = logging.getLogger("autovless.warp")
 
 API_HOST = "https://api.cloudflareclient.com"
-API_VERSIONS = ("v0a4005", "v0a2158")
-HEADERS = {
-    "CF-Client-Version": "a-6.30-3596",
+
+# (api version, CF-Client-Version, device type). Newest first.
+API_PROFILES: tuple[tuple[str, str, str], ...] = (
+    ("v0a4005", "a-6.30-3596", "Android"),
+    ("v0a2483", "a-6.11-2223", "Android"),
+    ("v0a2158", "a-6.3-1922", "Android"),
+    ("v0i2405071930", "i-6.36", "iOS"),
+)
+
+BASE_HEADERS = {
     "User-Agent": "okhttp/3.12.1",
     "Content-Type": "application/json; charset=UTF-8",
     "Accept": "application/json",
+    "Accept-Encoding": "gzip",
 }
 
 # Used only when the scanner has nothing better yet.
@@ -69,13 +83,18 @@ def _reserved(client_id: str) -> list[int]:
     if not client_id:
         return [0, 0, 0]
     try:
-        raw = wireguard._raw(client_id)
+        raw = wireguard.decode_key(client_id)
     except Exception:  # noqa: BLE001
         return [0, 0, 0]
     return list(raw[:3]) if len(raw) >= 3 else [0, 0, 0]
 
 
-async def _register_on(client: httpx.AsyncClient, version: str, public_key: str) -> dict:
+async def _register_on(
+    client: httpx.AsyncClient,
+    profile: tuple[str, str, str],
+    public_key: str,
+) -> dict:
+    version, client_version, device_type = profile
     body = {
         "key": public_key,
         "install_id": "",
@@ -84,28 +103,50 @@ async def _register_on(client: httpx.AsyncClient, version: str, public_key: str)
         "model": "PC",
         "serial_number": "",
         "locale": "en_US",
-        "type": "Android",
+        "type": device_type,
+        # Ask for the tunnel to be live from the start. Older builds ignore this
+        # and need the PATCH below; newer ones honour it and save a round trip.
+        "warp_enabled": True,
     }
-    response = await client.post(f"{API_HOST}/{version}/reg", json=body)
-    if response.status_code >= 400:
-        raise WarpError(f"registration refused ({response.status_code})")
-    try:
-        return response.json()
-    except ValueError as exc:
-        raise WarpError("unreadable registration response") from exc
+    headers = {**BASE_HEADERS, "CF-Client-Version": client_version}
+
+    for attempt in range(3):
+        response = await client.post(f"{API_HOST}/{version}/reg", json=body, headers=headers)
+        if response.status_code == 429:
+            await asyncio.sleep(1.5 * (attempt + 1))
+            continue
+        if response.status_code >= 400:
+            raise WarpError(f"registration refused ({response.status_code})")
+        try:
+            return response.json()
+        except ValueError as exc:
+            raise WarpError("unreadable registration response") from exc
+    raise WarpError("cloudflare is rate limiting registrations")
 
 
-async def _enable_warp(client: httpx.AsyncClient, version: str, data: dict) -> None:
-    """A fresh device has WARP switched off; without this the tunnel carries nothing."""
+async def _enable_warp(
+    client: httpx.AsyncClient,
+    version: str,
+    client_version: str,
+    data: dict,
+) -> None:
+    """A fresh device can come back with WARP off; without this the tunnel
+    establishes and then carries nothing, which looks exactly like filtering."""
     device_id = data.get("id")
     token = data.get("token")
     if not device_id or not token:
+        return
+    if (data.get("config") or {}).get("warp_enabled") is True:
         return
     try:
         await client.patch(
             f"{API_HOST}/{version}/reg/{device_id}",
             json={"warp_enabled": True},
-            headers={"Authorization": f"Bearer {token}"},
+            headers={
+                **BASE_HEADERS,
+                "CF-Client-Version": client_version,
+                "Authorization": f"Bearer {token}",
+            },
         )
     except httpx.HTTPError as error:
         log.warning("could not enable warp on device: %s", error)
@@ -143,21 +184,33 @@ async def provision(timeout: Optional[float] = None) -> dict:
     timeout = timeout or settings.request_timeout
     last: Optional[Exception] = None
 
-    async with httpx.AsyncClient(timeout=timeout, headers=HEADERS) as client:
-        for version in API_VERSIONS:
+    async with httpx.AsyncClient(timeout=timeout, headers=BASE_HEADERS) as client:
+        for profile in API_PROFILES:
+            version, client_version, _ = profile
             try:
-                data = await _register_on(client, version, public_key)
+                data = await _register_on(client, profile, public_key)
             except (WarpError, httpx.HTTPError) as error:
                 last = error
                 log.info("warp registration on %s failed: %s", version, error)
                 continue
-            await _enable_warp(client, version, data)
+            await _enable_warp(client, version, client_version, data)
             identity = _identity_from(data, private_key, version)
             if settings.warp_license:
-                identity = await _apply(client, identity, settings.warp_license)
+                try:
+                    identity = await _apply(client, identity, settings.warp_license)
+                except WarpError as error:
+                    # A bad global license must not cost the user their identity.
+                    log.warning("default warp license refused: %s", error)
             return identity
 
     raise WarpError(str(last) if last else "registration failed")
+
+
+def _profile_for(version: str) -> tuple[str, str, str]:
+    for profile in API_PROFILES:
+        if profile[0] == version:
+            return profile
+    return API_PROFILES[0]
 
 
 async def _apply(client: httpx.AsyncClient, identity: dict, license_key: str) -> dict:
@@ -166,8 +219,12 @@ async def _apply(client: httpx.AsyncClient, identity: dict, license_key: str) ->
     if not device_id or not token:
         raise WarpError("this identity cannot take a license")
 
-    version = identity.get("api") or API_VERSIONS[0]
-    auth = {"Authorization": f"Bearer {token}"}
+    version, client_version, _ = _profile_for(identity.get("api") or "")
+    auth = {
+        **BASE_HEADERS,
+        "CF-Client-Version": client_version,
+        "Authorization": f"Bearer {token}",
+    }
     response = await client.put(
         f"{API_HOST}/{version}/reg/{device_id}/account",
         json={"license": license_key.strip()},
@@ -209,7 +266,7 @@ async def _apply(client: httpx.AsyncClient, identity: dict, license_key: str) ->
 
 async def apply_license(identity: dict, license_key: str) -> dict:
     """Turn a free identity into WARP+ using a license key."""
-    async with httpx.AsyncClient(timeout=settings.request_timeout, headers=HEADERS) as client:
+    async with httpx.AsyncClient(timeout=settings.request_timeout, headers=BASE_HEADERS) as client:
         return await _apply(client, dict(identity), license_key)
 
 
@@ -356,6 +413,7 @@ def warp_link(
         f"&publickey={quote(identity['peer_public_key'], safe='')}"
         f"&reserved={reserved}"
         f"&mtu={mtu or settings.warp_mtu}"
+        "&keepalive=25"
         "&wnoise=quic&wnoisecount=15&wpayloadsize=1-1500&wnoisedelay=1-10"
         f"#{quote(label, safe='')}"
     )
@@ -416,6 +474,7 @@ def clash_yaml(identity: dict, endpoints: Sequence[dict], mtu: Optional[int] = N
             f"    mtu: {mtu or settings.warp_mtu}",
             "    udp: true",
             "    remote-dns-resolve: true",
+            f"    dns: [{settings.warp_dns}]",
         ]
         proxies.append("\n".join(block))
 

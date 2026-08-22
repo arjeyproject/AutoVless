@@ -92,6 +92,9 @@ async def on_warp_home(call: CallbackQuery, state: FSMContext, lang: str) -> Non
 @router.message(Command("warp"))
 async def on_warp_command(message: Message, state: FSMContext, lang: str) -> None:
     await state.clear()
+    if not await db.get_flag("warp_enabled"):
+        await message.answer(t(lang, "warp.off"))
+        return
     await show_menu(message, lang)
 
 
@@ -223,7 +226,8 @@ async def on_links(call: CallbackQuery, lang: str) -> None:
 
 @router.callback_query(F.data == "wg:apps")
 async def on_apps(call: CallbackQuery, lang: str) -> None:
-    await edit(call, t(lang, "warp.apps"), keyboards.simple_back(lang, "nav:warp"))
+    """Only the apps that speak AmneziaWG, as real store links."""
+    await edit(call, t(lang, "warp.apps"), keyboards.apps_list(lang, "android", "warp"))
     await call.answer()
 
 
