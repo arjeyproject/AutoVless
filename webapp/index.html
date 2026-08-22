@@ -1,0 +1,1985 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover" />
+  <meta name="theme-color" content="#0f1117" />
+  <title>AutoVless Mini App</title>
+  <link rel="preconnect" href="https://fonts.googleapis.com">
+  <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+  <link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;500;700;800&display=swap" rel="stylesheet">
+  <style>
+    :root {
+      color-scheme: dark;
+      --bg: oklch(12.5% 0.015 282);
+      --bg-2: oklch(15.5% 0.017 282);
+      --bg-3: oklch(19% 0.02 282);
+      --text: oklch(94% 0.01 280);
+      --muted: oklch(76% 0.018 280);
+      --line: oklch(28% 0.02 282);
+      --primary: oklch(70% 0.2 295);
+      --primary-2: oklch(63% 0.18 309);
+      --cyan: oklch(77% 0.13 215);
+      --amber: oklch(78% 0.15 75);
+      --green: oklch(78% 0.14 155);
+      --danger: oklch(68% 0.2 22);
+      --shadow: 0 20px 60px rgba(0, 0, 0, 0.42);
+      --blur: 18px;
+      --radius-xl: 28px;
+      --tabbar-h: 86px;
+      --safe-top: env(safe-area-inset-top, 0px);
+      --safe-bottom: env(safe-area-inset-bottom, 0px);
+      --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+      --header-gradient: radial-gradient(circle at top right, color-mix(in oklab, var(--primary) 16%, transparent) 0, transparent 38%), radial-gradient(circle at top left, color-mix(in oklab, var(--cyan) 14%, transparent) 0, transparent 34%), linear-gradient(180deg, rgba(255,255,255,0.02), rgba(255,255,255,0));
+    }
+
+    * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
+    html, body { margin: 0; min-height: 100%; background: var(--bg); color: var(--text); }
+    body {
+      font-family: "Vazirmatn", system-ui, sans-serif;
+      font-size: 16px;
+      line-height: 1.5;
+      letter-spacing: 0.01em;
+      background:
+        radial-gradient(circle at 18% 0%, rgba(142, 95, 255, 0.18), transparent 32%),
+        radial-gradient(circle at 88% 12%, rgba(58, 181, 255, 0.16), transparent 24%),
+        linear-gradient(180deg, oklch(10.5% 0.016 282), oklch(13% 0.017 282));
+      overflow-x: hidden;
+    }
+    button, input, textarea, select { font: inherit; }
+    button { color: inherit; }
+    a { color: inherit; text-decoration: none; }
+    code, pre, .mono {
+      font-family: ui-monospace, SFMono-Regular, Menlo, Monaco, Consolas, "Liberation Mono", monospace;
+      direction: ltr;
+      text-align: left;
+      unicode-bidi: plaintext;
+    }
+
+    .app {
+      min-height: 100vh;
+      min-height: 100dvh;
+      display: grid;
+      grid-template-rows: auto 1fr auto;
+    }
+
+    .topbar {
+      position: sticky;
+      top: 0;
+      z-index: 20;
+      padding: calc(var(--safe-top) + 12px) 16px 14px;
+      backdrop-filter: blur(var(--blur));
+      background: color-mix(in oklab, var(--bg) 72%, transparent);
+      border-bottom: 1px solid color-mix(in oklab, var(--line) 70%, transparent);
+      overflow: hidden;
+    }
+    .topbar::before {
+      content: "";
+      position: absolute;
+      inset: 0;
+      background: var(--header-gradient);
+      pointer-events: none;
+    }
+    .topbar-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+      position: relative;
+      z-index: 1;
+    }
+    .brand-stack small {
+      display: block;
+      color: var(--muted);
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+    }
+    .brand-stack strong {
+      display: block;
+      font-size: 1.35rem;
+      line-height: 1.15;
+      font-weight: 800;
+      margin-top: 4px;
+    }
+    .status-pill {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 10px 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--muted);
+      font-size: 0.82rem;
+      white-space: nowrap;
+    }
+    .dot {
+      width: 10px;
+      height: 10px;
+      border-radius: 50%;
+      background: var(--green);
+      box-shadow: 0 0 0 5px color-mix(in oklab, var(--green) 18%, transparent);
+      flex: none;
+    }
+    .dot.warn { background: var(--amber); box-shadow: 0 0 0 5px color-mix(in oklab, var(--amber) 18%, transparent); }
+    .dot.danger { background: var(--danger); box-shadow: 0 0 0 5px color-mix(in oklab, var(--danger) 18%, transparent); }
+    .headline {
+      position: relative;
+      z-index: 1;
+      margin-top: 14px;
+      display: grid;
+      gap: 10px;
+    }
+    .headline h1 {
+      margin: 0;
+      font-size: clamp(1.5rem, 5vw, 2rem);
+      line-height: 1.08;
+      font-weight: 800;
+      text-wrap: balance;
+    }
+    .headline p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.93rem;
+      max-width: 62ch;
+      text-wrap: pretty;
+    }
+
+    .views {
+      position: relative;
+      padding: 14px 16px calc(var(--tabbar-h) + var(--safe-bottom) + 18px);
+    }
+    .view {
+      display: none;
+      animation: in 320ms var(--ease-out);
+    }
+    .view.active { display: block; }
+    @keyframes in {
+      from { opacity: 0; transform: translateY(10px) scale(0.99); }
+      to { opacity: 1; transform: translateY(0) scale(1); }
+    }
+
+    .glass {
+      position: relative;
+      background: linear-gradient(180deg, rgba(255,255,255,0.08), rgba(255,255,255,0.03));
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: var(--shadow);
+      backdrop-filter: blur(var(--blur));
+    }
+    .block {
+      border-radius: var(--radius-xl);
+      padding: 20px;
+      margin-bottom: 16px;
+      overflow: hidden;
+    }
+    .block.tight { padding: 16px; border-radius: 22px; }
+    .block h2, .block h3 { margin: 0; }
+    .eyebrow {
+      color: var(--muted);
+      font-size: 0.8rem;
+      letter-spacing: 0.08em;
+      text-transform: uppercase;
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+    }
+    .eyebrow::before {
+      content: "";
+      width: 22px;
+      height: 1px;
+      background: color-mix(in oklab, var(--primary) 58%, white 12%);
+      opacity: 0.8;
+    }
+    .section-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: start;
+      gap: 16px;
+      margin-bottom: 18px;
+    }
+    .section-head p {
+      margin: 10px 0 0;
+      color: var(--muted);
+      font-size: 0.92rem;
+    }
+    .section-actions {
+      display: inline-flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+
+    .chip-row, .stat-row, .action-row, .segmented, .nav-row {
+      display: flex;
+      gap: 10px;
+      flex-wrap: wrap;
+    }
+    .chip {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      padding: 9px 12px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.07);
+      color: var(--muted);
+      font-size: 0.85rem;
+    }
+    .chip strong { color: var(--text); font-weight: 700; }
+    .chip.ok { color: color-mix(in oklab, var(--green) 58%, white 18%); }
+
+    .split {
+      display: grid;
+      grid-template-columns: 1.15fr 0.85fr;
+      gap: 16px;
+      align-items: stretch;
+    }
+    .editorial {
+      display: grid;
+      gap: 14px;
+      align-content: start;
+    }
+    .editorial strong {
+      display: block;
+      font-size: clamp(1.22rem, 4vw, 1.58rem);
+      line-height: 1.16;
+      text-wrap: balance;
+    }
+    .editorial p {
+      margin: 0;
+      color: var(--muted);
+      font-size: 0.94rem;
+    }
+
+    .pool-chart {
+      min-height: 212px;
+      border-radius: 24px;
+      background:
+        radial-gradient(circle at 50% 50%, rgba(255,255,255,0.06), transparent 46%),
+        linear-gradient(180deg, rgba(255,255,255,0.03), rgba(255,255,255,0));
+      border: 1px solid rgba(255,255,255,0.06);
+      padding: 16px;
+      display: grid;
+      place-items: center;
+    }
+    .ring-wrap { position: relative; width: 170px; height: 170px; }
+    .ring-wrap svg { width: 100%; height: 100%; transform: rotate(-90deg); }
+    .ring-center {
+      position: absolute;
+      inset: 0;
+      display: grid;
+      place-items: center;
+      text-align: center;
+      pointer-events: none;
+    }
+    .ring-center strong { display: block; font-size: 2rem; line-height: 1; }
+    .ring-center span { color: var(--muted); font-size: 0.86rem; }
+
+    .ladder { display: grid; gap: 12px; }
+    .endpoint {
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      gap: 12px;
+      align-items: center;
+      padding: 12px 14px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .index-badge {
+      width: 34px;
+      height: 34px;
+      border-radius: 12px;
+      display: grid;
+      place-items: center;
+      background: linear-gradient(180deg, color-mix(in oklab, var(--primary) 22%, transparent), rgba(255,255,255,0.04));
+      border: 1px solid rgba(255,255,255,0.08);
+      font-weight: 800;
+      font-size: 0.86rem;
+      color: color-mix(in oklab, var(--primary) 60%, white 24%);
+    }
+    .endpoint-main {
+      display: grid;
+      gap: 6px;
+      min-width: 0;
+    }
+    .endpoint-title {
+      display: flex;
+      align-items: center;
+      gap: 8px;
+      min-width: 0;
+      flex-wrap: wrap;
+    }
+    .endpoint-title strong {
+      font-size: 0.98rem;
+      line-height: 1.2;
+      direction: ltr;
+      unicode-bidi: plaintext;
+    }
+    .kind-badge {
+      font-size: 0.73rem;
+      color: var(--muted);
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 3px 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.04);
+    }
+    .endpoint-sub {
+      display: flex;
+      gap: 10px;
+      align-items: center;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .bar {
+      position: relative;
+      height: 8px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.06);
+      overflow: hidden;
+    }
+    .bar > span {
+      position: absolute;
+      inset: 0 auto 0 0;
+      border-radius: inherit;
+      background: linear-gradient(90deg, var(--primary), var(--cyan));
+      box-shadow: 0 0 22px color-mix(in oklab, var(--primary) 35%, transparent);
+    }
+    .latency {
+      font-variant-numeric: tabular-nums;
+      font-size: 0.9rem;
+      min-width: 56px;
+      text-align: end;
+    }
+
+    .spark-card {
+      padding: 16px;
+      border-radius: 22px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.06);
+      display: grid;
+      gap: 12px;
+    }
+    .spark-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+    .spark-svg { width: 100%; height: 96px; display: block; }
+
+    .btn {
+      appearance: none;
+      border: none;
+      border-radius: 18px;
+      padding: 14px 16px;
+      min-height: 48px;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      gap: 10px;
+      font-weight: 700;
+      cursor: pointer;
+      transition: transform 160ms var(--ease-out), background 160ms var(--ease-out), border-color 160ms var(--ease-out), opacity 160ms var(--ease-out);
+    }
+    .btn:active { transform: scale(0.98); }
+    .btn.primary {
+      background: linear-gradient(135deg, color-mix(in oklab, var(--primary) 82%, white 8%), color-mix(in oklab, var(--primary-2) 85%, black 5%));
+      color: oklch(18% 0.02 290);
+      box-shadow: 0 16px 30px rgba(141, 87, 255, 0.32);
+    }
+    .btn.secondary {
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--text);
+    }
+    .btn.ghost {
+      background: transparent;
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--muted);
+    }
+    .btn.warn { background: color-mix(in oklab, var(--amber) 28%, rgba(255,255,255,0.04)); color: var(--text); }
+    .btn.danger { background: color-mix(in oklab, var(--danger) 25%, rgba(255,255,255,0.04)); color: color-mix(in oklab, var(--danger) 58%, white 24%); }
+    .btn.small { min-height: 40px; padding: 10px 12px; border-radius: 14px; font-size: 0.86rem; }
+    .btn.block { width: 100%; }
+
+    .segmented {
+      background: rgba(255,255,255,0.04);
+      border: 1px solid rgba(255,255,255,0.07);
+      padding: 6px;
+      border-radius: 20px;
+      display: grid;
+      grid-template-columns: repeat(var(--count, 4), minmax(0, 1fr));
+      gap: 6px;
+    }
+    .segmented button {
+      min-height: 42px;
+      border-radius: 14px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      font-weight: 700;
+      cursor: pointer;
+      transition: background 180ms var(--ease-out), color 180ms var(--ease-out);
+    }
+    .segmented button.active {
+      background: linear-gradient(180deg, rgba(255,255,255,0.1), rgba(255,255,255,0.05));
+      color: var(--text);
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+    }
+
+    .sub-card {
+      margin-top: 14px;
+      display: grid;
+      gap: 12px;
+    }
+    .url-box {
+      padding: 16px;
+      border-radius: 18px;
+      background: rgba(6, 8, 14, 0.48);
+      border: 1px solid rgba(255,255,255,0.06);
+      overflow: auto;
+      max-height: 164px;
+    }
+    .url-box pre {
+      margin: 0;
+      white-space: pre-wrap;
+      word-break: break-word;
+      color: var(--text);
+      font-size: 0.86rem;
+      line-height: 1.7;
+    }
+
+    .config-list { display: grid; gap: 10px; }
+    details.config-item {
+      border-radius: 20px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.06);
+      overflow: hidden;
+    }
+    details.config-item[open] { background: rgba(255,255,255,0.05); }
+    .config-summary {
+      list-style: none;
+      padding: 14px;
+      display: grid;
+      grid-template-columns: auto 1fr auto;
+      align-items: center;
+      gap: 12px;
+      cursor: pointer;
+    }
+    .config-summary::-webkit-details-marker { display: none; }
+    .config-meta { display: grid; gap: 6px; min-width: 0; }
+    .config-meta strong { font-size: 0.94rem; }
+    .config-meta span { color: var(--muted); font-size: 0.8rem; direction: ltr; unicode-bidi: plaintext; }
+    .config-actions { display: inline-flex; gap: 8px; }
+    .config-body {
+      padding: 0 14px 14px;
+      display: grid;
+      gap: 12px;
+    }
+    .config-body .url-box { max-height: 220px; }
+
+    .warp-grid { display: grid; gap: 14px; }
+    .warp-endpoint {
+      display: grid;
+      gap: 10px;
+      padding: 14px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .warp-top {
+      display: flex;
+      justify-content: space-between;
+      gap: 12px;
+      align-items: start;
+      flex-wrap: wrap;
+    }
+    .warp-top strong { direction: ltr; unicode-bidi: plaintext; }
+    .warp-stats {
+      display: flex;
+      gap: 12px;
+      flex-wrap: wrap;
+      color: var(--muted);
+      font-size: 0.82rem;
+    }
+
+    .settings-list { display: grid; gap: 12px; }
+    .setting {
+      display: grid;
+      gap: 12px;
+      padding: 16px;
+      border-radius: 18px;
+      background: rgba(255,255,255,0.035);
+      border: 1px solid rgba(255,255,255,0.06);
+    }
+    .setting-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+      flex-wrap: wrap;
+    }
+    .setting-copy strong { display: block; }
+    .setting-copy span { color: var(--muted); font-size: 0.84rem; }
+    .port-row { display: flex; gap: 8px; flex-wrap: wrap; }
+    .port-chip {
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+      min-width: 52px;
+      min-height: 40px;
+      padding: 8px 12px;
+      border-radius: 14px;
+      background: rgba(255,255,255,0.05);
+      border: 1px solid rgba(255,255,255,0.08);
+      font-variant-numeric: tabular-nums;
+    }
+    .switch {
+      position: relative;
+      width: 58px;
+      height: 34px;
+      border-radius: 999px;
+      background: rgba(255,255,255,0.1);
+      border: 1px solid rgba(255,255,255,0.08);
+      cursor: pointer;
+      transition: background 200ms var(--ease-out);
+    }
+    .switch::after {
+      content: "";
+      position: absolute;
+      top: 4px;
+      right: 4px;
+      width: 24px;
+      height: 24px;
+      border-radius: 50%;
+      background: white;
+      transition: transform 220ms var(--ease-out);
+    }
+    .switch.on { background: color-mix(in oklab, var(--primary) 50%, rgba(255,255,255,0.1)); }
+    .switch.on::after { transform: translateX(-24px); }
+
+    .stepper {
+      display: inline-flex;
+      align-items: center;
+      gap: 8px;
+      background: rgba(255,255,255,0.045);
+      border-radius: 16px;
+      border: 1px solid rgba(255,255,255,0.08);
+      padding: 6px;
+    }
+    .stepper button {
+      width: 34px;
+      height: 34px;
+      border-radius: 12px;
+      border: none;
+      background: rgba(255,255,255,0.08);
+      color: var(--text);
+      cursor: pointer;
+      font-size: 1rem;
+    }
+    .stepper span {
+      min-width: 28px;
+      text-align: center;
+      font-weight: 800;
+      font-variant-numeric: tabular-nums;
+    }
+
+    .empty, .error, .loading {
+      border-radius: 24px;
+      padding: 22px;
+      border: 1px solid rgba(255,255,255,0.06);
+      background: rgba(255,255,255,0.035);
+      display: grid;
+      gap: 12px;
+    }
+    .empty h3, .error h3, .loading h3 { margin: 0; font-size: 1.08rem; }
+    .empty p, .error p, .loading p { margin: 0; color: var(--muted); }
+
+    .tabbar {
+      position: fixed;
+      inset-inline: 10px;
+      bottom: calc(var(--safe-bottom) + 10px);
+      z-index: 30;
+      padding: 8px;
+      border-radius: 28px;
+      backdrop-filter: blur(22px);
+      background: color-mix(in oklab, var(--bg) 74%, transparent);
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 26px 70px rgba(0,0,0,0.5);
+    }
+    .nav-row {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(0, 1fr));
+      gap: 8px;
+    }
+    .tab {
+      min-height: 62px;
+      border-radius: 20px;
+      border: none;
+      background: transparent;
+      color: var(--muted);
+      display: grid;
+      place-items: center;
+      gap: 4px;
+      padding: 8px 4px;
+      cursor: pointer;
+      transition: background 180ms var(--ease-out), color 180ms var(--ease-out);
+    }
+    .tab svg { width: 22px; height: 22px; }
+    .tab span { font-size: 0.76rem; font-weight: 700; }
+    .tab.active {
+      color: var(--text);
+      background: linear-gradient(180deg, rgba(255,255,255,0.09), rgba(255,255,255,0.04));
+      box-shadow: inset 0 0 0 1px rgba(255,255,255,0.06);
+    }
+
+    dialog.sheet {
+      width: min(96vw, 480px);
+      border: none;
+      padding: 0;
+      background: transparent;
+    }
+    dialog.sheet::backdrop { background: rgba(2,4,10,0.62); backdrop-filter: blur(10px); }
+    .sheet-card {
+      border-radius: 30px;
+      padding: 16px;
+      background: linear-gradient(180deg, rgba(20,24,34,0.96), rgba(12,14,22,0.98));
+      border: 1px solid rgba(255,255,255,0.08);
+      box-shadow: 0 32px 80px rgba(0,0,0,0.55);
+      display: grid;
+      gap: 14px;
+    }
+    .qr-stage {
+      background: white;
+      border-radius: 24px;
+      padding: 18px;
+      display: grid;
+      place-items: center;
+      min-height: 280px;
+    }
+    .qr-stage svg { width: min(100%, 280px); height: auto; display: block; }
+    .sheet-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      gap: 12px;
+    }
+    .sheet-head h3 { margin: 0; }
+    .sheet-copy { color: var(--muted); font-size: 0.88rem; word-break: break-all; }
+
+    .toast-wrap {
+      position: fixed;
+      left: 16px;
+      right: 16px;
+      bottom: calc(var(--tabbar-h) + var(--safe-bottom) + 24px);
+      display: grid;
+      place-items: center;
+      pointer-events: none;
+      z-index: 40;
+    }
+    .toast {
+      pointer-events: auto;
+      min-width: 220px;
+      max-width: 92vw;
+      background: rgba(17, 20, 30, 0.92);
+      border: 1px solid rgba(255,255,255,0.08);
+      color: var(--text);
+      padding: 12px 14px;
+      border-radius: 18px;
+      box-shadow: 0 16px 40px rgba(0,0,0,0.38);
+      transform: translateY(20px);
+      opacity: 0;
+      transition: transform 220ms var(--ease-out), opacity 220ms var(--ease-out);
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 12px;
+    }
+    .toast.show { opacity: 1; transform: translateY(0); }
+    .toast small { color: var(--muted); }
+
+    .hidden { display: none !important; }
+
+    @media (max-width: 840px) {
+      .split { grid-template-columns: 1fr; }
+      .pool-chart { order: -1; min-height: 190px; }
+    }
+    @media (max-width: 560px) {
+      .views { padding-inline: 12px; }
+      .topbar { padding-inline: 12px; }
+      .block { padding: 16px; border-radius: 24px; }
+      .section-head { margin-bottom: 14px; }
+      .config-summary { grid-template-columns: auto 1fr; }
+      .config-actions { grid-column: 1 / -1; }
+      .tabbar { inset-inline: 8px; }
+      .nav-row { gap: 6px; }
+      .tab { min-height: 58px; }
+    }
+  </style>
+</head>
+<body>
+  <div class="app">
+    <header class="topbar">
+      <div class="topbar-row">
+        <div class="brand-stack">
+          <small id="brandEyebrow">telegram mini app</small>
+          <strong id="brandName">AutoVless</strong>
+        </div>
+        <div class="status-pill"><span class="dot" id="statusDot"></span><span id="statusText">در حال همگام‌سازی</span></div>
+      </div>
+      <div class="headline">
+        <h1 id="headlineTitle">پنل تمیز، سریع، بی‌دردسر</h1>
+        <p id="headlineText">وضعیت اسکنرها، لینک و کانفیگ، و مدیریت WARP در یک رابط ساده.</p>
+      </div>
+    </header>
+
+    <main class="views">
+      <section class="view active" id="view-dashboard">
+        <div class="block glass">
+          <div class="section-head">
+            <div>
+              <div class="eyebrow">وضعیت زنده</div>
+              <p id="editorialLine">در حال خواندن وضعیت...</p>
+            </div>
+            <div class="section-actions">
+              <button class="btn secondary small" data-action="refresh-live">رفرش</button>
+              <button class="btn primary small" data-action="send:apply">اعمال IP تازه</button>
+            </div>
+          </div>
+          <div class="split">
+            <div class="editorial">
+              <strong id="dashboardLead">کیفیت Endpoint مهم‌ترین گلوگاه است.</strong>
+              <p id="dashboardBody">اگر relay قابل استفاده صفر شود، کانفیگ‌ها عملاً از کار می‌افتند.</p>
+              <div class="chip-row" id="statChips"></div>
+              <div class="spark-card">
+                <div class="spark-head"><span>روند سلامت pool</span><span id="sparkMeta">آخرین موج‌ها</span></div>
+                <svg class="spark-svg" id="sparkSvg" viewBox="0 0 320 96" preserveAspectRatio="none"></svg>
+              </div>
+            </div>
+            <div class="pool-chart">
+              <div class="ring-wrap">
+                <svg viewBox="0 0 120 120" aria-hidden="true">
+                  <circle cx="60" cy="60" r="48" fill="none" stroke="rgba(255,255,255,0.06)" stroke-width="10"></circle>
+                  <circle id="ringGood" cx="60" cy="60" r="48" fill="none" stroke="var(--green)" stroke-width="10" stroke-linecap="round"></circle>
+                  <circle id="ringWarn" cx="60" cy="60" r="48" fill="none" stroke="var(--amber)" stroke-width="10" stroke-linecap="round"></circle>
+                  <circle id="ringBad" cx="60" cy="60" r="48" fill="none" stroke="var(--danger)" stroke-width="10" stroke-linecap="round"></circle>
+                </svg>
+                <div class="ring-center">
+                  <div>
+                    <strong id="ringValue">0</strong>
+                    <span id="ringLabel">endpoint سالم</span>
+                  </div>
+                </div>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="block glass tight">
+          <div class="section-head">
+            <div>
+              <h2 style="font-size:1.05rem;">لیست Endpoint های سرو شده</h2>
+              <p>هرچی بالاتر، ارزش نگه‌داشتنش بیشتر.</p>
+            </div>
+          </div>
+          <div class="ladder" id="endpointList"></div>
+        </div>
+
+        <div class="block glass tight">
+          <div class="section-head">
+            <div>
+              <h2 style="font-size:1.05rem;">سلامت تونل</h2>
+              <p>Direct socket و relay chain از خود Worker خوانده می‌شود.</p>
+            </div>
+          </div>
+          <div class="chip-row" id="probeChips"></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-vless">
+        <div class="block glass">
+          <div class="section-head">
+            <div>
+              <div class="eyebrow">vless exports</div>
+              <p>لینک اشتراک، raw، Clash و sing-box.</p>
+            </div>
+          </div>
+          <div class="segmented" style="--count:4" id="subFormatTabs">
+            <button class="active" data-sub-format="sub">base64</button>
+            <button data-sub-format="raw">raw</button>
+            <button data-sub-format="clash">clash</button>
+            <button data-sub-format="singbox">sing-box</button>
+          </div>
+          <div class="sub-card">
+            <div class="url-box"><pre id="subPreview"></pre></div>
+            <div class="action-row">
+              <button class="btn primary" data-action="copy:sub">کپی</button>
+              <button class="btn secondary" data-action="qr:sub">QR</button>
+              <button class="btn ghost" data-action="open:sub">باز کردن</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="block glass tight">
+          <div class="section-head">
+            <div>
+              <h2 style="font-size:1.05rem;">کانفیگ‌های تکی</h2>
+              <p>هر ردیف باز می‌شود، لینک کامل را نشان می‌دهد.</p>
+            </div>
+          </div>
+          <div class="config-list" id="configList"></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-warp">
+        <div class="block glass">
+          <div class="section-head">
+            <div>
+              <div class="eyebrow">warp / wireguard</div>
+              <p>بهترین endpoint ها روی identity کاربر.</p>
+            </div>
+          </div>
+          <div class="segmented" style="--count:5" id="warpFormatTabs">
+            <button class="active" data-warp-format="amnezia">amnezia</button>
+            <button data-warp-format="amnezia2">amnezia+</button>
+            <button data-warp-format="wireguard">wireguard</button>
+            <button data-warp-format="singbox">sing-box</button>
+            <button data-warp-format="clash">clash</button>
+          </div>
+          <div class="sub-card">
+            <div class="url-box"><pre id="warpPreview"></pre></div>
+            <div class="action-row">
+              <button class="btn primary" data-action="copy:warp">کپی</button>
+              <button class="btn secondary" data-action="qr:warp">QR</button>
+              <button class="btn ghost" data-action="download:warp">دانلود فایل</button>
+            </div>
+          </div>
+        </div>
+
+        <div class="block glass tight">
+          <div class="section-head">
+            <div>
+              <h2 style="font-size:1.05rem;">Endpoint های WARP</h2>
+              <p>latency، jitter، loss و score.</p>
+            </div>
+            <div class="section-actions">
+              <button class="btn secondary small" data-action="send:warp-rescan">اسکن سریع</button>
+              <button class="btn primary small" data-action="send:warp-build">ساخت / نوسازی</button>
+            </div>
+          </div>
+          <div class="warp-grid" id="warpEndpointList"></div>
+        </div>
+      </section>
+
+      <section class="view" id="view-settings">
+        <div class="block glass">
+          <div class="section-head">
+            <div>
+              <div class="eyebrow">settings</div>
+              <p>تنظیمات اسکن و ظاهر. ذخیره سمت ربات انجام می‌شود.</p>
+            </div>
+          </div>
+          <div class="settings-list">
+            <div class="setting">
+              <div class="setting-row">
+                <div class="setting-copy"><strong>زبان</strong><span>رابط را همان‌جا عوض کن</span></div>
+                <div class="segmented" style="--count:2; width:min(220px,100%);">
+                  <button class="active" data-lang="fa">فارسی</button>
+                  <button data-lang="en">English</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting">
+              <div class="setting-row">
+                <div class="setting-copy"><strong>همگام‌سازی با تم تلگرام</strong><span>رنگ‌ها از تم کاربر خوانده می‌شود</span></div>
+                <button class="switch on" id="themeSync" aria-pressed="true"></button>
+              </div>
+            </div>
+
+            <div class="setting">
+              <div class="setting-copy"><strong>پورت‌های TLS</strong><span>پورت‌های امن در کانفیگ</span></div>
+              <div class="port-row" id="tlsPorts"></div>
+            </div>
+
+            <div class="setting">
+              <div class="setting-copy"><strong>پورت‌های HTTP</strong><span>برای شبکه‌هایی که ۸۰ بهتر جواب می‌دهد</span></div>
+              <div class="port-row" id="httpPorts"></div>
+            </div>
+
+            <div class="setting">
+              <div class="setting-row">
+                <div class="setting-copy"><strong>تعداد کانفیگ TLS</strong><span>چند endpoint امن در خروجی بیاید</span></div>
+                <div class="stepper" data-stepper="tlsCount">
+                  <button type="button" data-step="minus">−</button>
+                  <span id="tlsCountValue">4</span>
+                  <button type="button" data-step="plus">+</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting">
+              <div class="setting-row">
+                <div class="setting-copy"><strong>تعداد کانفیگ HTTP</strong><span>زیاد نکنی، شلوغ می‌شود</span></div>
+                <div class="stepper" data-stepper="httpCount">
+                  <button type="button" data-step="minus">−</button>
+                  <span id="httpCountValue">2</span>
+                  <button type="button" data-step="plus">+</button>
+                </div>
+              </div>
+            </div>
+
+            <div class="setting">
+              <div class="setting-row">
+                <div class="setting-copy"><strong>ذخیره توکن</strong><span id="tokenStorageText">برای rebuild و autopilot لازم است</span></div>
+                <span class="chip ok" id="tokenStorageBadge">فعال</span>
+              </div>
+            </div>
+          </div>
+          <div class="action-row" style="margin-top:16px;">
+            <button class="btn primary block" data-action="save-settings">ذخیره تنظیمات</button>
+          </div>
+        </div>
+
+        <div class="block glass tight">
+          <div class="section-head">
+            <div>
+              <h2 style="font-size:1.05rem;">اکشن‌ها</h2>
+              <p>همان دکمه‌های ربات، این بار با UI بهتر.</p>
+            </div>
+          </div>
+          <div class="action-row">
+            <button class="btn secondary" data-action="send:rescan">اسکن Clean IP</button>
+            <button class="btn warn" data-action="send:rebuild">Rebuild panel</button>
+            <button class="btn secondary" data-action="send:ping">Live ping test</button>
+            <button class="btn danger" data-action="send:delete">حذف پنل</button>
+          </div>
+        </div>
+
+        <div class="block glass tight" id="stateBox"></div>
+      </section>
+    </main>
+
+    <nav class="tabbar glass" aria-label="tabs">
+      <div class="nav-row">
+        <button class="tab active" data-view="dashboard">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 13h6V4H4zm10 7h6V4h-6zM4 20h6v-5H4zm10 0h6v-7h-6z"/></svg>
+          <span>داشبورد</span>
+        </button>
+        <button class="tab" data-view="vless">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M4 7h16M4 12h16M4 17h10"/><circle cx="18" cy="17" r="2.4"/></svg>
+          <span>VLESS</span>
+        </button>
+        <button class="tab" data-view="warp">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M13 2 4 14h7l-1 8 10-13h-7z"/></svg>
+          <span>WARP</span>
+        </button>
+        <button class="tab" data-view="settings">
+          <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.8"><path d="M12 15.5A3.5 3.5 0 1 0 12 8.5a3.5 3.5 0 0 0 0 7Z"/><path d="m19.4 15 .9 1.6-1.7 3-1.8-.2a7.8 7.8 0 0 1-1.5.9L14.7 22h-3.4l-.6-1.7a7.8 7.8 0 0 1-1.5-.9l-1.8.2-1.7-3 .9-1.6a8.4 8.4 0 0 1 0-2l-.9-1.6 1.7-3 1.8.2c.5-.4 1-.7 1.5-.9L11.3 2h3.4l.6 1.7c.5.2 1 .5 1.5.9l1.8-.2 1.7 3-.9 1.6c.1.7.1 1.3 0 2Z"/></svg>
+          <span>تنظیمات</span>
+        </button>
+      </div>
+    </nav>
+  </div>
+
+  <dialog class="sheet" id="qrDialog">
+    <div class="sheet-card">
+      <div class="sheet-head">
+        <div>
+          <h3 id="qrTitle">QR Code</h3>
+          <div class="sheet-copy" id="qrSubtitle">برای اسکن سریع</div>
+        </div>
+        <button class="btn ghost small" data-close="qrDialog">بستن</button>
+      </div>
+      <div class="qr-stage" id="qrStage"></div>
+      <div class="action-row">
+        <button class="btn primary block" data-action="copy:qrsource">کپی متن</button>
+      </div>
+    </div>
+  </dialog>
+
+  <div class="toast-wrap"><div class="toast" id="toast"><span id="toastText"></span><small id="toastMeta"></small></div></div>
+
+  <script src="https://telegram.org/js/telegram-web-app.js"></script>
+  <script>
+  (function () {
+    'use strict';
+
+    const tg = (window.Telegram && window.Telegram.WebApp) ? window.Telegram.WebApp : null;
+
+    const i18n = {
+      fa: {
+        appName: 'AutoVless',
+        loading: 'در حال بارگیری',
+        copied: 'کپی شد',
+        sent: 'فرستاده شد',
+        saved: 'برای ربات ارسال شد',
+        qrSub: 'QR سابسکریپشن',
+        qrWarp: 'QR کانفیگ',
+        qrConfig: 'QR لینک',
+        errorTitle: 'داده زنده نرسید',
+        errorText: 'احتمالاً CORS روی Worker پچ نشده یا host از داخل WebView باز نمی‌شود.',
+        firstRun: 'اجرای آزمایشی',
+        firstRunText: 'این نمایش با داده نمونه بالا آمده. از داخل ربات بازش کن تا داده واقعی بگیرد.',
+        linked: 'وصل به ربات',
+        linkedText: 'payload از ربات رسید و اپ روی داده واقعی بالا آمده.',
+        deleteAsk: 'حذف پنل را از داخل ربات تایید کن.',
+        tls: 'TLS',
+        http: 'HTTP',
+        auto: 'AUTO',
+        live: 'LIVE',
+        relayUsable: 'relay usable',
+      },
+      en: {
+        appName: 'AutoVless',
+        loading: 'Loading',
+        copied: 'Copied',
+        sent: 'Sent',
+        saved: 'Sent to bot',
+        qrSub: 'Subscription QR',
+        qrWarp: 'Config QR',
+        qrConfig: 'Link QR',
+        errorTitle: 'Live data failed',
+        errorText: 'Usually CORS on the Worker is missing, or the host is blocked inside the WebView.',
+        firstRun: 'Preview mode',
+        firstRunText: 'Running on sample data. Open it from the bot to feed a real payload.',
+        linked: 'Linked to bot',
+        linkedText: 'Payload arrived from the bot and the app is running on real data.',
+        deleteAsk: 'Confirm panel deletion from the bot.',
+        tls: 'TLS',
+        http: 'HTTP',
+        auto: 'AUTO',
+        live: 'LIVE',
+        relayUsable: 'relay usable',
+      }
+    };
+
+    const $ = (s, el) => (el || document).querySelector(s);
+    const $$ = (s, el) => Array.prototype.slice.call((el || document).querySelectorAll(s));
+
+    const state = {
+      lang: 'fa',
+      view: 'dashboard',
+      payload: null,
+      liveHealth: null,
+      liveProbe: null,
+      subFormat: 'sub',
+      warpFormat: 'amnezia',
+      themeSync: true,
+      qrSource: '',
+      toastTimer: null,
+      mock: false,
+      settings: { tlsCount: 4, httpCount: 2 },
+    };
+
+    const mockPayload = {
+      version: 1,
+      lang: 'fa',
+      brand: 'AutoVless',
+      panel: {
+        uuid: '2e5f26f0-12b7-4b4f-b9a8-e6f5ab63e68e',
+        host: 'demo-panel.workers.dev',
+        build: 'preview',
+        tokenStored: true,
+        links: {
+          sub: 'https://demo-panel.workers.dev/2e5f26f0-12b7-4b4f-b9a8-e6f5ab63e68e',
+          raw: 'https://demo-panel.workers.dev/2e5f26f0-12b7-4b4f-b9a8-e6f5ab63e68e/raw',
+          clash: 'https://demo-panel.workers.dev/2e5f26f0-12b7-4b4f-b9a8-e6f5ab63e68e/clash',
+          singbox: 'https://demo-panel.workers.dev/2e5f26f0-12b7-4b4f-b9a8-e6f5ab63e68e/singbox'
+        },
+        endpoints: [
+          { ip: '188.114.99.42', port: 443, latency: 118, colo: 'FRA', kind: 'ip' },
+          { ip: '104.16.32.18', port: 443, latency: 145, colo: 'AMS', kind: 'ip' },
+          { ip: 'cf.090227.xyz', port: 443, latency: 0, colo: 'AUTO', kind: 'domain' },
+          { ip: '172.67.76.10', port: 80, latency: 167, colo: 'MRS', kind: 'live' }
+        ],
+        linksRaw: [
+          'vless://2e5f26f0-12b7-4b4f-b9a8-e6f5ab63e68e@188.114.99.42:443?encryption=none&security=tls&type=ws&host=demo-panel.workers.dev&path=%2F%3Fed%3D2560&sni=demo-panel.workers.dev&fp=chrome&alpn=http%2F1.1#AutoVless-1',
+          'vless://2e5f26f0-12b7-4b4f-b9a8-e6f5ab63e68e@104.16.32.18:443?encryption=none&security=tls&type=ws&host=demo-panel.workers.dev&path=%2F%3Fed%3D2560&sni=demo-panel.workers.dev&fp=chrome&alpn=http%2F1.1#AutoVless-2'
+        ]
+      },
+      stats: {
+        cleanPool: { total: 31, verified: 18, domains: 4, best: 118, updatedAt: 0, history: [12, 15, 17, 14, 19, 22, 18, 20, 24, 21, 23, 18] },
+        relays: { total: 6, verified: 4 },
+        warp: { stable: 12, total: 22, best: 91, ports: [2408, 500, 1701], updatedAt: 0 },
+        scanner: { active: true, ports: [443, 80] }
+      },
+      probe: {
+        ok: true,
+        direct: { ok: true, ms: 154 },
+        relays: [
+          { target: 'relay-1.example.net:443', ok: true, ms: 189 },
+          { target: 'relay-2.example.net:443', ok: false, ms: 512, error: 'timeout' }
+        ],
+        usable_relays: 1
+      },
+      settings: { tlsPorts: [443, 2053, 8443], httpPorts: [80, 8080, 2095], tlsCount: 4, httpCount: 2, storeTokens: true },
+      warp: {
+        identity: {
+          private_key: 'qjG2m0YFZk1s9fK4nA2iFmbQ7P8uW1vB3QfN6kD4pXs=',
+          peer_public_key: 'bmXOC+F1Q4C1Y2lbS9m4gN4w6h7qT0s1D3X5f7V8nQ0=',
+          reserved: [111, 25, 6],
+          v4: '172.16.0.2',
+          v6: '2606:4700:110:8a1b:6c9d:ef2a:aa7b:fc21',
+          account_type: 'free'
+        },
+        endpoints: [
+          { ip: '162.159.192.1', port: 2408, latency: 91, jitter: 12, loss: 0, score: 99.4, stable: true },
+          { ip: '188.114.98.1', port: 1701, latency: 102, jitter: 18, loss: 0.03, score: 132.6, stable: true }
+        ],
+        profile: { jc: 5, jmin: 114, jmax: 689, i1: '' }
+      },
+      bot: { username: '' }
+    };
+
+    function t(key) {
+      const pack = i18n[state.lang] || i18n.fa;
+      return pack[key] || key;
+    }
+
+    function b64urlDecode(source) {
+      const normalized = String(source).replace(/-/g, '+').replace(/_/g, '/');
+      const pad = normalized.length % 4 ? '='.repeat(4 - (normalized.length % 4)) : '';
+      const binary = atob(normalized + pad);
+      const bytes = new Uint8Array(binary.length);
+      for (let i = 0; i < binary.length; i++) bytes[i] = binary.charCodeAt(i);
+      return new TextDecoder('utf-8').decode(bytes);
+    }
+
+    function decodePayload() {
+      let source = '';
+      try {
+        source = new URLSearchParams(location.search).get('payload') || '';
+        if (!source && location.hash) {
+          const hash = location.hash.charAt(0) === '#' ? location.hash.slice(1) : location.hash;
+          source = new URLSearchParams(hash).get('payload') || '';
+        }
+      } catch (e) {
+        source = '';
+      }
+      if (!source) return null;
+      try {
+        return JSON.parse(b64urlDecode(source));
+      } catch (e) {
+        console.warn('payload decode failed', e);
+        return null;
+      }
+    }
+
+    function applyTelegramTheme() {
+      if (!tg || !state.themeSync) return;
+      const p = tg.themeParams || {};
+      const root = document.documentElement.style;
+      if (p.link_color) root.setProperty('--primary', p.link_color);
+      try {
+        if (tg.setHeaderColor) tg.setHeaderColor('#0f1117');
+        if (tg.setBackgroundColor) tg.setBackgroundColor('#0f1117');
+      } catch (e) { /* older telegram clients */ }
+    }
+
+    function deepClone(value) {
+      return JSON.parse(JSON.stringify(value));
+    }
+
+    function init() {
+      if (tg) {
+        try { tg.ready(); tg.expand(); } catch (e) { /* ignore */ }
+      }
+      const payload = decodePayload();
+      if (payload) {
+        state.payload = payload;
+        state.lang = payload.lang === 'en' ? 'en' : 'fa';
+      } else {
+        state.payload = deepClone(mockPayload);
+        state.mock = true;
+      }
+      normalisePayload();
+      bootstrapState();
+      applyTelegramTheme();
+      bindUI();
+      renderAll();
+      if (!state.mock) fetchLive();
+    }
+
+    function normalisePayload() {
+      const p = state.payload || {};
+      p.brand = p.brand || 'AutoVless';
+      p.panel = p.panel || { endpoints: [], linksRaw: [], links: {} };
+      p.panel.endpoints = Array.isArray(p.panel.endpoints) ? p.panel.endpoints : [];
+      p.panel.linksRaw = Array.isArray(p.panel.linksRaw) ? p.panel.linksRaw : [];
+      p.panel.links = p.panel.links || {};
+      p.stats = p.stats || {};
+      p.stats.cleanPool = p.stats.cleanPool || { total: 0, verified: 0, best: null, history: [] };
+      p.stats.cleanPool.history = Array.isArray(p.stats.cleanPool.history) ? p.stats.cleanPool.history : [];
+      p.stats.relays = p.stats.relays || { total: 0, verified: 0 };
+      p.stats.warp = p.stats.warp || { stable: 0, total: 0, best: null, ports: [] };
+      p.stats.scanner = p.stats.scanner || { active: true, ports: [] };
+      p.settings = p.settings || {};
+      p.warp = p.warp || { identity: {}, endpoints: [], profile: {} };
+      p.warp.identity = p.warp.identity || {};
+      p.warp.endpoints = Array.isArray(p.warp.endpoints) ? p.warp.endpoints : [];
+      p.warp.profile = p.warp.profile || {};
+      p.bot = p.bot || {};
+      p.probe = p.probe || null;
+      state.payload = p;
+    }
+
+    function bootstrapState() {
+      const p = state.payload;
+      state.settings.tlsCount = Number(p.settings.tlsCount) || 4;
+      state.settings.httpCount = Number(p.settings.httpCount) || 2;
+      document.documentElement.lang = state.lang;
+      document.documentElement.dir = state.lang === 'fa' ? 'rtl' : 'ltr';
+      $('#brandName').textContent = p.brand;
+      $('#brandEyebrow').textContent = state.mock ? t('firstRun') : t('linked');
+    }
+
+    async function fetchLive() {
+      const panel = state.payload.panel;
+      if (!panel || !panel.host || !panel.uuid) return;
+      const base = 'https://' + panel.host + '/' + panel.uuid;
+      const grab = async (path) => {
+        try {
+          const res = await fetch(base + path, { cache: 'no-store' });
+          return res.ok ? await res.json() : null;
+        } catch (e) {
+          return null;
+        }
+      };
+      const [health, probe, endpoints] = await Promise.all([grab('/health'), grab('/probe'), grab('/endpoints')]);
+      state.liveHealth = health || { error: true };
+      if (probe) state.liveProbe = probe;
+      if (endpoints && Array.isArray(endpoints.endpoints) && endpoints.endpoints.length) {
+        state.payload.panel.endpoints = endpoints.endpoints;
+      }
+      renderHeader();
+      renderDashboard();
+      renderStateBox();
+    }
+
+    function renderAll() {
+      renderHeader();
+      renderDashboard();
+      renderVless();
+      renderWarp();
+      renderSettings();
+      renderStateBox();
+    }
+
+    function renderHeader() {
+      const probe = state.liveProbe || state.payload.probe;
+      const ok = probe ? Boolean(probe.ok) : null;
+      $('#headlineTitle').textContent = state.lang === 'fa'
+        ? 'پنل تمیز، سریع، بی‌دردسر'
+        : 'Clean, fast, zero-nonsense panel';
+      $('#headlineText').textContent = state.lang === 'fa'
+        ? 'وضعیت اسکنرها، لینک و کانفیگ، و مدیریت WARP در یک رابط ساده.'
+        : 'See scanner health, pull configs, and manage WARP in one sharp little UI.';
+      $('#statusText').textContent = ok === true
+        ? (state.lang === 'fa' ? 'تونل سالم' : 'Tunnel healthy')
+        : ok === false
+          ? (state.lang === 'fa' ? 'مشکل در مسیر' : 'Path issue')
+          : t('loading');
+      $('#statusDot').className = 'dot' + (ok === false ? ' danger' : ok === null ? ' warn' : '');
+    }
+
+    function renderDashboard() {
+      const p = state.payload;
+      const clean = p.stats.cleanPool;
+      const probe = state.liveProbe || p.probe || {};
+      const endpoints = p.panel.endpoints || [];
+      const verified = Number(clean.verified) || endpoints.length;
+      const total = Number(clean.total) || endpoints.length;
+      const dead = Math.max(0, total - verified);
+      const warn = Math.max(0, Math.round(dead * 0.45));
+      const good = Math.max(0, total - dead);
+      const usable = Number(probe.usable_relays) || 0;
+
+      $('#editorialLine').textContent = probe.ok
+        ? (state.lang === 'fa'
+            ? 'Direct socket جواب می‌دهد و ' + usable + ' relay قابل استفاده است.'
+            : 'Direct socket is up and ' + usable + ' relays are usable.')
+        : (state.lang === 'fa'
+            ? 'Direct path لنگ می‌زند. اول relay chain را درست کن.'
+            : 'Direct path is shaky. Fix the relay chain first.');
+
+      $('#dashboardLead').textContent = usable > 0
+        ? (state.lang === 'fa' ? 'گلوگاه فعلی کیفیت Endpoint هاست، نه ساخت کانفیگ.' : 'Your bottleneck is endpoint quality, not config generation.')
+        : (state.lang === 'fa' ? 'relay chain خوابیده. تا این درست نشود بقیه بی‌فایده است.' : 'The relay chain is down. Everything else is makeup until that is fixed.');
+
+      $('#dashboardBody').textContent = state.lang === 'fa'
+        ? 'اگر usable relay صفر شود، کانفیگ‌های Cloudflare-fronted عملاً می‌خوابند.'
+        : 'If usable relay drops to zero, Cloudflare-fronted targets fall flat.';
+
+      $('#statChips').innerHTML = [
+        chip('clean pool', '<strong>' + total + '</strong>'),
+        chip('verified', '<strong>' + verified + '</strong>'),
+        chip('best', '<strong>' + (clean.best || 0) + 'ms</strong>'),
+        chip('usable relays', '<strong>' + usable + '</strong>')
+      ].join('');
+
+      drawRing(good, warn, dead);
+      $('#ringValue').textContent = String(good);
+      $('#ringLabel').textContent = state.lang === 'fa' ? 'endpoint سالم' : 'healthy endpoints';
+      drawSpark(clean.history || []);
+      renderEndpoints(endpoints);
+      renderProbe(probe);
+    }
+
+    function chip(label, value, extra) {
+      return '<span class="chip ' + (extra || '') + '"><span>' + label + '</span>' + value + '</span>';
+    }
+
+    function drawRing(good, warn, bad) {
+      const total = Math.max(1, good + warn + bad);
+      const C = 2 * Math.PI * 48;
+      const segments = [['#ringGood', good], ['#ringWarn', warn], ['#ringBad', bad]];
+      let offset = 0;
+      segments.forEach(function (pair) {
+        const el = $(pair[0]);
+        if (!el) return;
+        const len = C * (pair[1] / total);
+        el.style.strokeDasharray = Math.max(len, 0) + ' ' + C;
+        el.style.strokeDashoffset = String(-offset);
+        offset += len;
+      });
+    }
+
+    function drawSpark(values) {
+      const svg = $('#sparkSvg');
+      if (!svg) return;
+      if (!values || values.length < 2) {
+        svg.innerHTML = '';
+        return;
+      }
+      const w = 320, h = 96, pad = 8;
+      const min = Math.min.apply(null, values);
+      const max = Math.max.apply(null, values);
+      const span = Math.max(1, max - min);
+      const points = values.map(function (v, i) {
+        const x = pad + (i * (w - pad * 2) / Math.max(1, values.length - 1));
+        const y = h - pad - ((v - min) / span) * (h - pad * 2);
+        return [x, y];
+      });
+      const line = points.map(function (pt) { return pt[0] + ',' + pt[1]; }).join(' ');
+      const area = 'M ' + points[0][0] + ' ' + (h - pad) + ' L ' +
+        points.map(function (pt) { return pt[0] + ' ' + pt[1]; }).join(' L ') +
+        ' L ' + points[points.length - 1][0] + ' ' + (h - pad) + ' Z';
+      const dots = points.map(function (pt, i) {
+        const last = i === points.length - 1;
+        return '<circle cx="' + pt[0] + '" cy="' + pt[1] + '" r="' + (last ? 4 : 2.3) + '" fill="' + (last ? 'var(--cyan)' : 'rgba(255,255,255,0.6)') + '"></circle>';
+      }).join('');
+      svg.innerHTML =
+        '<defs>' +
+        '<linearGradient id="sparkStroke" x1="0" y1="0" x2="1" y2="0"><stop offset="0%" stop-color="var(--primary)"/><stop offset="100%" stop-color="var(--cyan)"/></linearGradient>' +
+        '<linearGradient id="sparkFill" x1="0" y1="0" x2="0" y2="1"><stop offset="0%" stop-color="rgba(155,112,255,0.35)"/><stop offset="100%" stop-color="rgba(155,112,255,0)"/></linearGradient>' +
+        '</defs>' +
+        '<path d="' + area + '" fill="url(#sparkFill)"></path>' +
+        '<polyline points="' + line + '" fill="none" stroke="url(#sparkStroke)" stroke-width="3" stroke-linecap="round" stroke-linejoin="round"></polyline>' +
+        dots;
+    }
+
+    function renderEndpoints(endpoints) {
+      const box = $('#endpointList');
+      if (!endpoints.length) {
+        box.innerHTML = '<div class="empty"><p>' + (state.lang === 'fa' ? 'هیچ endpoint ای ثبت نشده.' : 'No endpoints yet.') + '</p></div>';
+        return;
+      }
+      const max = Math.max(240, Math.max.apply(null, endpoints.map(function (e) { return Number(e.latency) || 240; })));
+      box.innerHTML = endpoints.map(function (ep, i) {
+        const latency = Number(ep.latency) || 0;
+        const width = Math.max(10, 100 - ((latency || max) / max) * 100 + 8);
+        const kind = ep.kind === 'domain' ? t('auto') : ep.kind === 'live' ? t('live') : (Number(ep.port) === 443 ? t('tls') : t('http'));
+        return '<article class="endpoint">' +
+          '<div class="index-badge">' + (i + 1) + '</div>' +
+          '<div class="endpoint-main">' +
+          '<div class="endpoint-title"><strong>' + escapeHtml(ep.ip) + ':' + escapeHtml(ep.port) + '</strong><span class="kind-badge">' + kind + '</span></div>' +
+          '<div class="endpoint-sub"><span>' + escapeHtml(ep.colo || 'CF') + '</span><span>' + (latency ? latency + 'ms' : 'auto') + '</span></div>' +
+          '<div class="bar"><span style="width:' + width + '%"></span></div>' +
+          '</div>' +
+          '<div class="latency">' + (latency ? latency + 'ms' : 'auto') + '</div>' +
+          '</article>';
+      }).join('');
+    }
+
+    function renderProbe(probe) {
+      const box = $('#probeChips');
+      if (!probe || !Object.keys(probe).length) {
+        box.innerHTML = '<span class="chip">' + t('loading') + '</span>';
+        return;
+      }
+      const chips = [];
+      const direct = probe.direct || {};
+      chips.push('<span class="chip ' + (direct.ok ? 'ok' : '') + '"><span>direct</span><strong>' + (direct.ok ? (direct.ms + 'ms') : 'down') + '</strong></span>');
+      chips.push('<span class="chip ' + (probe.usable_relays > 0 ? 'ok' : '') + '"><span>' + t('relayUsable') + '</span><strong>' + (probe.usable_relays || 0) + '</strong></span>');
+      (probe.relays || []).forEach(function (r, i) {
+        chips.push('<span class="chip ' + (r.ok ? 'ok' : '') + '"><span>r' + (i + 1) + '</span><strong>' + (r.ok ? (r.ms + 'ms') : 'timeout') + '</strong></span>');
+      });
+      box.innerHTML = chips.join('');
+    }
+
+    function renderVless() {
+      const p = state.payload.panel;
+      const map = {
+        sub: p.links.sub || '',
+        raw: p.links.raw || '',
+        clash: p.links.clash || '',
+        singbox: p.links.singbox || ''
+      };
+      $('#subPreview').textContent = map[state.subFormat] || '';
+      const raw = p.linksRaw || [];
+      const box = $('#configList');
+      if (!raw.length) {
+        box.innerHTML = '<div class="empty"><p>' + (state.lang === 'fa' ? 'کانفیگ تکی موجود نیست. اول پنل بساز.' : 'No single configs yet. Build a panel first.') + '</p></div>';
+        return;
+      }
+      box.innerHTML = raw.map(function (link, i) {
+        return '<details class="config-item">' +
+          '<summary class="config-summary">' +
+          '<div class="index-badge">' + (i + 1) + '</div>' +
+          '<div class="config-meta">' +
+          '<strong>' + (state.lang === 'fa' ? 'کانفیگ' : 'Config') + ' #' + (i + 1) + '</strong>' +
+          '<span>' + escapeHtml(trimMiddle(link, 54)) + '</span>' +
+          '</div>' +
+          '<div class="config-actions">' +
+          '<button class="btn secondary small" data-copy="' + encodeURIComponent(link) + '">' + (state.lang === 'fa' ? 'کپی' : 'Copy') + '</button>' +
+          '<button class="btn ghost small" data-qr="' + encodeURIComponent(link) + '">QR</button>' +
+          '</div>' +
+          '</summary>' +
+          '<div class="config-body"><div class="url-box"><pre>' + escapeHtml(link) + '</pre></div></div>' +
+          '</details>';
+      }).join('');
+    }
+
+    function renderWarp() {
+      const warp = state.payload.warp;
+      $('#warpPreview').textContent = buildWarpPreview();
+      const box = $('#warpEndpointList');
+      if (!warp.endpoints.length) {
+        box.innerHTML = '<div class="empty"><p>' + (state.lang === 'fa' ? 'endpoint ای برای WARP ثبت نشده.' : 'No WARP endpoints yet.') + '</p></div>';
+        return;
+      }
+      box.innerHTML = warp.endpoints.map(function (ep, i) {
+        const score = Number(ep.score) || Number(ep.latency) || 0;
+        return '<article class="warp-endpoint">' +
+          '<div class="warp-top"><strong>' + escapeHtml(ep.ip) + ':' + escapeHtml(ep.port) + '</strong><span class="chip ' + (ep.stable ? 'ok' : '') + '">' + (ep.stable ? 'stable' : 'watching') + '</span></div>' +
+          '<div class="warp-stats">' +
+          '<span>latency ' + (Number(ep.latency) || 0) + 'ms</span>' +
+          '<span>jitter ' + (Number(ep.jitter) || 0) + 'ms</span>' +
+          '<span>loss ' + Math.round((Number(ep.loss) || 0) * 100) + '%</span>' +
+          '<span>score ' + score + '</span>' +
+          '</div>' +
+          '<div class="bar"><span style="width:' + Math.max(10, 100 - Math.min(100, score / 3)) + '%"></span></div>' +
+          '<div class="action-row"><button class="btn secondary small" data-warp-endpoint="' + i + '">' + (state.lang === 'fa' ? 'انتخاب برای خروجی' : 'Use for export') + '</button></div>' +
+          '</article>';
+      }).join('');
+    }
+
+    function renderSettings() {
+      const s = state.payload.settings;
+      $('#tlsPorts').innerHTML = (s.tlsPorts || []).map(function (p) { return '<span class="port-chip">' + escapeHtml(p) + '</span>'; }).join('');
+      $('#httpPorts').innerHTML = (s.httpPorts || []).map(function (p) { return '<span class="port-chip">' + escapeHtml(p) + '</span>'; }).join('');
+      $('#tlsCountValue').textContent = state.settings.tlsCount;
+      $('#httpCountValue').textContent = state.settings.httpCount;
+      $('#tokenStorageText').textContent = s.storeTokens
+        ? (state.lang === 'fa' ? 'برای rebuild و autopilot لازم است' : 'Needed for rebuild and autopilot')
+        : (state.lang === 'fa' ? 'توکن ذخیره نشده، بعضی اکشن‌ها کار نمی‌کنند' : 'Token is not stored, some actions will fail');
+      $('#tokenStorageBadge').textContent = s.storeTokens
+        ? (state.lang === 'fa' ? 'فعال' : 'enabled')
+        : (state.lang === 'fa' ? 'غیرفعال' : 'disabled');
+      $('#tokenStorageBadge').className = 'chip ' + (s.storeTokens ? 'ok' : '');
+      $('#themeSync').classList.toggle('on', state.themeSync);
+      $$('[data-lang]').forEach(function (btn) { btn.classList.toggle('active', btn.dataset.lang === state.lang); });
+    }
+
+    function renderStateBox() {
+      const box = $('#stateBox');
+      if (state.mock) {
+        box.innerHTML = '<div class="empty"><h3>' + t('firstRun') + '</h3><p>' + t('firstRunText') + '</p></div>';
+        return;
+      }
+      if (state.liveHealth && state.liveHealth.error) {
+        box.innerHTML = '<div class="error"><h3>' + t('errorTitle') + '</h3><p>' + t('errorText') + '</p>' +
+          '<div class="action-row"><button class="btn secondary" data-action="refresh-live">' + (state.lang === 'fa' ? 'تلاش دوباره' : 'Retry') + '</button></div></div>';
+        return;
+      }
+      box.innerHTML = '<div class="empty"><h3>' + t('linked') + '</h3><p>' + t('linkedText') + '</p></div>';
+    }
+
+    function bindUI() {
+      $$('.tab').forEach(function (btn) {
+        btn.addEventListener('click', function () { setView(btn.dataset.view); });
+      });
+      $$('#subFormatTabs button').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          state.subFormat = btn.dataset.subFormat;
+          $$('#subFormatTabs button').forEach(function (b) { b.classList.toggle('active', b === btn); });
+          renderVless();
+        });
+      });
+      $$('#warpFormatTabs button').forEach(function (btn) {
+        btn.addEventListener('click', function () {
+          state.warpFormat = btn.dataset.warpFormat;
+          $$('#warpFormatTabs button').forEach(function (b) { b.classList.toggle('active', b === btn); });
+          renderWarp();
+        });
+      });
+
+      document.addEventListener('click', function (e) {
+        const closeEl = e.target.closest('[data-close]');
+        if (closeEl) {
+          const dialog = document.getElementById(closeEl.dataset.close);
+          if (dialog && dialog.close) dialog.close();
+          return;
+        }
+        const langEl = e.target.closest('[data-lang]');
+        if (langEl) {
+          state.lang = langEl.dataset.lang === 'en' ? 'en' : 'fa';
+          document.documentElement.lang = state.lang;
+          document.documentElement.dir = state.lang === 'fa' ? 'rtl' : 'ltr';
+          renderAll();
+          return;
+        }
+        const endpointEl = e.target.closest('[data-warp-endpoint]');
+        if (endpointEl) {
+          state.payload.warp.selectedIndex = Number(endpointEl.dataset.warpEndpoint) || 0;
+          renderWarp();
+          showToast(state.lang === 'fa' ? 'انتخاب شد' : 'Selected');
+          return;
+        }
+        const stepBtn = e.target.closest('[data-step]');
+        if (stepBtn) {
+          const box = stepBtn.closest('[data-stepper]');
+          const key = box.dataset.stepper;
+          const delta = stepBtn.dataset.step === 'plus' ? 1 : -1;
+          state.settings[key] = Math.max(0, Math.min(8, state.settings[key] + delta));
+          renderSettings();
+          return;
+        }
+        const copyEl = e.target.closest('[data-copy]');
+        if (copyEl) {
+          copyText(decodeURIComponent(copyEl.dataset.copy));
+          return;
+        }
+        const qrEl = e.target.closest('[data-qr]');
+        if (qrEl) {
+          openQr(decodeURIComponent(qrEl.dataset.qr), t('qrConfig'));
+          return;
+        }
+        const actionEl = e.target.closest('[data-action]');
+        if (!actionEl) return;
+        handleAction(actionEl.dataset.action);
+      });
+
+      $('#themeSync').addEventListener('click', function () {
+        state.themeSync = !state.themeSync;
+        renderSettings();
+        applyTelegramTheme();
+      });
+    }
+
+    function handleAction(action) {
+      switch (action) {
+        case 'copy:sub': return copyText($('#subPreview').textContent.trim());
+        case 'copy:warp': return copyText($('#warpPreview').textContent.trim());
+        case 'copy:qrsource': return copyText(state.qrSource);
+        case 'qr:sub': return openQr($('#subPreview').textContent.trim(), t('qrSub'));
+        case 'qr:warp': return openQr($('#warpPreview').textContent.trim(), t('qrWarp'));
+        case 'open:sub': return openExternal($('#subPreview').textContent.trim());
+        case 'download:warp': return downloadWarp();
+        case 'refresh-live': return fetchLive();
+        case 'save-settings':
+          return sendAction('save_settings', {
+            tls_count: state.settings.tlsCount,
+            http_count: state.settings.httpCount,
+            lang: state.lang
+          });
+        case 'send:apply': return sendAction('panel_apply');
+        case 'send:rescan': return sendAction('panel_rescan');
+        case 'send:rebuild': return sendAction('panel_rebuild');
+        case 'send:ping': return sendAction('panel_ping');
+        case 'send:delete':
+          showToast(t('deleteAsk'));
+          return sendAction('panel_delete_request');
+        case 'send:warp-rescan': return sendAction('warp_rescan');
+        case 'send:warp-build': return sendAction('warp_build');
+        default: return undefined;
+      }
+    }
+
+    function setView(view) {
+      state.view = view;
+      $$('.view').forEach(function (v) { v.classList.toggle('active', v.id === 'view-' + view); });
+      $$('.tab').forEach(function (b) { b.classList.toggle('active', b.dataset.view === view); });
+      if (tg && tg.HapticFeedback) {
+        try { tg.HapticFeedback.selectionChanged(); } catch (e) { /* ignore */ }
+      }
+    }
+
+    async function copyText(text) {
+      if (!text) return;
+      try {
+        await navigator.clipboard.writeText(text);
+      } catch (e) {
+        const ta = document.createElement('textarea');
+        ta.value = text;
+        ta.style.position = 'fixed';
+        ta.style.opacity = '0';
+        document.body.appendChild(ta);
+        ta.focus();
+        ta.select();
+        try { document.execCommand('copy'); } catch (err) { /* ignore */ }
+        ta.remove();
+      }
+      showToast(t('copied'));
+    }
+
+    function sendAction(type, payload) {
+      const body = {
+        type: type,
+        payload: payload || {},
+        ts: Date.now(),
+        panel_uuid: (state.payload.panel && state.payload.panel.uuid) || null
+      };
+      if (tg && typeof tg.sendData === 'function') {
+        try {
+          tg.sendData(JSON.stringify(body));
+          showToast(t('sent'));
+          return;
+        } catch (e) { /* fall through */ }
+      }
+      showToast(state.lang === 'fa' ? 'این اکشن فقط از داخل ربات کار می‌کند' : 'This action only works inside the bot');
+    }
+
+    function openExternal(url) {
+      if (!url) return;
+      if (tg && tg.openLink) tg.openLink(url);
+      else window.open(url, '_blank', 'noopener');
+    }
+
+    function downloadWarp() {
+      const text = $('#warpPreview').textContent.trim();
+      if (!text) return;
+      const format = state.warpFormat;
+      const ext = format === 'clash' ? 'yaml' : format === 'singbox' ? 'json' : 'conf';
+      const blob = new Blob([text], { type: 'text/plain;charset=utf-8' });
+      const a = document.createElement('a');
+      a.href = URL.createObjectURL(blob);
+      a.download = 'autovless-warp.' + ext;
+      document.body.appendChild(a);
+      a.click();
+      a.remove();
+      setTimeout(function () { URL.revokeObjectURL(a.href); }, 1500);
+      showToast(state.lang === 'fa' ? 'دانلود شروع شد' : 'Download started');
+    }
+
+    function showToast(text, meta) {
+      const toast = $('#toast');
+      $('#toastText').textContent = text;
+      $('#toastMeta').textContent = meta || '';
+      toast.classList.add('show');
+      clearTimeout(state.toastTimer);
+      state.toastTimer = setTimeout(function () { toast.classList.remove('show'); }, 1900);
+    }
+
+    function escapeHtml(str) {
+      return String(str === undefined || str === null ? '' : str).replace(/[&<>"']/g, function (s) {
+        return { '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[s];
+      });
+    }
+
+    function trimMiddle(str, max) {
+      str = String(str);
+      if (str.length <= max) return str;
+      const side = Math.floor((max - 1) / 2);
+      return str.slice(0, side) + '…' + str.slice(-side);
+    }
+
+    function buildWarpPreview() {
+      const warp = state.payload.warp;
+      const identity = warp.identity || {};
+      const profile = warp.profile || {};
+      const list = warp.endpoints || [];
+      const idx = Math.min(Number(warp.selectedIndex) || 0, Math.max(0, list.length - 1));
+      const endpoint = list[idx] || { ip: '162.159.192.1', port: 2408 };
+      const address = [identity.v4 ? identity.v4 + '/32' : null, identity.v6 ? identity.v6 + '/128' : null].filter(Boolean).join(', ');
+      const peer = [
+        '[Peer]',
+        'PublicKey = ' + (identity.peer_public_key || ''),
+        'AllowedIPs = 0.0.0.0/0, ::/0',
+        'Endpoint = ' + endpoint.ip + ':' + endpoint.port,
+        'PersistentKeepalive = 25',
+        ''
+      ];
+
+      if (state.warpFormat === 'wireguard') {
+        return ['[Interface]', 'PrivateKey = ' + (identity.private_key || ''), 'Address = ' + address, 'DNS = 1.1.1.1', 'MTU = 1280', ''].concat(peer).join('\n');
+      }
+
+      if (state.warpFormat === 'amnezia' || state.warpFormat === 'amnezia2') {
+        const lines = [
+          '[Interface]',
+          'PrivateKey = ' + (identity.private_key || ''),
+          'Address = ' + address,
+          'DNS = 1.1.1.1',
+          'MTU = 1280',
+          'Jc = ' + (profile.jc == null ? 5 : profile.jc),
+          'Jmin = ' + (profile.jmin == null ? 120 : profile.jmin),
+          'Jmax = ' + (profile.jmax == null ? 760 : profile.jmax),
+          'S1 = 0', 'S2 = 0', 'H1 = 1', 'H2 = 2', 'H3 = 3', 'H4 = 4'
+        ];
+        if (state.warpFormat === 'amnezia2' && profile.i1) lines.push('I1 = ' + profile.i1);
+        return lines.concat(['']).concat(peer).join('\n');
+      }
+
+      if (state.warpFormat === 'singbox') {
+        return JSON.stringify({
+          outbounds: [{
+            type: 'wireguard',
+            tag: 'AutoVless-WARP-' + (idx + 1),
+            server: endpoint.ip,
+            server_port: Number(endpoint.port),
+            local_address: [identity.v4, identity.v6].filter(Boolean),
+            private_key: identity.private_key || '',
+            peer_public_key: identity.peer_public_key || '',
+            reserved: identity.reserved || [0, 0, 0],
+            mtu: 1280
+          }]
+        }, null, 2);
+      }
+
+      return [
+        '# AutoVless WARP',
+        'mixed-port: 7890',
+        'mode: rule',
+        'proxies:',
+        '  - name: "AutoVless-WARP-' + (idx + 1) + '"',
+        '    type: wireguard',
+        '    server: ' + endpoint.ip,
+        '    port: ' + endpoint.port,
+        '    ip: ' + (identity.v4 || ''),
+        identity.v6 ? '    ipv6: ' + identity.v6 : '',
+        '    private-key: ' + (identity.private_key || ''),
+        '    public-key: ' + (identity.peer_public_key || ''),
+        '    reserved: [' + (identity.reserved || [0, 0, 0]).join(', ') + ']',
+        '    mtu: 1280',
+        '    udp: true',
+        '    remote-dns-resolve: true',
+        '    dns: [1.1.1.1]'
+      ].filter(Boolean).join('\n');
+    }
+
+    function openQr(text, title) {
+      if (!text) return;
+      state.qrSource = text;
+      $('#qrTitle').textContent = title;
+      $('#qrSubtitle').textContent = trimMiddle(text, 64);
+      const stage = $('#qrStage');
+      try {
+        stage.innerHTML = QR.svg(text);
+      } catch (e) {
+        stage.innerHTML = '<p style="color:#111;text-align:center;">' +
+          (state.lang === 'fa' ? 'متن برای QR طولانی است. از دکمه کپی استفاده کن.' : 'Too long for a QR. Use copy instead.') +
+          '</p>';
+      }
+      const dialog = $('#qrDialog');
+      if (dialog.showModal) dialog.showModal();
+    }
+
+    /* compact QR generator: byte mode, versions 1-10, ECC level M, mask 0 */
+    const QR = (function () {
+      const EC_M = [null, [26, 16], [44, 28], [70, 44], [100, 64], [134, 86], [172, 108], [196, 124], [242, 154], [292, 182], [346, 216]];
+      const ALIGN = [[], [], [6, 18], [6, 22], [6, 26], [6, 30], [6, 34], [6, 22, 38], [6, 24, 42], [6, 26, 46], [6, 28, 50]];
+      const GF_EXP = new Array(512).fill(0);
+      const GF_LOG = new Array(256).fill(0);
+      let x = 1;
+      for (let i = 0; i < 255; i++) {
+        GF_EXP[i] = x;
+        GF_LOG[x] = i;
+        x <<= 1;
+        if (x & 0x100) x ^= 0x11d;
+      }
+      for (let i = 255; i < 512; i++) GF_EXP[i] = GF_EXP[i - 255];
+
+      function mul(a, b) {
+        if (!a || !b) return 0;
+        return GF_EXP[GF_LOG[a] + GF_LOG[b]];
+      }
+      function polyMul(a, b) {
+        const out = new Array(a.length + b.length - 1).fill(0);
+        for (let i = 0; i < a.length; i++) {
+          for (let j = 0; j < b.length; j++) out[i + j] ^= mul(a[i], b[j]);
+        }
+        return out;
+      }
+      function generator(deg) {
+        let poly = [1];
+        for (let i = 0; i < deg; i++) poly = polyMul(poly, [1, GF_EXP[i]]);
+        return poly;
+      }
+      function reedSolomon(data, ecLen) {
+        const gen = generator(ecLen);
+        const out = data.concat(new Array(ecLen).fill(0));
+        for (let i = 0; i < data.length; i++) {
+          const factor = out[i];
+          if (!factor) continue;
+          for (let j = 0; j < gen.length; j++) out[i + j] ^= mul(gen[j], factor);
+        }
+        return out.slice(data.length);
+      }
+      function utf8Bytes(str) {
+        return Array.prototype.slice.call(new TextEncoder().encode(str));
+      }
+      function versionFor(byteLength) {
+        for (let v = 1; v <= 10; v++) {
+          const dataCodewords = EC_M[v][1];
+          const headerBits = 4 + (v < 10 ? 8 : 16);
+          if (byteLength * 8 + headerBits <= dataCodewords * 8) return v;
+        }
+        return 0;
+      }
+      function encode(text) {
+        const bytes = utf8Bytes(text);
+        const ver = versionFor(bytes.length);
+        if (!ver) throw new Error('payload too long for QR');
+        const dataCodewords = EC_M[ver][1];
+        const ecCodewords = EC_M[ver][0] - dataCodewords;
+
+        const bits = [];
+        const put = function (val, len) {
+          for (let i = len - 1; i >= 0; i--) bits.push((val >>> i) & 1);
+        };
+        put(0b0100, 4);
+        put(bytes.length, ver < 10 ? 8 : 16);
+        bytes.forEach(function (b) { put(b, 8); });
+        const capacity = dataCodewords * 8;
+        for (let i = 0; i < 4 && bits.length < capacity; i++) bits.push(0);
+        while (bits.length % 8) bits.push(0);
+
+        const data = [];
+        for (let i = 0; i < bits.length; i += 8) {
+          let v = 0;
+          for (let j = 0; j < 8; j++) v = (v << 1) | bits[i + j];
+          data.push(v);
+        }
+        const pads = [0xec, 0x11];
+        let padIndex = 0;
+        while (data.length < dataCodewords) data.push(pads[padIndex++ % 2]);
+
+        const codewords = data.concat(reedSolomon(data, ecCodewords));
+        const size = ver * 4 + 17;
+        const modules = [];
+        const isFunc = [];
+        for (let i = 0; i < size; i++) {
+          modules.push(new Array(size).fill(false));
+          isFunc.push(new Array(size).fill(false));
+        }
+
+        const set = function (px, py, val) {
+          if (px < 0 || py < 0 || px >= size || py >= size) return;
+          modules[py][px] = val;
+          isFunc[py][px] = true;
+        };
+        const finder = function (fx, fy) {
+          for (let dy = -1; dy <= 7; dy++) {
+            for (let dx = -1; dx <= 7; dx++) {
+              const d = Math.max(Math.abs(dx - 3), Math.abs(dy - 3));
+              set(fx + dx, fy + dy, d !== 2 && d !== 4);
+            }
+          }
+        };
+        finder(0, 0);
+        finder(size - 7, 0);
+        finder(0, size - 7);
+        for (let i = 8; i < size - 8; i++) {
+          set(i, 6, i % 2 === 0);
+          set(6, i, i % 2 === 0);
+        }
+        set(8, size - 8, true);
+        const align = ALIGN[ver] || [];
+        for (let ai = 0; ai < align.length; ai++) {
+          for (let aj = 0; aj < align.length; aj++) {
+            const ax = align[aj];
+            const ay = align[ai];
+            if ((ax === 6 && ay === 6) || (ax === 6 && ay === size - 7) || (ax === size - 7 && ay === 6)) continue;
+            for (let dy = -2; dy <= 2; dy++) {
+              for (let dx = -2; dx <= 2; dx++) {
+                set(ax + dx, ay + dy, Math.max(Math.abs(dx), Math.abs(dy)) !== 1);
+              }
+            }
+          }
+        }
+        for (let i = 0; i < 9; i++) {
+          set(8, i, false);
+          set(i, 8, false);
+        }
+        for (let i = 0; i < 8; i++) {
+          set(size - 1 - i, 8, false);
+          set(8, size - 1 - i, false);
+        }
+
+        const dataBits = [];
+        codewords.forEach(function (c) {
+          for (let i = 7; i >= 0; i--) dataBits.push((c >>> i) & 1);
+        });
+        let bitIndex = 0;
+        for (let right = size - 1; right >= 1; right -= 2) {
+          if (right === 6) right--;
+          for (let vert = 0; vert < size; vert++) {
+            for (let j = 0; j < 2; j++) {
+              const px = right - j;
+              const upward = ((right + 1) & 2) === 0;
+              const py = upward ? size - 1 - vert : vert;
+              if (isFunc[py][px]) continue;
+              let bit = false;
+              if (bitIndex < dataBits.length) bit = dataBits[bitIndex++] === 1;
+              if ((px + py) % 2 === 0) bit = !bit;
+              modules[py][px] = bit;
+            }
+          }
+        }
+
+        // format info for ECC M with mask pattern 0
+        const formatBits = 0b101010000010010;
+        for (let i = 0; i <= 5; i++) set(8, i, ((formatBits >> i) & 1) !== 0);
+        set(8, 7, ((formatBits >> 6) & 1) !== 0);
+        set(8, 8, ((formatBits >> 7) & 1) !== 0);
+        set(7, 8, ((formatBits >> 8) & 1) !== 0);
+        for (let i = 9; i < 15; i++) set(14 - i, 8, ((formatBits >> i) & 1) !== 0);
+        for (let i = 0; i < 8; i++) set(size - 1 - i, 8, ((formatBits >> i) & 1) !== 0);
+        for (let i = 8; i < 15; i++) set(8, size - 15 + i, ((formatBits >> i) & 1) !== 0);
+        set(8, size - 8, true);
+
+        return { size: size, modules: modules };
+      }
+
+      function svg(text) {
+        const qr = encode(text);
+        const margin = 2;
+        const dim = qr.size + margin * 2;
+        let path = '';
+        for (let y = 0; y < qr.size; y++) {
+          for (let px = 0; px < qr.size; px++) {
+            if (qr.modules[y][px]) path += 'M' + (px + margin) + ',' + (y + margin) + 'h1v1h-1z';
+          }
+        }
+        return '<svg viewBox="0 0 ' + dim + ' ' + dim + '" shape-rendering="crispEdges" xmlns="http://www.w3.org/2000/svg">' +
+          '<rect width="100%" height="100%" fill="#fff"/><path d="' + path + '" fill="#111"/></svg>';
+      }
+
+      return { svg: svg };
+    })();
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', init);
+    } else {
+      init();
+    }
+  })();
+  </script>
+</body>
+</html>
