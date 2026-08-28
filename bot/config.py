@@ -13,7 +13,12 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 TLS_PORTS = (443, 2053, 2083, 2087, 2096, 8443)
 HTTP_PORTS = (80, 8080, 8880, 2052, 2082, 2086, 2095)
+# More than one port per group on purpose: a single filtered port must never be
+# able to take out every TLS config a user holds.
+DEFAULT_TLS_PORTS = (443, 2053, 8443)
+DEFAULT_HTTP_PORTS = (80, 8080)
 DEFAULT_CLEAN_SOURCES = ("https://ipdb.api.030101.xyz/?type=bestcf", "https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestcf.txt")
+DEFAULT_CLEAN_FILES = ("endpoints/clean-ips.txt",)
 DEFAULT_CLEAN_DOMAINS = ("cf.090227.xyz", "cdn.xn--b6gac.eu.org", "cf.877774.xyz", "cfip.cfcdn.eu.org")
 DEFAULT_PROXY_SOURCES = ("https://ipdb.api.030101.xyz/?type=bestproxy", "https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestproxy.txt")
 DEFAULT_PROXY_SEEDS = ("proxyip.fxxk.dedyn.io", "proxyip.aliyun.fxxk.dedyn.io", "proxyip.oracle.fxxk.dedyn.io", "proxyip.digitalocean.fxxk.dedyn.io", "cdn.xn--b6gac.eu.org", "cdn-all.xn--b6gac.eu.org", "bpb.yousef.isegaro.com", "edgetunnel.anycast.eu.org")
@@ -55,8 +60,10 @@ class Settings:
     tls_ports: tuple[int, ...]; http_ports: tuple[int, ...]; tls_config_count: int; http_config_count: int
     scan_interval: int; scan_batch: int; scan_concurrency: int; scan_timeout: float
     verify_top: int; verify_probes: int; scan_rounds: int; scan_waves: int; scan_min_verified: int
+    verify_ws: bool; verify_host: str; accept_timeout: float; accept_retries: int
     scan_ttl: int; stale_factor: int; sweep_per_subnet: int; pool_size: int
-    clean_ip_sources: tuple[str, ...]; clean_domains: tuple[str, ...]; source_ttl: int; source_retry: int; seed_limit: int; max_fails: int
+    clean_ip_sources: tuple[str, ...]; clean_ip_files: tuple[str, ...]; clean_domains: tuple[str, ...]
+    source_ttl: int; source_retry: int; seed_limit: int; max_fails: int
     proxy_ip: str; proxy_seeds: tuple[str, ...]; proxy_sources: tuple[str, ...]; proxy_ports: tuple[int, ...]
     proxy_scan_interval: int; proxy_scan_limit: int; proxy_pool_size: int; proxy_per_panel: int
     dns_server: str; fallback_host: str; health_attempts: int; sub_sources: tuple[str, ...]; sub_refresh: int
@@ -89,13 +96,20 @@ def load_settings() -> Settings:
         sweep_state=Path(_str("SWEEP_STATE", str(data / "clean-sweep.json"))), brand=_str("BRAND", "AutoVless"),
         support_url=_str("SUPPORT_URL", "https://t.me/AutoVless"), channel_url=_str("CHANNEL_URL", "https://t.me/AutoVless"),
         donate_url=_str("DONATE_URL"), github_url=_str("GITHUB_URL", "https://github.com/arjeyproject/AutoVless"), webapp_url=_str("WEBAPP_URL"), default_lang=lang,
-        tls_ports=_ports("TLS_PORTS", (443,), TLS_PORTS), http_ports=_ports("HTTP_PORTS", (80,), HTTP_PORTS),
+        tls_ports=_ports("TLS_PORTS", DEFAULT_TLS_PORTS, TLS_PORTS), http_ports=_ports("HTTP_PORTS", DEFAULT_HTTP_PORTS, HTTP_PORTS),
         tls_config_count=max(0, _int("TLS_CONFIG_COUNT", 6)), http_config_count=max(0, _int("HTTP_CONFIG_COUNT", 3)),
         scan_interval=max(60, _int("SCAN_INTERVAL", 480)), scan_batch=max(128, _int("SCAN_BATCH", 1600)), scan_concurrency=max(16, _int("SCAN_CONCURRENCY", 192)),
         scan_timeout=max(.3, _int("SCAN_TIMEOUT_MS", 1400) / 1000), verify_top=max(8, _int("VERIFY_TOP", 48)), verify_probes=max(2, min(5, _int("VERIFY_PROBES", 3))),
         scan_rounds=max(2, min(5, _int("SCAN_ROUNDS", 3))), scan_waves=max(1, min(5, _int("SCAN_WAVES", 4))), scan_min_verified=max(4, _int("SCAN_MIN_VERIFIED", 12)),
+        # A TLS endpoint is only verified by a real WebSocket upgrade against a
+        # real panel hostname. VERIFY_HOST pins that hostname; left blank, the
+        # newest live panel is used and a cold pool falls back to the weaker
+        # trace check until the first panel exists.
+        verify_ws=_bool("VERIFY_WS", True), verify_host=_str("VERIFY_HOST").lower(),
+        accept_timeout=max(2.0, _int("ACCEPT_TIMEOUT_MS", 8000) / 1000), accept_retries=max(0, min(4, _int("ACCEPT_RETRIES", 2))),
         scan_ttl=max(300, _int("SCAN_TTL", 3600)), stale_factor=max(2, _int("STALE_FACTOR", 8)), sweep_per_subnet=max(1, min(8, _int("SWEEP_PER_SUBNET", 2))), pool_size=max(24, _int("POOL_SIZE", 240)),
-        clean_ip_sources=clean, clean_domains=_list("CLEAN_DOMAINS", DEFAULT_CLEAN_DOMAINS), source_ttl=max(300, _int("SOURCE_TTL", 1800)), source_retry=max(60, _int("SOURCE_RETRY", 180)), seed_limit=max(50, _int("SEED_LIMIT", 800)), max_fails=max(1, _int("MAX_FAILS", 3)),
+        clean_ip_sources=clean, clean_ip_files=_list("CLEAN_IP_FILES", DEFAULT_CLEAN_FILES), clean_domains=_list("CLEAN_DOMAINS", DEFAULT_CLEAN_DOMAINS),
+        source_ttl=max(300, _int("SOURCE_TTL", 1800)), source_retry=max(60, _int("SOURCE_RETRY", 180)), seed_limit=max(50, _int("SEED_LIMIT", 800)), max_fails=max(1, _int("MAX_FAILS", 3)),
         proxy_ip=proxy_ip, proxy_seeds=_list("PROXY_IP", DEFAULT_PROXY_SEEDS), proxy_sources=_list("PROXY_IP_SOURCES", DEFAULT_PROXY_SOURCES), proxy_ports=_ports("PROXY_PORTS", (443,), TLS_PORTS), proxy_scan_interval=max(300, _int("PROXY_SCAN_INTERVAL", 1200)), proxy_scan_limit=max(32, _int("PROXY_SCAN_LIMIT", 500)), proxy_pool_size=max(8, _int("PROXY_POOL_SIZE", 80)), proxy_per_panel=max(2, _int("PROXY_PER_PANEL", 6)),
         dns_server=_str("DNS_SERVER", "8.8.8.8"), fallback_host=_str("FALLBACK_HOST", "www.wikipedia.org"), health_attempts=max(2, _int("HEALTH_ATTEMPTS", 8)), sub_sources=_list("SUB_SOURCES", clean), sub_refresh=max(60, _int("SUB_REFRESH", 180)),
         autopilot=_bool("AUTOPILOT", True), autopilot_interval=max(120, _int("AUTOPILOT_INTERVAL", 600)), autopilot_batch=max(1, _int("AUTOPILOT_BATCH", 8)), autopilot_max_age=max(600, _int("AUTOPILOT_MAX_AGE", 10800)),

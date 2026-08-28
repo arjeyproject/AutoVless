@@ -4,10 +4,14 @@ from __future__ import annotations
 
 import base64
 import json
+import logging
 import uuid as uuid_lib
+from typing import Iterable, Optional
 from urllib.parse import quote, urlencode
 
 from .config import settings
+
+log = logging.getLogger("autovless.vless")
 
 WS_PATH = "/?ed=2560"
 
@@ -18,6 +22,10 @@ def new_uuid() -> str:
 
 def is_tls(port: int) -> bool:
     return int(port) in settings.tls_ports
+
+
+def group_of(port: int) -> str:
+    return "tls" if is_tls(port) else "http"
 
 
 def _normalise(row: dict, kind: str = "") -> dict:
@@ -32,75 +40,150 @@ def _normalise(row: dict, kind: str = "") -> dict:
     }
 
 
-async def collect_endpoints(scanner) -> list[dict]:
-    """Pick the entry points a panel ships with.
+def _rank(row: dict) -> float:
+    return float(row["latency"]) + float(row["jitter"]) * 2
 
-    Two rules decide the shape of this list:
 
-      * every group gets the count it asked for. A short TLS pool used to mean
-        fewer configs, and a short HTTP pool used to mean configs pinned to
-        addresses that were never tested on port 80.
-      * at least one self-healing hostname rides along whenever the pool has
-        one, so a panel keeps working after its raw addresses go stale.
+async def _buckets(scanner, ports: Iterable[int], depth: int) -> dict[int, list[dict]]:
+    """Verified rows per port, best first.
+
+    Unverified rows are dropped here and nowhere else, so no later step has to
+    remember not to ship them.
     """
-    endpoints: list[dict] = []
-    used: set[str] = set()
+    out: dict[int, list[dict]] = {}
+    for port in ports:
+        rows = [_normalise(row) for row in await scanner.pick(int(port), depth)]
+        rows = [row for row in rows if row["verified"] and int(row["port"]) == int(port)]
+        rows.sort(key=_rank)
+        if rows:
+            out[int(port)] = rows
+    return out
 
-    plans = (
-        (settings.tls_ports, settings.tls_config_count),
-        (settings.http_ports, settings.http_config_count),
-    )
 
-    for ports, needed in plans:
-        if needed <= 0 or not ports:
-            continue
+def _spread(buckets: dict[int, list[dict]], needed: int, used: set[str]) -> list[dict]:
+    """Fill a group by walking its ports in turn.
 
-        bucket: list[dict] = []
-        for port in ports:
-            for row in await scanner.pick(port, needed * 3):
-                bucket.append(_normalise(row))
-        bucket.sort(key=lambda row: (row["latency"] + row["jitter"] * 2))
+    Taking the globally fastest rows would put every config in a group on one
+    port, because whichever port the nearest colo answers quickest wins every
+    comparison. Then the day that port is filtered on someone's ISP, the whole
+    group dies at once. Round-robin costs a few milliseconds and buys the user a
+    second and third way in.
+    """
+    chosen: list[dict] = []
+    if needed <= 0 or not buckets:
+        return chosen
 
-        chosen: list[dict] = []
-        hostnames = [row for row in bucket if row["kind"] == "domain"]
-        addresses = [row for row in bucket if row["kind"] != "domain"]
+    cursors = {port: 0 for port in buckets}
 
-        # one hostname up front when we can afford it
-        if hostnames and needed >= 2:
-            chosen.append(hostnames[0])
-            used.add(hostnames[0]["ip"])
+    # One self-healing hostname up front whenever the group can spare a slot:
+    # the address behind it is replaced upstream, so that entry keeps working
+    # long after every raw address in the list has gone stale.
+    if needed >= 2:
+        for port in buckets:
+            hostname = next(
+                (row for row in buckets[port] if row["kind"] == "domain" and row["ip"] not in used),
+                None,
+            )
+            if hostname is not None:
+                used.add(hostname["ip"])
+                chosen.append(hostname)
+                break
 
-        for row in addresses + hostnames:
+    while len(chosen) < needed:
+        progressed = False
+        for port in list(buckets):
             if len(chosen) >= needed:
                 break
-            if row["ip"] in used:
-                continue
-            used.add(row["ip"])
-            chosen.append(row)
-
-        # still short: allow an address already used on another port group
-        if len(chosen) < needed:
-            for row in addresses + hostnames:
-                if len(chosen) >= needed:
-                    break
-                if any(row["ip"] == item["ip"] and row["port"] == item["port"] for item in chosen):
+            rows = buckets[port]
+            index = cursors[port]
+            while index < len(rows):
+                row = rows[index]
+                index += 1
+                if row["ip"] in used:
                     continue
+                used.add(row["ip"])
                 chosen.append(row)
+                progressed = True
+                break
+            cursors[port] = index
+        if not progressed:
+            break
 
-        # last resort: unverified rows, so the user still gets a full set
-        if len(chosen) < needed:
-            for port in ports:
-                for row in await scanner.pick(port, needed * 2, verified_only=False):
-                    item = _normalise(row)
-                    if len(chosen) >= needed:
-                        break
-                    if any(item["ip"] == existing["ip"] for existing in chosen):
-                        continue
-                    chosen.append(item)
+    return chosen
 
-        endpoints.extend(chosen[:needed])
 
+async def collect_endpoints(
+    scanner,
+    tls_count: Optional[int] = None,
+    http_count: Optional[int] = None,
+) -> list[dict]:
+    """Pick the entry points a panel ships with.
+
+    Three rules, and the first one is the reason this function was rewritten:
+
+      * an endpoint that has not been verified is never handed to a user. The
+        old last-resort branch pulled rows with ``verified_only=False`` so that
+        the count always came out right, which is how a thin TLS pool turned
+        into five configs that could not ping. Fewer working configs beat a full
+        set of dead ones every single time.
+      * every group is spread across all of its ports, so no single filtered
+        port can empty a group.
+      * slots a group cannot fill honestly move to a group that can.
+    """
+    tls_needed = settings.tls_config_count if tls_count is None else max(0, int(tls_count))
+    http_needed = settings.http_config_count if http_count is None else max(0, int(http_count))
+
+    plans = [
+        {"key": "tls", "ports": tuple(settings.tls_ports), "needed": tls_needed, "chosen": []},
+        {"key": "http", "ports": tuple(settings.http_ports), "needed": http_needed, "chosen": []},
+    ]
+
+    used: set[str] = set()
+    pools: dict[str, dict[int, list[dict]]] = {}
+
+    for plan in plans:
+        if plan["needed"] <= 0 or not plan["ports"]:
+            pools[plan["key"]] = {}
+            continue
+        depth = max(12, plan["needed"] * 6)
+        pools[plan["key"]] = await _buckets(scanner, plan["ports"], depth)
+        plan["chosen"] = _spread(pools[plan["key"]], plan["needed"], used)
+
+    shortfall = sum(max(0, plan["needed"] - len(plan["chosen"])) for plan in plans)
+    if shortfall:
+        log.warning(
+            "short by %s verified endpoint(s): %s",
+            shortfall,
+            ", ".join(f"{plan['key']}={len(plan['chosen'])}/{plan['needed']}" for plan in plans),
+        )
+        for plan in plans:
+            if shortfall <= 0:
+                break
+            extra = _spread(pools.get(plan["key"]) or {}, shortfall, used)
+            plan["chosen"].extend(extra)
+            shortfall -= len(extra)
+
+    endpoints = [row for plan in plans for row in plan["chosen"]]
+    log.info(
+        "selected %s endpoints (%s)",
+        len(endpoints),
+        ", ".join(f"{row['ip']}:{row['port']}" for row in endpoints) or "none",
+    )
     return endpoints
+
+
+async def spare_endpoints(
+    scanner,
+    ports: Iterable[int],
+    count: int,
+    exclude: Iterable[str] = (),
+) -> list[dict]:
+    """Replacements for endpoints that failed their acceptance check."""
+    if count <= 0:
+        return []
+    used = {str(item) for item in exclude}
+    buckets = await _buckets(scanner, ports, max(16, count * 8))
+    return _spread(buckets, count, used)
 
 
 def remark(endpoint: dict, index: int, brand: str = "") -> str:
@@ -112,9 +195,10 @@ def remark(endpoint: dict, index: int, brand: str = "") -> str:
         badge = "\u26a1" if secure else "\U0001f7e1"
     ping = f"{round(float(endpoint.get('latency') or 0))}ms" if endpoint.get("latency") else "auto"
     tail = "" if secure else f" | \U0001f50c{endpoint['port']}"
+    port_tag = f" | \U0001f512{endpoint['port']}" if secure and int(endpoint["port"]) != 443 else ""
     return (
         f"@{brand} | {badge} VLESS | \U0001f30d GLOBAL | {ping} | "
-        f"{endpoint.get('colo') or 'CF'}{tail} | #{index}"
+        f"{endpoint.get('colo') or 'CF'}{port_tag}{tail} | #{index}"
     )
 
 
