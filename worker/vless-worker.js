@@ -17,6 +17,12 @@
  * hostname entries keep working even when every raw address in the list ages
  * out.
  *
+ * Ports are spread on purpose. A group used to emit every config on its first
+ * port, so all TLS configs sat on 443 and the day 443 was filtered on someone's
+ * network their whole TLS set went dark together. Measured addresses keep the
+ * port they were verified on, and unmeasured entries are dealt across the
+ * group's remaining ports, so a user always has a second and third way in.
+ *
  * HTTP responses carry permissive CORS headers so the Telegram Mini App, which
  * is served from a different origin, can read /health, /probe and /endpoints.
  * Nothing here is secret: the path already contains the account UUID, and
@@ -46,6 +52,9 @@ import { connect } from "cloudflare:sockets";
 const VLESS_RESPONSE = new Uint8Array([0, 0]);
 const DEFAULT_TLS_PORTS = [443, 2053, 2083, 2087, 2096, 8443];
 const DEFAULT_HTTP_PORTS = [80, 8080, 8880, 2052, 2082, 2086, 2095];
+// More than one port per group by default, for the reason in the header.
+const SERVE_TLS_PORTS = [443, 2053, 8443];
+const SERVE_HTTP_PORTS = [80, 8080];
 const WS_OPEN = 1;
 const CONNECT_TIMEOUT_MS = 8000;
 
@@ -96,8 +105,8 @@ function readConfig(env, request) {
   const uuid = String(env.UUID || "").trim().toLowerCase();
   const override = url.searchParams.get("proxyip") || pathProxy(url.pathname);
   const proxies = splitList(override || env.PROXY_IP || env.PROXYIP || "");
-  const tlsPorts = intList(env.TLS_PORTS, [443]);
-  const httpPorts = intList(env.HTTP_PORTS, [80]);
+  const tlsPorts = intList(env.TLS_PORTS, SERVE_TLS_PORTS);
+  const httpPorts = intList(env.HTTP_PORTS, SERVE_HTTP_PORTS);
 
   return {
     uuid,
@@ -653,20 +662,26 @@ async function liveEndpoints(cfg) {
 
   for (const group of groups) {
     if (group.count <= 0 || !group.ports.length) continue;
-    const port = group.ports[0];
+    const ports = group.ports;
     const bag = [];
 
+    // A measured address keeps the port it was verified on: moving it to another
+    // port would be inventing a result nobody checked, which is how dead configs
+    // got shipped in the first place. Everything unmeasured is dealt across the
+    // group's ports instead, so the set is never one port wide.
     const bakedGroup = baked.filter((item) => groupOf(item.port, cfg) === group.key);
-    const domainGroup = cfg.domains.map((domain) => ({
-      ip: domain,
-      port,
-      latency: 0,
-      colo: "AUTO",
-      kind: "domain",
-    }));
-    const freshGroup = fresh.map((item) => ({
+    const deal = (items) =>
+      items.map((item, index) => ({ ...item, port: ports[index % ports.length] }));
+
+    const domainGroup = deal(
+      cfg.domains.map((domain) => ({ ip: domain, latency: 0, colo: "AUTO", kind: "domain" }))
+    );
+    const freshGroup = fresh.map((item, index) => ({
       ...item,
-      port: item.port && groupOf(item.port, cfg) === group.key ? item.port : port,
+      port:
+        item.port && groupOf(item.port, cfg) === group.key
+          ? item.port
+          : ports[index % ports.length],
     }));
 
     // Reserve one slot for a self-healing hostname and one for a live address
@@ -713,6 +728,8 @@ async function handleHttp(request, cfg) {
       sources: cfg.sources.length,
       refresh: cfg.refresh,
       proxies: cfg.proxies.length,
+      tls_ports: cfg.tlsPorts,
+      http_ports: cfg.httpPorts,
       colo: request.cf && request.cf.colo ? request.cf.colo : null,
     });
   }
@@ -843,7 +860,8 @@ function remark(cfg, endpoint, index) {
   if (endpoint.kind === "live") badge = "\ud83d\udd04";
   const ping = endpoint.latency ? `${Math.round(Number(endpoint.latency))}ms` : "auto";
   const tail = secure ? "" : ` | \ud83d\udd0c${endpoint.port}`;
-  return `@${cfg.brand} | ${badge} VLESS | \ud83c\udf0d GLOBAL | ${ping} | ${endpoint.colo || "CF"}${tail} | #${index}`;
+  const lock = secure && Number(endpoint.port) !== 443 ? ` | \ud83d\udd12${endpoint.port}` : "";
+  return `@${cfg.brand} | ${badge} VLESS | \ud83c\udf0d GLOBAL | ${ping} | ${endpoint.colo || "CF"}${lock}${tail} | #${index}`;
 }
 
 function buildLinks(cfg, endpoints) {

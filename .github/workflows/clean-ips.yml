@@ -1,0 +1,102 @@
+name: Clean IP seeds
+
+# Sweeps Cloudflare's edge from GitHub's network every three hours and commits
+# the addresses that answered. This does not replace the sweep your VPS runs, and
+# it is not meant to: reachability is relative to the network doing the asking.
+# What it buys you is a warm start for fresh deployments, a second opinion from
+# another network, and a diffable record of what was actually up.
+#
+# The bot reads endpoints/clean-ips.txt directly from disk (CLEAN_IP_FILES), so a
+# private repository works exactly as well as a public one. Just `git pull` on the
+# box, or let your deploy do it.
+#
+# Set the VERIFY_HOST repository variable to one of your live panel hostnames and
+# this scan verifies TLS ports with the same real WebSocket upgrade the bot
+# demands before shipping a config. Without it, the weaker cold-start check runs.
+
+on:
+  schedule:
+    - cron: "23 */3 * * *"
+  workflow_dispatch:
+    inputs:
+      batch:
+        description: "Addresses probed per port, per wave"
+        required: false
+        default: "1200"
+      per_port:
+        description: "Addresses kept per port in the published list"
+        required: false
+        default: "25"
+
+permissions:
+  contents: write
+
+concurrency:
+  group: clean-ips
+  cancel-in-progress: false
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    timeout-minutes: 30
+    env:
+      # Runners are generous with sockets and stingy with patience: wide
+      # concurrency, short timeouts, and only a couple of waves.
+      SCAN_BATCH: ${{ github.event.inputs.batch || '1200' }}
+      SCAN_CONCURRENCY: "256"
+      SCAN_TIMEOUT_MS: "1500"
+      SCAN_WAVES: "2"
+      SCAN_ROUNDS: "3"
+      VERIFY_TOP: "40"
+      SWEEP_PER_SUBNET: "2"
+      POOL_SIZE: "400"
+      TLS_PORTS: "443,2053,8443"
+      HTTP_PORTS: "80,8080"
+      VERIFY_HOST: ${{ vars.VERIFY_HOST }}
+      CLEAN_IP_FILES: ""
+      LOG_LEVEL: "INFO"
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+          cache: pip
+
+      - name: Install dependencies
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Sweep and publish
+        # --allow-empty keeps the job green when the runner's egress is throttled.
+        run: |
+          python scripts/publish_clean_ips.py \
+            --out endpoints/clean-ips \
+            --per-port "${{ github.event.inputs.per_port || '25' }}" \
+            --allow-empty
+
+      - name: Commit when the list changed
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "41898282+github-actions[bot]@users.noreply.github.com"
+          git add endpoints/clean-ips.json endpoints/clean-ips.txt 2>/dev/null || true
+          if git diff --cached --quiet; then
+            echo "clean IP list unchanged"
+            exit 0
+          fi
+          count=$(sed -n 's/.*"count": *\([0-9]*\).*/\1/p' endpoints/clean-ips.json | head -1)
+          git commit -m "chore(ips): refresh clean IP seed list (${count:-0} addresses)"
+          git push
+
+      - name: Summary
+        if: always()
+        run: |
+          echo "### Clean IP seed list" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
+          head -n 20 endpoints/clean-ips.txt >> "$GITHUB_STEP_SUMMARY" 2>/dev/null \
+            || echo "no list produced" >> "$GITHUB_STEP_SUMMARY"
+          echo '```' >> "$GITHUB_STEP_SUMMARY"
