@@ -15,6 +15,7 @@ from aiogram.types import BotCommand
 from . import db, handlers, middlewares
 from .autopilot import autopilot
 from .config import settings
+from .curator import curator
 from .scanner import proxy_scanner, scanner
 from .warpscan import warp_scanner
 
@@ -67,14 +68,18 @@ async def notify_admins(bot: Bot) -> None:
     relays = await proxy_scanner.stats()
     warp = await warp_scanner.stats()
     pilot = await autopilot.stats()
+    keeper = await curator.stats()
     message = (
         f"\u2705 <b>{settings.brand}</b> is up.\n"
-        f"\U0001f4e1 clean ip pool: <b>{pool['total']}</b> (verified {pool['verified']})\n"
+        f"\U0001f4e1 clean ip pool: <b>{pool['total']}</b> (verified {pool['verified']}, "
+        f"fresh {pool['fresh']})\n"
         f"\U0001f300 self-healing hostnames: <b>{pool['domains']}</b>\n"
         f"\U0001f6e1 relays ready: <b>{relays['verified']}</b>\n"
         f"\U0001f9ec warp endpoints: <b>{warp['stable']}</b>\n"
         f"\U0001f916 autopilot: <b>{'on' if pilot['enabled'] else 'off'}</b> "
         f"(every {pilot['interval']}s)\n"
+        f"\U0001f9f9 curator: <b>{'on' if keeper['enabled'] else 'off'}</b> "
+        f"(every {keeper['interval']}s, {keeper['target']} fresh per port)\n"
         f"\U0001f50c ports: <b>{', '.join(str(p) for p in scanner.ports)}</b>"
     )
     for admin_id in settings.admin_ids:
@@ -104,6 +109,7 @@ async def run() -> None:
     await proxy_scanner.start()
     await warp_scanner.start()
     await autopilot.start()
+    await curator.start()
 
     try:
         await bot.set_my_commands(COMMANDS)
@@ -111,6 +117,7 @@ async def run() -> None:
         log.info("%s is polling", settings.brand)
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
     finally:
+        await curator.stop()
         await autopilot.stop()
         await warp_scanner.stop()
         await proxy_scanner.stop()

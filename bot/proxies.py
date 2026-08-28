@@ -4,6 +4,10 @@ A relay is any non-Cloudflare host that forwards TCP to the Cloudflare edge.
 Workers cannot open a socket to a Cloudflare-owned address, so without one of
 these every destination that sits behind Cloudflare is unreachable and the
 tunnel looks dead to the client.
+
+Relays are reaped, not just demoted. A host that has stopped forwarding is worse
+than no host at all: it sits at the head of a panel's failover chain and every
+session pays its timeout before moving on.
 """
 
 from __future__ import annotations
@@ -11,6 +15,7 @@ from __future__ import annotations
 from typing import Optional
 
 from . import db
+from .config import settings
 
 SCHEMA = """
 CREATE TABLE IF NOT EXISTS proxy_ips (
@@ -24,6 +29,7 @@ CREATE TABLE IF NOT EXISTS proxy_ips (
     PRIMARY KEY (host, port)
 );
 CREATE INDEX IF NOT EXISTS idx_proxy_latency ON proxy_ips (verified, fails, latency);
+CREATE INDEX IF NOT EXISTS idx_proxy_recheck ON proxy_ips (checked_at ASC);
 """
 
 _ready = False
@@ -68,18 +74,58 @@ async def store(rows: list[dict]) -> None:
 async def best(limit: int, verified_only: bool = True) -> list[dict]:
     await ensure()
     sql = (
-        "SELECT host, port, latency, colo FROM proxy_ips WHERE fails < 3 "
+        "SELECT host, port, latency, colo FROM proxy_ips WHERE fails < ? "
         + ("AND verified = 1 " if verified_only else "")
         + "ORDER BY latency ASC LIMIT ?"
     )
-    return [dict(row) for row in await db.fetch_all(sql, (limit,))]
+    return [dict(row) for row in await db.fetch_all(sql, (settings.relay_strikes, limit))]
 
 
-async def mark_fail(host: str, port: int = 443) -> None:
+async def due_for_recheck(limit: int, max_age: int) -> list[dict]:
+    """Relays nobody has confirmed lately, staleest first."""
+    await ensure()
+    cutoff = db.now() - max(60, max_age)
+    rows = await db.fetch_all(
+        "SELECT host, port, latency, colo, verified, fails, checked_at FROM proxy_ips "
+        "WHERE checked_at <= ? ORDER BY verified DESC, checked_at ASC LIMIT ?",
+        (cutoff, limit),
+    )
+    return [dict(row) for row in rows]
+
+
+async def record_fail(host: str, port: int = 443) -> bool:
+    """Count a miss and delete the relay once it has run out of chances.
+
+    Returns True when the row was removed.
+    """
     await ensure()
     await db.execute(
-        "UPDATE proxy_ips SET fails = fails + 1 WHERE host = ? AND port = ?", (host, port)
+        "UPDATE proxy_ips SET fails = fails + 1, verified = 0, checked_at = ? "
+        "WHERE host = ? AND port = ?",
+        (db.now(), host, int(port)),
     )
+    row = await db.fetch_one(
+        "SELECT fails FROM proxy_ips WHERE host = ? AND port = ?", (host, int(port))
+    )
+    if row is None or int(row["fails"]) < settings.relay_strikes:
+        return False
+    await db.execute(
+        "DELETE FROM proxy_ips WHERE host = ? AND port = ?", (host, int(port))
+    )
+    return True
+
+
+async def mark_fail(host: str, port: int = 443) -> bool:
+    """Kept for every existing caller; now reaps as well as demotes."""
+    return await record_fail(host, port)
+
+
+async def count(verified_only: bool = True) -> int:
+    await ensure()
+    sql = "SELECT COUNT(*) FROM proxy_ips WHERE fails < ?" + (
+        " AND verified = 1" if verified_only else ""
+    )
+    return int(await db.scalar(sql, (settings.relay_strikes,)))
 
 
 async def trim(keep: int) -> None:

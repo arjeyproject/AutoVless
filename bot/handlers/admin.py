@@ -9,11 +9,18 @@ import time
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import (
+    BufferedInputFile,
+    CallbackQuery,
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    Message,
+)
 
 from .. import db, keyboards
 from ..autopilot import autopilot
 from ..config import settings
+from ..curator import curator
 from ..i18n import num, t
 from ..scanner import scanner
 from ..utils import ago, edit, esc, ping_label
@@ -28,6 +35,7 @@ OPTION_KEYS = (
     "warp_enabled",
     "support_enabled",
     "autopilot",
+    "curator",
 )
 
 
@@ -39,6 +47,19 @@ class AdminFlow(StatesGroup):
 
 def _guard(is_admin: bool) -> bool:
     return bool(is_admin)
+
+
+def engine_keyboard(lang: str) -> InlineKeyboardMarkup:
+    """Engine controls: sweep, apply, curate, warp."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=t(lang, "btn.scan_now"), callback_data="adm:scan")],
+            [InlineKeyboardButton(text=t(lang, "btn.sync_now"), callback_data="adm:sync")],
+            [InlineKeyboardButton(text=t(lang, "btn.curate"), callback_data="adm:curate")],
+            [InlineKeyboardButton(text=t(lang, "btn.warp_rescan"), callback_data="wg:rescan")],
+            keyboards.back_row(lang, "adm:menu"),
+        ]
+    )
 
 
 @router.callback_query(F.data.startswith("adm:"))
@@ -88,6 +109,28 @@ async def dispatch(call: CallbackQuery, state: FSMContext, lang: str, is_admin: 
         await call.answer(t(lang, "admin.sync_started"))
         synced = await autopilot.cycle()
         await call.message.answer(t(lang, "admin.sync_done", count=num(synced, lang)))
+        await show_engine(call, lang)
+        return
+    elif action == "curate":
+        # Recheck the pool, delete what no longer pings, refill the thin ports,
+        # and push the survivors onto any panel that was serving a dead one.
+        await call.answer(t(lang, "admin.curate_started"))
+        report = await curator.cycle()
+        if not report:
+            await call.message.answer(t(lang, "admin.curate_idle"))
+        else:
+            await call.message.answer(
+                t(
+                    lang,
+                    "admin.curate_done",
+                    checked=num(report.get("checked", 0), lang),
+                    kept=num(report.get("kept", 0), lang),
+                    dropped=num(report.get("dropped", 0), lang),
+                    relays=num(report.get("relays", 0), lang),
+                    pushed=num(report.get("pushed", 0), lang),
+                    grown=num(report.get("grown", 0), lang),
+                )
+            )
         await show_engine(call, lang)
         return
     elif action == "options":
@@ -176,6 +219,7 @@ async def show_channels(call: CallbackQuery, lang: str) -> None:
 async def show_engine(call: CallbackQuery, lang: str) -> None:
     stats = await scanner.stats()
     pilot = await autopilot.stats()
+    keeper = await curator.stats()
     text = t(
         lang,
         "admin.engine",
@@ -194,7 +238,27 @@ async def show_engine(call: CallbackQuery, lang: str) -> None:
         due=num(pilot["due"], lang),
         last_synced=num(pilot["last_synced"], lang),
     )
-    await edit(call, text, keyboards.admin_engine(lang))
+    # The curator gets its own block rather than more placeholders in the engine
+    # template: it is a separate engine with its own verdicts.
+    text += "\n" + t(
+        lang,
+        "admin.curator",
+        state=t(lang, "admin.on" if keeper["enabled"] else "admin.off"),
+        interval=num(keeper["interval"], lang),
+        checked=num(keeper["checked"], lang),
+        kept=num(keeper["kept"], lang),
+        dropped=num(keeper["dropped"], lang),
+        pushed=num(keeper["pushed"], lang),
+        relays=num(keeper["relays_dropped"], lang),
+        fresh=num(keeper["fresh"], lang),
+        verified=num(keeper["verified"], lang),
+        target=num(keeper["target"], lang),
+        thin=" \u00b7 ".join(num(port, lang) for port in keeper["thin"]) or "-",
+        strikes=num(keeper["strikes"], lang),
+        floor=num(round(keeper["floor"] * 100), lang) + "%",
+        total=num(keeper["total_dropped"], lang),
+    )
+    await edit(call, text, engine_keyboard(lang))
 
 
 async def show_options(call: CallbackQuery, lang: str) -> None:

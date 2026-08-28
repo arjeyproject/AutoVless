@@ -127,6 +127,15 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "jitter": "REAL NOT NULL DEFAULT 0",
         "score": "REAL NOT NULL DEFAULT 0",
         "kind": "TEXT NOT NULL DEFAULT 'ip'",
+        # Pool history. One measurement says almost nothing about an address:
+        # what matters is whether it has been answering, for how long, and
+        # whether it answered the last time anyone asked.
+        "ok_count": "INTEGER NOT NULL DEFAULT 0",
+        "bad_count": "INTEGER NOT NULL DEFAULT 0",
+        "streak": "INTEGER NOT NULL DEFAULT 0",
+        "ok_at": "INTEGER NOT NULL DEFAULT 0",
+        "first_seen": "INTEGER NOT NULL DEFAULT 0",
+        "reliability": "REAL NOT NULL DEFAULT 0.5",
     },
     "panels": {
         "relays": "TEXT NOT NULL DEFAULT '[]'",
@@ -142,7 +151,17 @@ MIGRATIONS: dict[str, dict[str, str]] = {
 LATE_INDEXES = (
     "CREATE INDEX IF NOT EXISTS idx_clean_score ON clean_ips (port, verified, fails, score)",
     "CREATE INDEX IF NOT EXISTS idx_panels_sync ON panels (synced_at ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_clean_recheck ON clean_ips (checked_at ASC)",
+    "CREATE INDEX IF NOT EXISTS idx_clean_trust ON clean_ips (port, verified, reliability DESC, score ASC)",
 )
+
+# How fast a single result moves an address's reliability. 0.3 means one miss
+# takes a perfect record down to 0.7 and three misses take it under the default
+# floor, while one pass after a bad patch is not enough to buy trust back.
+ALPHA = 0.3
+# New rows start optimistic but not certain: they have passed a real handshake
+# to get here, they just have no history yet.
+INITIAL_RELIABILITY = 0.75
 
 
 def now() -> int:
@@ -247,6 +266,7 @@ DEFAULT_OPTIONS: dict[str, str] = {
     "support_enabled": "1",
     "warp_enabled": "1",
     "autopilot": "1",
+    "curator": "1",
     "welcome_extra": "",
     "support_note": "",
 }
@@ -471,6 +491,46 @@ async def update_panel_endpoints(tg_id: int, endpoints: list[dict], build_ms: in
     )
 
 
+async def panels_serving(pairs: Sequence[tuple[str, int]]) -> list[int]:
+    """Which refreshable panels currently ship one of these entry points.
+
+    Used after a reap: the addresses are gone from the pool, so the panels
+    still handing them to clients have to be re-pointed now rather than
+    whenever their turn comes around.
+    """
+    wanted = {(str(ip), int(port)) for ip, port in pairs}
+    if not wanted:
+        return []
+    hit: list[int] = []
+    rows = await fetch_all(
+        "SELECT tg_id, endpoints FROM panels WHERE token_enc IS NOT NULL"
+    )
+    for row in rows:
+        try:
+            endpoints = json.loads(row["endpoints"] or "[]")
+        except ValueError:
+            continue
+        for endpoint in endpoints:
+            try:
+                key = (str(endpoint.get("ip")), int(endpoint.get("port")))
+            except (TypeError, ValueError):
+                continue
+            if key in wanted:
+                hit.append(int(row["tg_id"]))
+                break
+    return hit
+
+
+async def queue_panel_refresh(tg_ids: Sequence[int]) -> int:
+    """Send panels to the front of the autopilot queue."""
+    ids = [int(item) for item in dict.fromkeys(tg_ids)]
+    if not ids:
+        return 0
+    marks = ",".join("?" for _ in ids)
+    await execute(f"UPDATE panels SET synced_at = 0 WHERE tg_id IN ({marks})", ids)
+    return len(ids)
+
+
 # --------------------------------------------------------------------- #
 # channels
 # --------------------------------------------------------------------- #
@@ -620,6 +680,12 @@ async def last_support_message_at(tg_id: int) -> int:
 
 
 async def store_clean_ips(rows: list[dict]) -> None:
+    """Record a pass. Every row that lands here has completed a real handshake.
+
+    The history columns are maintained here rather than by the caller, so a
+    sweep, a deploy-time acceptance and a curator recheck all move an address's
+    record the same way.
+    """
     if not rows:
         return
     ts = now()
@@ -634,17 +700,25 @@ async def store_clean_ips(rows: list[dict]) -> None:
             r.get("colo"),
             1 if r.get("verified") else 0,
             ts,
+            INITIAL_RELIABILITY,
         )
         for r in rows
     ]
     await conn().executemany(
-        "INSERT INTO clean_ips (ip, port, latency, jitter, score, kind, colo, verified, fails, checked_at) "
-        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?) "
+        "INSERT INTO clean_ips (ip, port, latency, jitter, score, kind, colo, verified, fails, "
+        "checked_at, ok_count, bad_count, streak, ok_at, first_seen, reliability) "
+        "VALUES (?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 1, 0, 1, ?, ?, ?) "
         "ON CONFLICT(ip, port) DO UPDATE SET "
         "latency = excluded.latency, jitter = excluded.jitter, score = excluded.score, "
         "kind = excluded.kind, colo = COALESCE(excluded.colo, clean_ips.colo), "
-        "verified = excluded.verified, fails = 0, checked_at = excluded.checked_at",
-        payload,
+        "verified = excluded.verified, fails = 0, checked_at = excluded.checked_at, "
+        "ok_count = clean_ips.ok_count + 1, "
+        "streak = MAX(clean_ips.streak, 0) + 1, "
+        "ok_at = excluded.checked_at, "
+        "first_seen = CASE WHEN clean_ips.first_seen > 0 THEN clean_ips.first_seen "
+        "ELSE excluded.first_seen END, "
+        f"reliability = MIN(1.0, clean_ips.reliability * {1 - ALPHA} + {ALPHA})",
+        [(*item[:9], item[8], item[8], item[9]) for item in payload],
     )
     await conn().commit()
 
@@ -655,42 +729,170 @@ async def best_ips(
     verified_only: bool = True,
     max_fails: Optional[int] = None,
 ) -> list[dict]:
-    """Best entry addresses for a port, cheapest score first."""
+    """Best entry addresses for a port.
+
+    Order of preference, and the first two clauses are the whole point: an
+    address that passed recently and has a record of passing beats one that is
+    merely fast. A 60ms address nobody has been able to reach for an hour is not
+    a 60ms address.
+    """
     ceiling = settings.max_fails if max_fails is None else max_fails
+    fresh = now() - settings.scan_ttl
     sql = (
-        "SELECT ip, port, latency, jitter, score, kind, colo, verified, fails "
+        "SELECT ip, port, latency, jitter, score, kind, colo, verified, fails, "
+        "reliability, ok_count, bad_count, streak, ok_at, checked_at "
         "FROM clean_ips WHERE port = ? AND fails < ? "
         + ("AND verified = 1 " if verified_only else "")
-        + "ORDER BY score ASC, latency ASC LIMIT ?"
+        + "ORDER BY (ok_at >= ?) DESC, reliability DESC, score ASC, latency ASC LIMIT ?"
     )
-    return [dict(row) for row in await fetch_all(sql, (port, ceiling, limit))]
+    return [dict(row) for row in await fetch_all(sql, (port, ceiling, fresh, limit))]
 
 
-async def mark_ip_fail(ip: str, port: int) -> None:
+async def due_for_recheck(limit: int, max_age: int) -> list[dict]:
+    """Stored addresses nobody has confirmed lately, staleest first.
+
+    Verified rows go first because those are the ones users are holding.
+    """
+    cutoff = now() - max(60, max_age)
+    rows = await fetch_all(
+        "SELECT ip, port, kind, latency, jitter, score, colo, verified, fails, "
+        "reliability, ok_count, bad_count, streak, ok_at, checked_at "
+        "FROM clean_ips WHERE checked_at <= ? "
+        "ORDER BY verified DESC, checked_at ASC LIMIT ?",
+        (cutoff, limit),
+    )
+    return [dict(row) for row in rows]
+
+
+async def record_ip_fail(ip: str, port: int) -> None:
+    """A miss: one more strike, less trust, and a fresh timestamp.
+
+    checked_at moves so a dead address is not re-probed on every pass, while
+    ok_at deliberately does not, because that is the column selection trusts.
+    """
     await execute(
-        "UPDATE clean_ips SET fails = fails + 1 WHERE ip = ? AND port = ?", (ip, int(port))
+        "UPDATE clean_ips SET fails = fails + 1, bad_count = bad_count + 1, "
+        "streak = MIN(streak, 0) - 1, "
+        f"reliability = MAX(0.0, reliability * {1 - ALPHA}), "
+        "checked_at = ? WHERE ip = ? AND port = ?",
+        (now(), ip, int(port)),
     )
+
+
+async def reap_ip(ip: str, port: int) -> bool:
+    """Delete one address if its record says it is finished. True if deleted."""
+    row = await fetch_one(
+        "SELECT fails, streak, ok_count, bad_count, reliability FROM clean_ips "
+        "WHERE ip = ? AND port = ?",
+        (ip, int(port)),
+    )
+    if row is None:
+        return False
+    samples = int(row["ok_count"]) + int(row["bad_count"])
+    doomed = (
+        int(row["streak"]) <= -settings.curator_strikes
+        or int(row["fails"]) >= settings.max_fails
+        or (
+            samples >= settings.curator_min_samples
+            and float(row["reliability"]) < settings.curator_floor
+        )
+    )
+    if not doomed:
+        return False
+    await execute("DELETE FROM clean_ips WHERE ip = ? AND port = ?", (ip, int(port)))
+    return True
+
+
+async def mark_ip_fail(ip: str, port: int) -> bool:
+    """Record a failed live check, and delete the address if it is done.
+
+    Every caller that used to only demote now also reaps: the panel ping test,
+    the deploy acceptance gate and the sweep all feed the same judgement, so an
+    address that stops answering leaves the pool instead of sitting in it
+    waiting to be handed out again.
+    """
+    await record_ip_fail(ip, port)
+    return await reap_ip(ip, port)
+
+
+async def purge_negative() -> list[tuple[str, int]]:
+    """Delete every address whose record has crossed the line.
+
+    Three independent verdicts, any one is enough: a run of consecutive misses,
+    the classic fail ceiling, or a long-run reliability under the floor once
+    there are enough samples to mean it.
+    """
+    rows = await fetch_all(
+        "SELECT ip, port FROM clean_ips WHERE streak <= ? OR fails >= ? "
+        "OR (ok_count + bad_count >= ? AND reliability < ?)",
+        (
+            -settings.curator_strikes,
+            settings.max_fails,
+            settings.curator_min_samples,
+            settings.curator_floor,
+        ),
+    )
+    dead = [(str(row["ip"]), int(row["port"])) for row in rows]
+    if dead:
+        await execute(
+            "DELETE FROM clean_ips WHERE streak <= ? OR fails >= ? "
+            "OR (ok_count + bad_count >= ? AND reliability < ?)",
+            (
+                -settings.curator_strikes,
+                settings.max_fails,
+                settings.curator_min_samples,
+                settings.curator_floor,
+            ),
+        )
+    return dead
+
+
+async def purge_stale(max_age: Optional[int] = None) -> list[tuple[str, int]]:
+    """Delete addresses that have not passed anything in a long time.
+
+    Not the same as a failure: these are rows nothing has confirmed, and an
+    unconfirmed entry point is exactly what ships a config that cannot ping.
+    """
+    window = settings.curator_stale if max_age is None else max(600, int(max_age))
+    cutoff = now() - window
+    rows = await fetch_all(
+        "SELECT ip, port FROM clean_ips "
+        "WHERE CASE WHEN ok_at > 0 THEN ok_at ELSE checked_at END < ?",
+        (cutoff,),
+    )
+    dead = [(str(row["ip"]), int(row["port"])) for row in rows]
+    if dead:
+        await execute(
+            "DELETE FROM clean_ips "
+            "WHERE CASE WHEN ok_at > 0 THEN ok_at ELSE checked_at END < ?",
+            (cutoff,),
+        )
+    return dead
 
 
 async def trim_pool(keep: int, per_port: bool = True) -> None:
     """Keep the best rows. Trimming per port matters: a single global ranking
     lets the faster TLS rows evict every plain-HTTP row, which quietly turns the
-    port 80 configs into dead entries."""
+    port 80 configs into dead entries.
+
+    The per-port floor is POOL_TARGET, so growing the pool is not undone by the
+    trim that follows every sweep."""
     if not per_port:
         await execute(
             "DELETE FROM clean_ips WHERE rowid NOT IN "
-            "(SELECT rowid FROM clean_ips ORDER BY verified DESC, fails ASC, score ASC LIMIT ?)",
+            "(SELECT rowid FROM clean_ips ORDER BY verified DESC, reliability DESC, "
+            "fails ASC, score ASC LIMIT ?)",
             (keep,),
         )
         return
 
     ports = max(1, len(settings.all_ports))
-    per_port_keep = max(8, keep // ports)
+    per_port_keep = max(settings.pool_target, keep // ports)
     await execute(
         "DELETE FROM clean_ips WHERE rowid NOT IN ("
         "  SELECT rowid FROM ("
         "    SELECT rowid, ROW_NUMBER() OVER ("
-        "      PARTITION BY port ORDER BY verified DESC, fails ASC, score ASC"
+        "      PARTITION BY port ORDER BY verified DESC, reliability DESC, fails ASC, score ASC"
         "    ) AS rank FROM clean_ips"
         "  ) WHERE rank <= ?"
         ")",
@@ -705,9 +907,19 @@ async def pool_stats() -> dict:
     best = await scalar("SELECT MIN(score) FROM clean_ips WHERE verified = 1", default=None)
     updated = await scalar("SELECT MAX(checked_at) FROM clean_ips", default=0)
     domains = await scalar("SELECT COUNT(*) FROM clean_ips WHERE kind = 'domain' AND verified = 1")
+    fresh = await scalar(
+        "SELECT COUNT(*) FROM clean_ips WHERE verified = 1 AND ok_at >= ?",
+        (now() - settings.scan_ttl,),
+    )
+    trusted = await scalar(
+        "SELECT COUNT(*) FROM clean_ips WHERE verified = 1 AND reliability >= ?",
+        (max(settings.curator_floor, 0.6),),
+    )
     return {
         "total": int(total),
         "verified": int(verified),
+        "fresh": int(fresh),
+        "trusted": int(trusted),
         "fast": int(fast),
         "domains": int(domains),
         "best": round(float(best), 1) if best is not None else None,
@@ -720,6 +932,45 @@ async def port_coverage() -> dict[int, int]:
         "SELECT port, COUNT(*) AS hits FROM clean_ips WHERE verified = 1 GROUP BY port"
     )
     return {int(row["port"]): int(row["hits"]) for row in rows}
+
+
+async def pool_health() -> dict:
+    """Per-port depth, and which ports are too thin to serve from.
+
+    A port is only as good as the number of *fresh* verified rows it holds, so
+    that is what the deficit is measured against. Ports below target are what
+    the curator asks the scanner to go and fill.
+    """
+    target = settings.pool_target
+    fresh_cutoff = now() - settings.scan_ttl
+    rows = await fetch_all(
+        "SELECT port, COUNT(*) AS total, "
+        "SUM(CASE WHEN verified = 1 THEN 1 ELSE 0 END) AS verified, "
+        "SUM(CASE WHEN verified = 1 AND ok_at >= ? THEN 1 ELSE 0 END) AS fresh "
+        "FROM clean_ips GROUP BY port",
+        (fresh_cutoff,),
+    )
+    per_port = {
+        int(row["port"]): {
+            "total": int(row["total"] or 0),
+            "verified": int(row["verified"] or 0),
+            "fresh": int(row["fresh"] or 0),
+        }
+        for row in rows
+    }
+    thin = [
+        port
+        for port in settings.all_ports
+        if per_port.get(port, {}).get("fresh", 0) < target
+    ]
+    return {
+        "ports": per_port,
+        "thin": thin,
+        "target": target,
+        "total": sum(item["total"] for item in per_port.values()),
+        "verified": sum(item["verified"] for item in per_port.values()),
+        "fresh": sum(item["fresh"] for item in per_port.values()),
+    }
 
 
 # --------------------------------------------------------------------- #
