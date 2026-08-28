@@ -1,14 +1,21 @@
 """Turn a Cloudflare API token into a live VLESS panel.
 
-The whole build is five steps, each reported back to the user:
+The whole build is six steps, each reported back to the user:
 
   1. verify the token and resolve the account
   2. make sure a workers.dev subdomain exists
   3. pick clean entry points and relays
   4. upload the worker and expose it on workers.dev
   5. prove the tunnel is alive before calling it ready
+  6. accept only the endpoints that answer a real WebSocket upgrade
 
-``refresh`` does steps 3 to 5 only. It keeps the script name and the panel uuid,
+Step 6 is the gate that matters. A panel used to ship whatever the pool offered;
+now every address in a config has completed the client's own handshake against
+this panel's own hostname, on its own port and path. Anything that fails is
+demoted in the pool, replaced, and the worker is re-uploaded with the healed
+list, so a user is never handed a config that cannot ping.
+
+``refresh`` does steps 3 to 6 only. It keeps the script name and the panel uuid,
 so the subscription link never changes while the addresses under it do.
 """
 
@@ -26,6 +33,7 @@ import httpx
 from . import db, proxies, vless
 from .cloudflare import CloudflareClient, CloudflareError, script_name
 from .config import settings
+from .probe import measure
 from .scanner import proxy_scanner, scanner
 
 log = logging.getLogger("autovless.deploy")
@@ -41,6 +49,12 @@ STEP_KEYS: tuple[str, ...] = (
 MARK_DONE = "\u2705"
 MARK_ACTIVE = "\u23f3"
 MARK_IDLE = "\u25ab\ufe0f"
+
+# Acceptance is deliberately stricter than the sweep: three tries, two hits.
+# One blip must not drop a good address, and one lucky answer must not promote a
+# bad one.
+ACCEPT_ROUNDS = 3
+ACCEPT_REQUIRED = 2
 
 Progress = Optional[Callable[[int], Awaitable[None]]]
 
@@ -64,6 +78,7 @@ class Panel:
     build_ms: int = 0
     healthy: bool = False
     probe: dict = field(default_factory=dict)
+    rejected: int = 0
 
 
 def render_steps(lang: str, index: int, translate) -> str:
@@ -156,6 +171,108 @@ def _bindings(uuid: str, host: str, endpoints: list[dict], relays: list[str]) ->
 
 
 # --------------------------------------------------------------------- #
+# acceptance: no config ships without a 101
+# --------------------------------------------------------------------- #
+
+
+async def _accept(host: str, endpoints: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Run the client's own handshake against this panel for every endpoint.
+
+    Survivors come back with the latency the client will actually see, measured
+    end to end through the worker, which is also what ends up printed in the
+    config name.
+    """
+    keep: list[dict] = []
+    dead: list[dict] = []
+
+    for endpoint in endpoints:
+        port = int(endpoint["port"])
+        result = await measure(
+            str(endpoint["ip"]),
+            port,
+            tls=vless.is_tls(port),
+            host=host,
+            path=vless.WS_PATH,
+            rounds=ACCEPT_ROUNDS,
+            required=ACCEPT_REQUIRED,
+            timeout=settings.accept_timeout,
+        )
+        if result is None:
+            log.info("rejected %s:%s for %s, no websocket upgrade", endpoint["ip"], port, host)
+            await scanner.demote(str(endpoint["ip"]), port)
+            dead.append(endpoint)
+            continue
+        keep.append({
+            **endpoint,
+            "latency": result["latency"],
+            "jitter": result["jitter"],
+            "colo": result["colo"],
+            "verified": True,
+        })
+
+    return keep, dead
+
+
+async def _ship(host: str, endpoints: list[dict]) -> tuple[list[dict], list[dict]]:
+    """Accept, then heal: replace what failed with something that passes.
+
+    Replacements are drawn from the same group as the endpoint they stand in
+    for, so a TLS slot never quietly becomes a plain one. If the pool has
+    nothing left that works, the panel ships short on purpose. Four configs that
+    ping beat nine that do not.
+    """
+    keep, dead = await _accept(host, endpoints)
+    if not dead:
+        return keep, []
+
+    seen = {str(item["ip"]) for item in keep} | {str(item["ip"]) for item in dead}
+
+    for attempt in range(max(0, settings.accept_retries)):
+        missing_tls = sum(1 for item in dead if vless.is_tls(item["port"]))
+        missing_http = len(dead) - missing_tls
+        if not dead:
+            break
+
+        candidates: list[dict] = []
+        if missing_tls:
+            candidates += await vless.spare_endpoints(scanner, settings.tls_ports, missing_tls * 3, seen)
+        if missing_http:
+            candidates += await vless.spare_endpoints(scanner, settings.http_ports, missing_http * 3, seen)
+        if not candidates:
+            if attempt == 0:
+                await scanner.scan_once()
+                continue
+            break
+
+        seen |= {str(item["ip"]) for item in candidates}
+        fresh, _ = await _accept(host, candidates)
+        if not fresh:
+            continue
+
+        healed: list[dict] = []
+        for item in dead:
+            group = vless.group_of(item["port"])
+            match = next((row for row in fresh if vless.group_of(row["port"]) == group), None)
+            if match is None:
+                continue
+            fresh.remove(match)
+            keep.append(match)
+            healed.append(item)
+        dead = [item for item in dead if item not in healed]
+        if not dead:
+            break
+
+    if dead:
+        log.warning(
+            "shipping %s endpoints, %s could not be replaced: %s",
+            len(keep),
+            len(dead),
+            ", ".join(f"{item['ip']}:{item['port']}" for item in dead),
+        )
+    return keep, dead
+
+
+# --------------------------------------------------------------------- #
 # health
 # --------------------------------------------------------------------- #
 
@@ -183,24 +300,32 @@ async def _health(host: str, uuid: str, attempts: Optional[int] = None) -> tuple
 
         try:
             response = await client.get(probe_url)
-            probe = response.json() if response.status_code == 200 else {}
+            report = response.json() if response.status_code == 200 else {}
         except Exception:  # noqa: BLE001
-            probe = {}
+            report = {}
 
     # A panel is healthy when the worker can open an outbound socket at all.
     # Relays are a bonus path, not the gate: plenty of destinations are reached
     # directly, and demanding a live relay used to mark working panels as dead.
-    return bool(probe.get("ok")), probe
+    return bool(report.get("ok")), report
 
 
-async def _demote_dead_relays(probe: dict) -> None:
-    for relay in probe.get("relays") or []:
+async def _demote_dead_relays(report: dict) -> None:
+    for relay in report.get("relays") or []:
         if relay.get("ok"):
             continue
         target = str(relay.get("target") or "")
         host, _, port = target.partition(":")
         if host:
             await proxies.mark_fail(host, int(port) if port.isdigit() else 443)
+
+
+async def _remember_reference(host: str) -> None:
+    """Hand the sweep a real hostname to verify TLS ports against."""
+    try:
+        await db.set_option("verify_host", host.lower())
+    except Exception:  # noqa: BLE001
+        log.debug("could not record verification host")
 
 
 # --------------------------------------------------------------------- #
@@ -259,15 +384,33 @@ async def build(
         raise DeployError(error.message) from error
 
     await _announce(progress, 4)
-    healthy, probe = await _health(host, panel_uuid)
-    if probe:
-        await _demote_dead_relays(probe)
+    healthy, report = await _health(host, panel_uuid)
+    if report:
+        await _demote_dead_relays(report)
+
+    endpoints, rejected = await _ship(host, endpoints)
+    if endpoints:
+        await _remember_reference(host)
+    if rejected:
+        # The worker serves its own subscription from ENDPOINTS, so the healed
+        # list has to go back up or clients would keep pulling the dead rows.
+        try:
+            async with CloudflareClient(token) as cf:
+                await cf.upload_script(
+                    account_id,
+                    script,
+                    code,
+                    _bindings(panel_uuid, host, endpoints, relays),
+                )
+        except CloudflareError as error:
+            log.warning("could not re-upload the healed endpoint list: %s", error.message)
 
     build_ms = int((time.perf_counter() - started) * 1000)
     log.info(
-        "panel built host=%s endpoints=%s relays=%s healthy=%s in %sms",
+        "panel built host=%s endpoints=%s rejected=%s relays=%s healthy=%s in %sms",
         host,
         len(endpoints),
+        len(rejected),
         len(relays),
         healthy,
         build_ms,
@@ -282,7 +425,8 @@ async def build(
         relays=relays,
         build_ms=build_ms,
         healthy=healthy,
-        probe=probe,
+        probe=report,
+        rejected=len(rejected),
     )
 
 
@@ -299,10 +443,16 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
 
     started = time.perf_counter()
     code = _read_worker()
-    endpoints = await _select_endpoints(force_scan)
+    candidates = await _select_endpoints(force_scan)
     relays = await _select_relays()
     host = str(panel["host"])
     panel_uuid = str(panel["uuid"])
+
+    # The panel is already live, so acceptance can run before the upload here:
+    # the addresses are tested against the hostname that is serving right now.
+    endpoints, rejected = await _ship(host, candidates)
+    if not endpoints:
+        raise DeployError("no endpoint could complete a websocket upgrade")
 
     try:
         async with CloudflareClient(token) as cf:
@@ -316,9 +466,11 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     except CloudflareError as error:
         raise DeployError(error.message) from error
 
-    healthy, probe = await _health(host, panel_uuid, attempts=3)
-    if probe:
-        await _demote_dead_relays(probe)
+    healthy, report = await _health(host, panel_uuid, attempts=3)
+    if report:
+        await _demote_dead_relays(report)
+    if healthy:
+        await _remember_reference(host)
 
     return Panel(
         account_id=str(panel["account_id"]),
@@ -329,7 +481,8 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
         relays=relays,
         build_ms=int((time.perf_counter() - started) * 1000),
         healthy=healthy,
-        probe=probe,
+        probe=report,
+        rejected=len(rejected),
     )
 
 

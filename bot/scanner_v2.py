@@ -3,7 +3,15 @@
 The clean-IP engine walks Cloudflare /24s with a persisted cursor instead of
 repeatedly gambling on random addresses. Existing winners are rechecked, public
 sources are parsed defensively, and every stored endpoint must complete several
-real trace requests on the exact port that will be placed in user configs.
+real handshakes on the exact port that will be placed in user configs.
+
+What "real" means changed, and it is the whole reason port 443 used to ship dead
+configs. Verification now speaks the client's sentence: TLS with a live panel
+hostname as the SNI, then a WebSocket upgrade on the panel's own path, and
+nothing is stored as verified without a ``101``. See bot/probe.py. A trace
+request to cloudflare.com is only used to warm a pool that has no panel to aim
+at yet, because it proves the edge answers, not that your worker is reachable
+through it.
 """
 
 from __future__ import annotations
@@ -15,7 +23,6 @@ import logging
 import random
 import re
 import socket
-import ssl
 import statistics
 import time
 from pathlib import Path
@@ -23,8 +30,9 @@ from typing import Optional
 
 import httpx
 
-from . import db, proxies
-from .config import settings
+from . import db, probe, proxies
+from .config import BASE_DIR, settings
+from .vless import WS_PATH
 
 log = logging.getLogger("autovless.scanner")
 
@@ -40,7 +48,8 @@ _IPV4 = re.compile(r"^(?:\d{1,3}\.){3}\d{1,3}$")
 _HOST = re.compile(r"^(?=.{4,253}$)(?:[a-z0-9](?:[a-z0-9-]{0,61}[a-z0-9])?\.)+[a-z]{2,}$", re.I)
 _HTML = ("<!doctype", "<html", "<head", "<body", "<script")
 _NOISE = ("github.com", "githubusercontent.com", "telegram.org", "t.me", "example.com")
-TRACE_HOST = "cloudflare.com"
+REFERENCE_KEY = "verify_host"
+REFERENCE_TTL = 300
 
 
 def is_cloudflare(address: str) -> bool:
@@ -155,6 +164,32 @@ async def fetch_list(url: str) -> list[tuple[str, Optional[int]]]:
     return out
 
 
+def read_local_list(path: str) -> list[tuple[str, Optional[int]]]:
+    """Seed from a file on disk.
+
+    The scheduled workflow commits a measured list to endpoints/clean-ips.txt.
+    Reading it locally means a private repo works exactly as well as a public
+    one, and a fresh deployment starts warm instead of blind.
+    """
+    target = Path(path)
+    if not target.is_absolute():
+        target = BASE_DIR / target
+    try:
+        body = target.read_text(encoding="utf-8")
+    except OSError:
+        return []
+    out: list[tuple[str, Optional[int]]] = []
+    seen: set[tuple[str, Optional[int]]] = set()
+    for line in body.splitlines()[:5000]:
+        item = _parse_line(line)
+        if item and item not in seen:
+            seen.add(item)
+            out.append(item)
+    if out:
+        log.info("seed file %s supplied %s candidates", target, len(out))
+    return out
+
+
 async def resolve(host: str) -> list[str]:
     try:
         ipaddress.ip_address(host)
@@ -171,65 +206,6 @@ async def resolve(host: str) -> list[str]:
     return list(dict.fromkeys(item[4][0] for item in infos))
 
 
-async def _close(writer: Optional[asyncio.StreamWriter]) -> None:
-    if writer is None:
-        return
-    writer.close()
-    try:
-        await writer.wait_closed()
-    except (OSError, ssl.SSLError, asyncio.TimeoutError):
-        pass
-
-
-async def _connect(host: str, port: int, timeout: float) -> Optional[float]:
-    writer = None
-    started = time.perf_counter()
-    try:
-        _, writer = await asyncio.wait_for(asyncio.open_connection(host, port), timeout=timeout)
-        return (time.perf_counter() - started) * 1000
-    except (OSError, ssl.SSLError, asyncio.TimeoutError, ValueError):
-        return None
-    finally:
-        await _close(writer)
-
-
-async def trace_probe(host: str, port: int, tls: bool, timeout: float) -> Optional[dict]:
-    writer = None
-    started = time.perf_counter()
-    try:
-        if tls:
-            context = ssl.create_default_context()
-            context.check_hostname = False
-            context.verify_mode = ssl.CERT_NONE
-            context.set_alpn_protocols(["http/1.1"])
-            opening = asyncio.open_connection(host, port, ssl=context, server_hostname=TRACE_HOST)
-        else:
-            opening = asyncio.open_connection(host, port)
-        reader, writer = await asyncio.wait_for(opening, timeout=timeout)
-        writer.write((
-            "GET /cdn-cgi/trace HTTP/1.1\r\nHost: cloudflare.com\r\n"
-            f"User-Agent: {settings.brand}/2.0\r\nConnection: close\r\n\r\n"
-        ).encode())
-        await writer.drain()
-        raw = await asyncio.wait_for(reader.read(8192), timeout=timeout)
-    except (OSError, ssl.SSLError, asyncio.TimeoutError, ValueError):
-        return None
-    finally:
-        await _close(writer)
-    text = raw.decode("latin1", "ignore")
-    if not text.startswith("HTTP/") or not any(code in text[:32] for code in (" 200", " 301", " 302")):
-        return None
-    colo = "CF"
-    match = re.search(r"(?:^|\n)colo=([A-Za-z]{3,4})", text, re.I)
-    if match:
-        colo = match.group(1).upper()
-    else:
-        match = re.search(r"cf-ray:[^\r\n]*-([A-Za-z]{3,4})", text, re.I)
-        if match:
-            colo = match.group(1).upper()
-    return {"latency": (time.perf_counter() - started) * 1000, "colo": colo}
-
-
 def _score(latency: float, jitter: float, kind: str) -> float:
     credit = 40 if kind == "domain" else 0
     return round(max(1, latency + jitter * 2.5 - credit), 1)
@@ -244,6 +220,8 @@ class CleanIPScanner:
         self._sweeper: Optional[SubnetSweeper] = None
         self._seeds: list[str] = []
         self._seeds_at = 0.0
+        self._reference = ""
+        self._reference_at = 0.0
         self.running = False
         self.last_run = 0
         self.last_found = 0
@@ -278,10 +256,45 @@ class CleanIPScanner:
                 raise
             except Exception:  # noqa: BLE001
                 log.exception("clean-IP scan failed")
+            # A little jitter so a fleet of bots never lines up on the same
+            # minute, and so the sweep is not phase locked to the autopilot.
+            delay = settings.scan_interval + random.randint(0, max(5, settings.scan_interval // 10))
             try:
-                await asyncio.wait_for(self._stop.wait(), settings.scan_interval)
+                await asyncio.wait_for(self._stop.wait(), delay)
             except asyncio.TimeoutError:
                 pass
+
+    # ------------------------------------------------------------------ #
+    # verification reference
+    # ------------------------------------------------------------------ #
+
+    async def reference_host(self) -> str:
+        """A live panel hostname to point TLS probes at.
+
+        Any Cloudflare edge address serves every workers.dev hostname, so one
+        real panel is enough to prove an address and port will carry a
+        WebSocket for all of them. VERIFY_HOST pins it manually; otherwise the
+        newest successful deploy records itself here.
+        """
+        if not settings.verify_ws:
+            return ""
+        if settings.verify_host:
+            return settings.verify_host
+        if time.time() - self._reference_at < REFERENCE_TTL:
+            return self._reference
+        self._reference = (await db.get_option(REFERENCE_KEY, "")).strip().lower()
+        self._reference_at = time.time()
+        return self._reference
+
+    async def _drop_reference(self, host: str) -> None:
+        """Safety valve: a deleted panel must not be able to empty the pool."""
+        if settings.verify_host:
+            log.warning("VERIFY_HOST=%s verified nothing this sweep; check that panel is alive", host)
+            return
+        log.warning("reference panel %s verified nothing this sweep, dropping it", host)
+        await db.set_option(REFERENCE_KEY, "")
+        self._reference = ""
+        self._reference_at = 0.0
 
     async def seeds(self) -> list[str]:
         age = time.time() - self._seeds_at
@@ -290,12 +303,16 @@ class CleanIPScanner:
         if not self._seeds and age < settings.source_retry:
             return []
         found: list[str] = []
+        candidates: list[tuple[str, Optional[int]]] = []
+        for path in settings.clean_ip_files:
+            candidates.extend(read_local_list(path))
         for url in settings.clean_ip_sources:
-            for host, _ in await fetch_list(url):
-                if is_cloudflare(host):
-                    found.append(host)
-                else:
-                    found.extend(ip for ip in await resolve(host) if is_cloudflare(ip))
+            candidates.extend(await fetch_list(url))
+        for host, _ in candidates:
+            if is_cloudflare(host):
+                found.append(host)
+            else:
+                found.extend(ip for ip in await resolve(host) if is_cloudflare(ip))
         self._seeds = list(dict.fromkeys(found))[: settings.seed_limit]
         self._seeds_at = time.time()
         return self._seeds
@@ -323,6 +340,7 @@ class CleanIPScanner:
             self.waves = 0
             total = 0
             seeds = await self.seeds()
+            reference = await self.reference_host()
             base = batch or settings.scan_batch
             sem = asyncio.Semaphore(settings.scan_concurrency)
             try:
@@ -332,22 +350,39 @@ class CleanIPScanner:
                         break
                     self.waves = wave + 1
                     results = await asyncio.gather(*[
-                        self._scan_port(port, base * (wave + 1), seeds, wave, sem) for port in pending
+                        self._scan_port(port, base * (wave + 1), seeds, wave, sem, reference)
+                        for port in pending
                     ])
                     total += sum(results)
                     pending = [
                         port for port in pending
                         if len(await db.best_ips(port, settings.scan_min_verified)) < settings.scan_min_verified
                     ]
+                if reference and total == 0:
+                    await self._drop_reference(reference)
                 await db.trim_pool(settings.pool_size)
                 self.last_run = db.now()
                 self.last_found = total
-                await db.log_event("scan", detail=f"stored={total} waves={self.waves} sweep={self.sweeper.progress}% lap={self.sweeper.laps + 1}")
+                await db.log_event(
+                    "scan",
+                    detail=(
+                        f"stored={total} waves={self.waves} sweep={self.sweeper.progress}% "
+                        f"lap={self.sweeper.laps + 1} check={'ws:' + reference if reference else 'trace'}"
+                    ),
+                )
                 return total
             finally:
                 self.running = False
 
-    async def _scan_port(self, port: int, batch: int, seeds: list[str], wave: int, sem: asyncio.Semaphore) -> int:
+    async def _scan_port(
+        self,
+        port: int,
+        batch: int,
+        seeds: list[str],
+        wave: int,
+        sem: asyncio.Semaphore,
+        reference: str = "",
+    ) -> int:
         candidates: list[tuple[str, str]] = []
         if wave == 0:
             candidates.extend((host, "domain") for host in settings.clean_domains)
@@ -358,7 +393,7 @@ class CleanIPScanner:
 
         async def knock(host: str, kind: str) -> Optional[dict]:
             async with sem:
-                latency = await _connect(host, port, settings.scan_timeout)
+                latency = await probe.connect_ms(host, port, settings.scan_timeout)
             if latency is None:
                 await db.mark_ip_fail(host, port)
                 return None
@@ -369,32 +404,47 @@ class CleanIPScanner:
         raw = sorted((item for item in alive if item["kind"] != "domain"), key=lambda x: x["latency"])
         shortlist = domains + raw[: settings.verify_top]
         verify_sem = asyncio.Semaphore(max(8, min(32, settings.scan_concurrency // 4)))
-        verified = await asyncio.gather(*(self._verify(item, verify_sem) for item in shortlist))
+        verified = await asyncio.gather(*(self._verify(item, verify_sem, reference) for item in shortlist))
         good = [item for item in verified if item]
         await db.store_clean_ips(good)
-        log.info("port %s wave %s: %s reachable, %s verified", port, wave + 1, len(alive), len(good))
+        log.info(
+            "port %s wave %s: %s reachable, %s verified via %s",
+            port, wave + 1, len(alive), len(good), "ws" if reference else "trace",
+        )
         return len(good)
 
-    async def _verify(self, item: dict, sem: asyncio.Semaphore) -> Optional[dict]:
-        samples: list[float] = []
-        colo = "CF"
+    async def _verify(self, item: dict, sem: asyncio.Semaphore, reference: str = "") -> Optional[dict]:
+        """Prove one address on one port, the way a client will use it.
+
+        With a reference hostname this is a full TLS-with-real-SNI plus
+        WebSocket upgrade, and a ``101`` is the only acceptable answer. Without
+        one, the weaker trace check warms a cold pool. There is deliberately no
+        fallback from the first to the second: falling back is what let port 443
+        fill up with addresses no client could use.
+        """
+        port = int(item["port"])
+        tls = port in settings.tls_ports
         async with sem:
-            for attempt in range(settings.scan_rounds):
-                if attempt:
-                    await asyncio.sleep(0.12)
-                result = await trace_probe(
-                    item["ip"], item["port"], item["port"] in settings.tls_ports,
-                    settings.scan_timeout * 3,
-                )
-                if result is not None:
-                    samples.append(float(result["latency"]))
-                    colo = result["colo"] or colo
-        if len(samples) < max(2, settings.scan_rounds - 1):
-            await db.mark_ip_fail(item["ip"], item["port"])
+            result = await probe.measure(
+                item["ip"],
+                port,
+                tls=tls,
+                host=reference or None,
+                path=WS_PATH,
+                rounds=settings.scan_rounds,
+                timeout=settings.scan_timeout * 3,
+            )
+        if result is None:
+            await db.mark_ip_fail(item["ip"], port)
             return None
-        latency = round(statistics.median(samples), 1)
-        jitter = round(max(samples) - min(samples), 1)
-        return {**item, "latency": latency, "jitter": jitter, "score": _score(latency, jitter, item["kind"]), "colo": colo, "verified": True}
+        return {
+            **item,
+            "latency": result["latency"],
+            "jitter": result["jitter"],
+            "score": _score(result["latency"], result["jitter"], item["kind"]),
+            "colo": result["colo"],
+            "verified": True,
+        }
 
     async def pick(self, port: int, count: int, verified_only: bool = True) -> list[dict]:
         clause = "AND verified=1" if verified_only else ""
@@ -433,6 +483,7 @@ class CleanIPScanner:
             "coverage": await db.port_coverage(),
             "sweep": self.sweeper.progress,
             "laps": self.sweeper.laps,
+            "reference": await self.reference_host(),
         })
         return data
 
@@ -514,11 +565,13 @@ class ProxyIPScanner:
             addresses = await resolve(host)
             if not addresses or all(is_cloudflare(item) for item in addresses):
                 return None
-            samples = [await _connect(host, port, 6) for _ in range(2)]
+            samples = [await probe.connect_ms(host, port, 6) for _ in range(2)]
             samples = [item for item in samples if item is not None]
             if len(samples) < 2:
                 return None
-            result = await trace_probe(host, port, True, 7)
+            # A relay is not a worker: there is no WebSocket to upgrade here, so
+            # the trace check is the right one and the strongest available.
+            result = await probe.trace(host, port, True, 7)
         if result is None:
             return None
         return {"host": host, "port": port, "latency": round(statistics.median(samples), 1), "colo": result["colo"], "verified": True}
