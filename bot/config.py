@@ -30,6 +30,10 @@ def _int(name: str, default: int) -> int:
     try: return int(_str(name) or default)
     except ValueError: return default
 
+def _float(name: str, default: float) -> float:
+    try: return float(_str(name) or default)
+    except ValueError: return default
+
 def _bool(name: str, default: bool) -> bool:
     raw = _str(name).lower()
     return default if not raw else raw in {"1", "true", "yes", "on"}
@@ -61,13 +65,16 @@ class Settings:
     scan_interval: int; scan_batch: int; scan_concurrency: int; scan_timeout: float
     verify_top: int; verify_probes: int; scan_rounds: int; scan_waves: int; scan_min_verified: int
     verify_ws: bool; verify_host: str; accept_timeout: float; accept_retries: int
-    scan_ttl: int; stale_factor: int; sweep_per_subnet: int; pool_size: int
+    scan_ttl: int; stale_factor: int; sweep_per_subnet: int; pool_size: int; pool_target: int
     clean_ip_sources: tuple[str, ...]; clean_ip_files: tuple[str, ...]; clean_domains: tuple[str, ...]
     source_ttl: int; source_retry: int; seed_limit: int; max_fails: int
     proxy_ip: str; proxy_seeds: tuple[str, ...]; proxy_sources: tuple[str, ...]; proxy_ports: tuple[int, ...]
-    proxy_scan_interval: int; proxy_scan_limit: int; proxy_pool_size: int; proxy_per_panel: int
+    proxy_scan_interval: int; proxy_scan_limit: int; proxy_pool_size: int; proxy_per_panel: int; relay_strikes: int
     dns_server: str; fallback_host: str; health_attempts: int; sub_sources: tuple[str, ...]; sub_refresh: int
     autopilot: bool; autopilot_interval: int; autopilot_batch: int; autopilot_max_age: int
+    curator: bool; curator_interval: int; curator_batch: int; curator_rounds: int; curator_required: int
+    curator_recheck: int; curator_strikes: int; curator_floor: float; curator_min_samples: int
+    curator_stale: int; curator_abort_ratio: float; curator_push: bool; curator_push_batch: int
     warp_enabled: bool; warp_amnezia: bool; warp_mtu: int; warp_dns: str; warp_license: str; warp_ports: tuple[int, ...]
     warp_scan_interval: int; warp_scan_sample: int; warp_scan_concurrency: int; warp_scan_timeout: float
     warp_scan_attempts: int; warp_verify_top: int; warp_pool_size: int; warp_per_config: int
@@ -88,6 +95,7 @@ def load_settings() -> Settings:
             secret = secrets.token_urlsafe(48); key.write_text(secret, encoding="utf-8"); key.chmod(0o600)
     lang = _str("DEFAULT_LANG", "fa").lower(); lang = lang if lang in {"fa", "en"} else "fa"
     proxy_ip = _str("PROXY_IP"); clean = _list("CLEAN_IP_SOURCES", DEFAULT_CLEAN_SOURCES)
+    curator_rounds = max(2, min(5, _int("CURATOR_ROUNDS", 3)))
     return Settings(
         bot_token=_str("BOT_TOKEN"), admin_ids=_ids("ADMIN_IDS"), secret_key=secret, data_dir=data,
         db_path=Path(_str("DB_PATH", str(data / "autovless.db"))),
@@ -107,12 +115,31 @@ def load_settings() -> Settings:
         # trace check until the first panel exists.
         verify_ws=_bool("VERIFY_WS", True), verify_host=_str("VERIFY_HOST").lower(),
         accept_timeout=max(2.0, _int("ACCEPT_TIMEOUT_MS", 8000) / 1000), accept_retries=max(0, min(4, _int("ACCEPT_RETRIES", 2))),
-        scan_ttl=max(300, _int("SCAN_TTL", 3600)), stale_factor=max(2, _int("STALE_FACTOR", 8)), sweep_per_subnet=max(1, min(8, _int("SWEEP_PER_SUBNET", 2))), pool_size=max(24, _int("POOL_SIZE", 240)),
+        scan_ttl=max(300, _int("SCAN_TTL", 3600)), stale_factor=max(2, _int("STALE_FACTOR", 8)), sweep_per_subnet=max(1, min(8, _int("SWEEP_PER_SUBNET", 2))),
+        # POOL_SIZE is the whole pool's budget; POOL_TARGET is the floor every
+        # single port is kept at, in fresh verified rows. The trim never takes a
+        # port below the target, so growing the pool is not undone by the sweep
+        # that follows.
+        pool_size=max(24, _int("POOL_SIZE", 720)), pool_target=max(8, _int("POOL_TARGET", 40)),
         clean_ip_sources=clean, clean_ip_files=_list("CLEAN_IP_FILES", DEFAULT_CLEAN_FILES), clean_domains=_list("CLEAN_DOMAINS", DEFAULT_CLEAN_DOMAINS),
         source_ttl=max(300, _int("SOURCE_TTL", 1800)), source_retry=max(60, _int("SOURCE_RETRY", 180)), seed_limit=max(50, _int("SEED_LIMIT", 800)), max_fails=max(1, _int("MAX_FAILS", 3)),
         proxy_ip=proxy_ip, proxy_seeds=_list("PROXY_IP", DEFAULT_PROXY_SEEDS), proxy_sources=_list("PROXY_IP_SOURCES", DEFAULT_PROXY_SOURCES), proxy_ports=_ports("PROXY_PORTS", (443,), TLS_PORTS), proxy_scan_interval=max(300, _int("PROXY_SCAN_INTERVAL", 1200)), proxy_scan_limit=max(32, _int("PROXY_SCAN_LIMIT", 500)), proxy_pool_size=max(8, _int("PROXY_POOL_SIZE", 80)), proxy_per_panel=max(2, _int("PROXY_PER_PANEL", 6)),
+        relay_strikes=max(2, _int("RELAY_STRIKES", 3)),
         dns_server=_str("DNS_SERVER", "8.8.8.8"), fallback_host=_str("FALLBACK_HOST", "www.wikipedia.org"), health_attempts=max(2, _int("HEALTH_ATTEMPTS", 8)), sub_sources=_list("SUB_SOURCES", clean), sub_refresh=max(60, _int("SUB_REFRESH", 180)),
         autopilot=_bool("AUTOPILOT", True), autopilot_interval=max(120, _int("AUTOPILOT_INTERVAL", 600)), autopilot_batch=max(1, _int("AUTOPILOT_BATCH", 8)), autopilot_max_age=max(600, _int("AUTOPILOT_MAX_AGE", 10800)),
+        # The curator rechecks stored addresses on the client's own path and
+        # deletes what stops answering. CURATOR_STRIKES consecutive misses, or a
+        # reliability under CURATOR_FLOOR once there are enough samples, or
+        # nothing confirmed for CURATOR_STALE seconds, and the row is gone.
+        # CURATOR_ABORT is the safety valve: if that share of a batch misses,
+        # the box or the reference panel is the problem, so nothing is purged.
+        curator=_bool("CURATOR", True), curator_interval=max(60, _int("CURATOR_INTERVAL", 300)),
+        curator_batch=max(16, _int("CURATOR_BATCH", 160)), curator_rounds=curator_rounds,
+        curator_required=max(1, min(curator_rounds, _int("CURATOR_REQUIRED", 2))),
+        curator_recheck=max(120, _int("CURATOR_RECHECK", 900)), curator_strikes=max(2, _int("CURATOR_STRIKES", 3)),
+        curator_floor=min(0.9, max(0.05, _float("CURATOR_FLOOR", 0.4))), curator_min_samples=max(2, _int("CURATOR_MIN_SAMPLES", 5)),
+        curator_stale=max(1800, _int("CURATOR_STALE", 14400)), curator_abort_ratio=min(1.0, max(0.5, _float("CURATOR_ABORT", 0.85))),
+        curator_push=_bool("CURATOR_PUSH", True), curator_push_batch=max(1, _int("CURATOR_PUSH_BATCH", 6)),
         warp_enabled=_bool("WARP_ENABLED", True), warp_amnezia=_bool("WARP_AMNEZIA", True), warp_mtu=max(1000, min(1420, _int("WARP_MTU", 1280))), warp_dns=_str("WARP_DNS", "1.1.1.1, 1.0.0.1"), warp_license=_str("WARP_LICENSE"), warp_ports=_int_list("WARP_PORTS"), warp_scan_interval=max(300, _int("WARP_SCAN_INTERVAL", 1200)), warp_scan_sample=max(2, _int("WARP_SCAN_SAMPLE", 10)), warp_scan_concurrency=max(8, _int("WARP_SCAN_CONCURRENCY", 80)), warp_scan_timeout=max(.5, _int("WARP_SCAN_TIMEOUT_MS", 2500) / 1000), warp_scan_attempts=max(2, min(5, _int("WARP_SCAN_ATTEMPTS", 3))), warp_verify_top=max(4, _int("WARP_VERIFY_TOP", 24)), warp_pool_size=max(8, _int("WARP_POOL_SIZE", 100)), warp_per_config=max(1, _int("WARP_PER_CONFIG", 6)),
         store_tokens=_bool("STORE_TOKENS", True), request_timeout=max(5.0, float(_int("REQUEST_TIMEOUT", 30))), log_level=_str("LOG_LEVEL", "INFO").upper(),
     )
