@@ -13,64 +13,39 @@ BASE_DIR = Path(__file__).resolve().parent.parent
 load_dotenv(BASE_DIR / ".env")
 TLS_PORTS = (443, 2053, 2083, 2087, 2096, 8443)
 HTTP_PORTS = (80, 8080, 8880, 2052, 2082, 2086, 2095)
-DEFAULT_CLEAN_SOURCES = (
-    "https://ipdb.api.030101.xyz/?type=bestcf",
-    "https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestcf.txt",
-)
-DEFAULT_CLEAN_DOMAINS = (
-    "cf.090227.xyz", "cdn.xn--b6gac.eu.org", "cf.877774.xyz", "cfip.cfcdn.eu.org",
-)
-DEFAULT_PROXY_SOURCES = (
-    "https://ipdb.api.030101.xyz/?type=bestproxy",
-    "https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestproxy.txt",
-)
-DEFAULT_PROXY_SEEDS = (
-    "proxyip.fxxk.dedyn.io", "proxyip.aliyun.fxxk.dedyn.io",
-    "proxyip.oracle.fxxk.dedyn.io", "proxyip.digitalocean.fxxk.dedyn.io",
-    "cdn.xn--b6gac.eu.org", "cdn-all.xn--b6gac.eu.org",
-    "bpb.yousef.isegaro.com", "edgetunnel.anycast.eu.org",
-)
-
+DEFAULT_CLEAN_SOURCES = ("https://ipdb.api.030101.xyz/?type=bestcf", "https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestcf.txt")
+DEFAULT_CLEAN_DOMAINS = ("cf.090227.xyz", "cdn.xn--b6gac.eu.org", "cf.877774.xyz", "cfip.cfcdn.eu.org")
+DEFAULT_PROXY_SOURCES = ("https://ipdb.api.030101.xyz/?type=bestproxy", "https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestproxy.txt")
+DEFAULT_PROXY_SEEDS = ("proxyip.fxxk.dedyn.io", "proxyip.aliyun.fxxk.dedyn.io", "proxyip.oracle.fxxk.dedyn.io", "proxyip.digitalocean.fxxk.dedyn.io", "cdn.xn--b6gac.eu.org", "cdn-all.xn--b6gac.eu.org", "bpb.yousef.isegaro.com", "edgetunnel.anycast.eu.org")
 
 def _str(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
-
 def _int(name: str, default: int) -> int:
-    try:
-        return int(_str(name) or default)
-    except ValueError:
-        return default
-
+    try: return int(_str(name) or default)
+    except ValueError: return default
 
 def _bool(name: str, default: bool) -> bool:
     raw = _str(name).lower()
     return default if not raw else raw in {"1", "true", "yes", "on"}
 
-
 def _list(name: str, default: tuple[str, ...] = ()) -> tuple[str, ...]:
     raw = _str(name)
-    if not raw:
-        return default
+    if not raw: return default
     return tuple(dict.fromkeys(x.strip() for x in raw.replace(";", ",").replace("\n", ",").split(",") if x.strip()))
-
 
 def _ids(name: str) -> tuple[int, ...]:
     return tuple(dict.fromkeys(int(x.strip()) for x in _str(name).replace(";", ",").split(",") if x.strip().lstrip("-").isdigit()))
 
-
 def _int_list(name: str, default: tuple[int, ...] = ()) -> tuple[int, ...]:
     raw = _str(name)
-    if not raw:
-        return default
+    if not raw: return default
     values = tuple(dict.fromkeys(int(x) for x in raw.replace(";", ",").split(",") if x.strip().isdigit()))
     return values or default
-
 
 def _ports(name: str, default: tuple[int, ...], allowed: tuple[int, ...]) -> tuple[int, ...]:
     values = tuple(x for x in _int_list(name, default) if x in allowed)
     return values or default
-
 
 @dataclass(frozen=True)
 class Settings:
@@ -90,77 +65,42 @@ class Settings:
     warp_scan_interval: int; warp_scan_sample: int; warp_scan_concurrency: int; warp_scan_timeout: float
     warp_scan_attempts: int; warp_verify_top: int; warp_pool_size: int; warp_per_config: int
     store_tokens: bool; request_timeout: float; log_level: str
-    compatibility_date: str = "2024-11-01"
-    languages: tuple[str, ...] = field(default=("fa", "en"))
-
+    compatibility_date: str = "2024-11-01"; languages: tuple[str, ...] = field(default=("fa", "en"))
     @property
-    def config_count(self) -> int:
-        return self.tls_config_count + self.http_config_count
-
+    def config_count(self) -> int: return self.tls_config_count + self.http_config_count
     @property
-    def all_ports(self) -> tuple[int, ...]:
-        return tuple(dict.fromkeys(self.tls_ports + self.http_ports))
-
-    def is_admin(self, tg_id: int) -> bool:
-        return tg_id in self.admin_ids
-
+    def all_ports(self) -> tuple[int, ...]: return tuple(dict.fromkeys(self.tls_ports + self.http_ports))
+    def is_admin(self, tg_id: int) -> bool: return tg_id in self.admin_ids
 
 def load_settings() -> Settings:
-    data = Path(_str("DATA_DIR", str(BASE_DIR / "data")))
-    data.mkdir(parents=True, exist_ok=True)
-    secret = _str("SECRET_KEY")
+    data = Path(_str("DATA_DIR", str(BASE_DIR / "data"))); data.mkdir(parents=True, exist_ok=True)
+    secret = _str("SECRET_KEY"); key = data / ".secret"
     if not secret:
-        key = data / ".secret"
-        if key.exists():
-            secret = key.read_text(encoding="utf-8").strip()
+        if key.exists(): secret = key.read_text(encoding="utf-8").strip()
         else:
-            secret = secrets.token_urlsafe(48)
-            key.write_text(secret, encoding="utf-8")
-            key.chmod(0o600)
-    lang = _str("DEFAULT_LANG", "fa").lower()
-    if lang not in {"fa", "en"}:
-        lang = "fa"
-    proxy_ip = _str("PROXY_IP")
-    clean = _list("CLEAN_IP_SOURCES", DEFAULT_CLEAN_SOURCES)
+            secret = secrets.token_urlsafe(48); key.write_text(secret, encoding="utf-8"); key.chmod(0o600)
+    lang = _str("DEFAULT_LANG", "fa").lower(); lang = lang if lang in {"fa", "en"} else "fa"
+    proxy_ip = _str("PROXY_IP"); clean = _list("CLEAN_IP_SOURCES", DEFAULT_CLEAN_SOURCES)
     return Settings(
-        bot_token=_str("BOT_TOKEN"), admin_ids=_ids("ADMIN_IDS"), secret_key=secret,
-        data_dir=data, db_path=Path(_str("DB_PATH", str(data / "autovless.db"))),
-        worker_file=Path(_str("WORKER_FILE", str(BASE_DIR / "worker" / "vless-worker-v2.js"))),
-        sweep_state=Path(_str("SWEEP_STATE", str(data / "clean-sweep.json"))),
-        brand=_str("BRAND", "AutoVless"), support_url=_str("SUPPORT_URL", "https://t.me/AutoVless"),
-        channel_url=_str("CHANNEL_URL", "https://t.me/AutoVless"), donate_url=_str("DONATE_URL"),
-        github_url=_str("GITHUB_URL", "https://github.com/arjeyproject/AutoVless"), webapp_url=_str("WEBAPP_URL"), default_lang=lang,
+        bot_token=_str("BOT_TOKEN"), admin_ids=_ids("ADMIN_IDS"), secret_key=secret, data_dir=data,
+        db_path=Path(_str("DB_PATH", str(data / "autovless.db"))),
+        # vless-worker.js is the stable, battle-tested bundle. v2 remains in the repo for comparison.
+        worker_file=Path(_str("WORKER_FILE", str(BASE_DIR / "worker" / "vless-worker.js"))),
+        sweep_state=Path(_str("SWEEP_STATE", str(data / "clean-sweep.json"))), brand=_str("BRAND", "AutoVless"),
+        support_url=_str("SUPPORT_URL", "https://t.me/AutoVless"), channel_url=_str("CHANNEL_URL", "https://t.me/AutoVless"),
+        donate_url=_str("DONATE_URL"), github_url=_str("GITHUB_URL", "https://github.com/arjeyproject/AutoVless"), webapp_url=_str("WEBAPP_URL"), default_lang=lang,
         tls_ports=_ports("TLS_PORTS", (443,), TLS_PORTS), http_ports=_ports("HTTP_PORTS", (80,), HTTP_PORTS),
         tls_config_count=max(0, _int("TLS_CONFIG_COUNT", 6)), http_config_count=max(0, _int("HTTP_CONFIG_COUNT", 3)),
-        scan_interval=max(60, _int("SCAN_INTERVAL", 480)), scan_batch=max(128, _int("SCAN_BATCH", 1600)),
-        scan_concurrency=max(16, _int("SCAN_CONCURRENCY", 192)),
-        scan_timeout=max(.3, _int("SCAN_TIMEOUT_MS", 1400) / 1000), verify_top=max(8, _int("VERIFY_TOP", 48)),
-        verify_probes=max(2, min(5, _int("VERIFY_PROBES", 3))), scan_rounds=max(2, min(5, _int("SCAN_ROUNDS", 3))),
-        scan_waves=max(1, min(5, _int("SCAN_WAVES", 4))), scan_min_verified=max(4, _int("SCAN_MIN_VERIFIED", 12)),
-        scan_ttl=max(300, _int("SCAN_TTL", 3600)), stale_factor=max(2, _int("STALE_FACTOR", 8)),
-        sweep_per_subnet=max(1, min(8, _int("SWEEP_PER_SUBNET", 2))), pool_size=max(24, _int("POOL_SIZE", 240)),
-        clean_ip_sources=clean, clean_domains=_list("CLEAN_DOMAINS", DEFAULT_CLEAN_DOMAINS),
-        source_ttl=max(300, _int("SOURCE_TTL", 1800)), source_retry=max(60, _int("SOURCE_RETRY", 180)),
-        seed_limit=max(50, _int("SEED_LIMIT", 800)), max_fails=max(1, _int("MAX_FAILS", 3)),
-        proxy_ip=proxy_ip, proxy_seeds=_list("PROXY_IP", DEFAULT_PROXY_SEEDS),
-        proxy_sources=_list("PROXY_IP_SOURCES", DEFAULT_PROXY_SOURCES), proxy_ports=_ports("PROXY_PORTS", (443,), TLS_PORTS),
-        proxy_scan_interval=max(300, _int("PROXY_SCAN_INTERVAL", 1200)), proxy_scan_limit=max(32, _int("PROXY_SCAN_LIMIT", 500)),
-        proxy_pool_size=max(8, _int("PROXY_POOL_SIZE", 80)), proxy_per_panel=max(2, _int("PROXY_PER_PANEL", 6)),
-        dns_server=_str("DNS_SERVER", "8.8.8.8"), fallback_host=_str("FALLBACK_HOST", "www.wikipedia.org"),
-        health_attempts=max(2, _int("HEALTH_ATTEMPTS", 8)), sub_sources=_list("SUB_SOURCES", clean),
-        sub_refresh=max(60, _int("SUB_REFRESH", 180)), autopilot=_bool("AUTOPILOT", True),
-        autopilot_interval=max(120, _int("AUTOPILOT_INTERVAL", 600)), autopilot_batch=max(1, _int("AUTOPILOT_BATCH", 8)),
-        autopilot_max_age=max(600, _int("AUTOPILOT_MAX_AGE", 10800)), warp_enabled=_bool("WARP_ENABLED", True),
-        warp_amnezia=_bool("WARP_AMNEZIA", True), warp_mtu=max(1000, min(1420, _int("WARP_MTU", 1280))),
-        warp_dns=_str("WARP_DNS", "1.1.1.1, 1.0.0.1"), warp_license=_str("WARP_LICENSE"), warp_ports=_int_list("WARP_PORTS"),
-        warp_scan_interval=max(300, _int("WARP_SCAN_INTERVAL", 1200)), warp_scan_sample=max(2, _int("WARP_SCAN_SAMPLE", 10)),
-        warp_scan_concurrency=max(8, _int("WARP_SCAN_CONCURRENCY", 80)),
-        warp_scan_timeout=max(.5, _int("WARP_SCAN_TIMEOUT_MS", 2500) / 1000),
-        warp_scan_attempts=max(2, min(5, _int("WARP_SCAN_ATTEMPTS", 3))), warp_verify_top=max(4, _int("WARP_VERIFY_TOP", 24)),
-        warp_pool_size=max(8, _int("WARP_POOL_SIZE", 100)), warp_per_config=max(1, _int("WARP_PER_CONFIG", 6)),
-        store_tokens=_bool("STORE_TOKENS", True), request_timeout=max(5.0, float(_int("REQUEST_TIMEOUT", 30))),
-        log_level=_str("LOG_LEVEL", "INFO").upper(),
+        scan_interval=max(60, _int("SCAN_INTERVAL", 480)), scan_batch=max(128, _int("SCAN_BATCH", 1600)), scan_concurrency=max(16, _int("SCAN_CONCURRENCY", 192)),
+        scan_timeout=max(.3, _int("SCAN_TIMEOUT_MS", 1400) / 1000), verify_top=max(8, _int("VERIFY_TOP", 48)), verify_probes=max(2, min(5, _int("VERIFY_PROBES", 3))),
+        scan_rounds=max(2, min(5, _int("SCAN_ROUNDS", 3))), scan_waves=max(1, min(5, _int("SCAN_WAVES", 4))), scan_min_verified=max(4, _int("SCAN_MIN_VERIFIED", 12)),
+        scan_ttl=max(300, _int("SCAN_TTL", 3600)), stale_factor=max(2, _int("STALE_FACTOR", 8)), sweep_per_subnet=max(1, min(8, _int("SWEEP_PER_SUBNET", 2))), pool_size=max(24, _int("POOL_SIZE", 240)),
+        clean_ip_sources=clean, clean_domains=_list("CLEAN_DOMAINS", DEFAULT_CLEAN_DOMAINS), source_ttl=max(300, _int("SOURCE_TTL", 1800)), source_retry=max(60, _int("SOURCE_RETRY", 180)), seed_limit=max(50, _int("SEED_LIMIT", 800)), max_fails=max(1, _int("MAX_FAILS", 3)),
+        proxy_ip=proxy_ip, proxy_seeds=_list("PROXY_IP", DEFAULT_PROXY_SEEDS), proxy_sources=_list("PROXY_IP_SOURCES", DEFAULT_PROXY_SOURCES), proxy_ports=_ports("PROXY_PORTS", (443,), TLS_PORTS), proxy_scan_interval=max(300, _int("PROXY_SCAN_INTERVAL", 1200)), proxy_scan_limit=max(32, _int("PROXY_SCAN_LIMIT", 500)), proxy_pool_size=max(8, _int("PROXY_POOL_SIZE", 80)), proxy_per_panel=max(2, _int("PROXY_PER_PANEL", 6)),
+        dns_server=_str("DNS_SERVER", "8.8.8.8"), fallback_host=_str("FALLBACK_HOST", "www.wikipedia.org"), health_attempts=max(2, _int("HEALTH_ATTEMPTS", 8)), sub_sources=_list("SUB_SOURCES", clean), sub_refresh=max(60, _int("SUB_REFRESH", 180)),
+        autopilot=_bool("AUTOPILOT", True), autopilot_interval=max(120, _int("AUTOPILOT_INTERVAL", 600)), autopilot_batch=max(1, _int("AUTOPILOT_BATCH", 8)), autopilot_max_age=max(600, _int("AUTOPILOT_MAX_AGE", 10800)),
+        warp_enabled=_bool("WARP_ENABLED", True), warp_amnezia=_bool("WARP_AMNEZIA", True), warp_mtu=max(1000, min(1420, _int("WARP_MTU", 1280))), warp_dns=_str("WARP_DNS", "1.1.1.1, 1.0.0.1"), warp_license=_str("WARP_LICENSE"), warp_ports=_int_list("WARP_PORTS"), warp_scan_interval=max(300, _int("WARP_SCAN_INTERVAL", 1200)), warp_scan_sample=max(2, _int("WARP_SCAN_SAMPLE", 10)), warp_scan_concurrency=max(8, _int("WARP_SCAN_CONCURRENCY", 80)), warp_scan_timeout=max(.5, _int("WARP_SCAN_TIMEOUT_MS", 2500) / 1000), warp_scan_attempts=max(2, min(5, _int("WARP_SCAN_ATTEMPTS", 3))), warp_verify_top=max(4, _int("WARP_VERIFY_TOP", 24)), warp_pool_size=max(8, _int("WARP_POOL_SIZE", 100)), warp_per_config=max(1, _int("WARP_PER_CONFIG", 6)),
+        store_tokens=_bool("STORE_TOKENS", True), request_timeout=max(5.0, float(_int("REQUEST_TIMEOUT", 30))), log_level=_str("LOG_LEVEL", "INFO").upper(),
     )
-
 
 settings = load_settings()
