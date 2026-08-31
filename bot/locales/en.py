@@ -204,8 +204,7 @@ EN: dict[str, str] = {
     "convert_done": "\u2705 Converted <b>{count}</b> configs.",
     # --------------------------------------------------------------- gating
     "join_required": (
-        "\U0001f512 <b>Membership required</b>\n{rule}\n"
-        "Join the channels below, then press \u201cI joined\u201d."
+        "\U0001f48e Please join the channel below to support the bot developers \u2764\ufe0f\u200d\U0001f525"
     ),
     "join_ok": "\u2705 Nice. Access unlocked.",
     "join_fail": "\u26a0\ufe0f You are not a member of every channel yet.",
