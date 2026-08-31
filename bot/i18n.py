@@ -11,13 +11,32 @@ from .locales.en import EN
 from .locales.fa import FA
 from .locales.support import SUPPORT
 from .locales.warp import WARP
+from .locales.warppool import WARPPOOL
 
 LANGS: tuple[str, ...] = ("fa", "en")
 RULE = "\u2501" * 14
 
+# WARPPOOL is merged last so the pool screens can override an older WARP string
+# without editing that catalogue.
 CATALOG: dict[str, dict[str, str]] = {
-    "fa": {**FA, **ADMIN["fa"], **CURATOR["fa"], **SUPPORT["fa"], **WARP["fa"], **APPS["fa"]},
-    "en": {**EN, **ADMIN["en"], **CURATOR["en"], **SUPPORT["en"], **WARP["en"], **APPS["en"]},
+    "fa": {
+        **FA,
+        **ADMIN["fa"],
+        **CURATOR["fa"],
+        **SUPPORT["fa"],
+        **WARP["fa"],
+        **APPS["fa"],
+        **WARPPOOL["fa"],
+    },
+    "en": {
+        **EN,
+        **ADMIN["en"],
+        **CURATOR["en"],
+        **SUPPORT["en"],
+        **WARP["en"],
+        **APPS["en"],
+        **WARPPOOL["en"],
+    },
 }
 
 _PERSIAN_DIGITS = str.maketrans(
