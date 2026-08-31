@@ -5,6 +5,12 @@ Kept in its own catalogue so the WARP wording can be re-tuned without touching
 
 Persian is the default and English is a full peer. Every screen leads with an
 emoji because on Telegram that is the only visual hierarchy there is.
+
+The ``pool.note_*`` family is worth a word. A refresh that swept forty-eight
+addresses and heard nothing back used to print exactly that and stop, which
+reads like nationwide filtering and is usually one of three completely different
+problems with three completely different fixes. Each note names the cause and
+the fix in one line.
 """
 
 from __future__ import annotations
@@ -44,17 +50,23 @@ WARPPOOL: dict[str, dict[str, str]] = {
             "🎭 جانک: Jc <b>{jc}</b> · Jmin <b>{jmin}</b> · Jmax <b>{jmax}</b> · MTU <b>{mtu}</b>\n"
             "{rule}\n"
             "📲 <b>اجرا در {app}</b>\n"
-            "۱️⃣ اپ را باز کن و روی <b>+</b> بزن.\n"
-            "۲️⃣ گزینه‌ی <b>Import configuration</b> را انتخاب کن.\n"
-            "۳️⃣ همین فایل <code>.conf</code> را به اپ بده.\n"
-            "۴️⃣ یک اسم دلخواه بگذار و <b>Connect</b> را بزن.\n\n"
+            "١️⃣ اپ را باز کن و روی <b>+</b> بزن.\n"
+            "٢️⃣ گزینه‌ی <b>Import configuration</b> را انتخاب کن.\n"
+            "٣️⃣ همین فایل <code>.conf</code> را به اپ بده.\n"
+            "٤️⃣ یک اسم دلخواه بگذار و <b>Connect</b> را بزن.\n\n"
             "💡 اگر وصل نشد، دکمه‌ی زیر را بزن تا اندپوینت بعدی استخر را بگیری."
         ),
         "wg.caption": "📄 کانفیگ AmneziaWG با اندپوینت سالم <b>{family}</b>",
         "wg.pool_cold": (
             "🥶 <b>استخر {family} الان خالی است</b>\n{rule}\n"
             "هیچ اندپوینت سالمی برای این خانواده پیدا نشد، و کانفیگ نیمه‌کاره نمی‌سازم.\n"
-            "♻️ یک اسکن تازه در پس‌زمینه شروع شد؛ چند لحظه بعد دوباره امتحان کن."
+            "♻️ یک اسکن تازه در پس‌زمینه شروع شد؛ چند لحطه بعد دوباره امتحان کن."
+        ),
+        "wg.pool_no_route": (
+            "⛔️ <b>این سرور اصلاً {family} ندارد</b>\n{rule}\n"
+            "پس استخر {family} هرگز پر نمی‌شود و اسکن دوباره فرقی نمی‌کند.\n"
+            "🛠 این را به مدیر بگو: روت این خانواده روی سرور باید فعال شود.\n"
+            "👉 فعلاً از گزینه‌ی دیگر استفاده کن."
         ),
         "wg.identity_failed": "⛔️ ساخت هویت وارپ ناموفق بود: <code>{reason}</code>",
         "wg.family_v4": "IPv4",
@@ -64,6 +76,8 @@ WARPPOOL: dict[str, dict[str, str]] = {
         "pool.screen": (
             "🏊 <b>استخر اندپوینت‌های وارپ</b>\n{rule}\n"
             "🧩 منبع اسکن: <code>{source}</code>\n"
+            "🔑 هویت اسکن: {identity}\n"
+            "🛣 روت این سرور: {routes}\n"
             "🤖 ایجنت: <b>{agent}</b> · هر <b>{interval}</b> ثانیه · پاس: <b>{passes}</b>\n"
             "🔬 تست عبور ترافیک: <b>{deep}</b>\n"
             "❤️ کف سلامت: <b>{floor}</b>\n{rule}\n"
@@ -75,6 +89,9 @@ WARPPOOL: dict[str, dict[str, str]] = {
             "   🌍 <code>{v6ep}</code>\n{rule}\n"
             "🕒 آخرین بروزرسانی: {updated}"
         ),
+        "pool.identity_ok": "✅ کلاود‌فلر جواب می‌دهد",
+        "pool.identity_bad": "⛔️ جواب نمی‌دهد (همه‌ی اندپوینت‌ها مرده دیده می‌شوند)",
+        "pool.identity_unknown": "❓ هنوز تست نشده",
         "pool.refresh_started": (
             "♻️ <b>تازه‌سازی استخر شروع شد</b>\n{rule}\n"
             "اسکن در پس‌زمینه اجرا می‌شود، پس ربات قفل نمی‌شود.\n"
@@ -96,6 +113,39 @@ WARPPOOL: dict[str, dict[str, str]] = {
         "pool.refresh_busy": "⏳ یک تازه‌سازی روی استخر {family} در حال اجراست.",
         "pool.refresh_cooldown": "⏲ خیلی زود بود. <b>{wait}</b> ثانیه دیگر صبر کن.",
         "pool.refresh_failed": "⛔️ تازه‌سازی استخر {family} ناموفق بود: <code>{reason}</code>",
+        "pool.refresh_unreachable": (
+            "⛔️ <b>استخر {family} قابل اسکن نیست</b>\n{rule}\n"
+            "این سرور روت {family} ندارد، پس هیچ بسته‌ای از اینجا بیرون نمی‌رود."
+        ),
+
+        # ----------------------------------------- why a sweep found nothing
+        "pool.note_no_route": (
+            "🛠 <b>علت:</b> روت این خانواده روی سرور وجود ندارد. در داکر معمولاً یعنی کانتینر "
+            "روی شبکه‌ی bridge پیش‌فرض است که IPv6 ندارد.\n"
+            "👉 در <code>docker-compose.yml</code> گزینه‌ی <code>network_mode: host</code> را فعال کن "
+            "(یا IPv6 را روی شبکه‌ی داکر روشن کن) و سرویس را ریستارت کن."
+        ),
+        "pool.note_identity": (
+            "🛠 <b>علت:</b> کلاود‌فلر به کلید اسکن ما جواب نمی‌دهد. وارپ به هندشیک یک دیوایس "
+            "ثبت‌نشده <b>بی‌صدا</b> جواب نمی‌دهد، پس همه‌ی اندپوینت‌ها مرده دیده می‌شوند.\n"
+            "👉 اگر <code>api.cloudflareclient.com</code> از سرور باز نمی‌شود، بسته‌ی <code>warpep</code> "
+            "را نصب کن تا هویت ثبت‌شده‌ی آن به کار بیاید."
+        ),
+        "pool.note_ports": (
+            "🛠 <b>علت:</b> هیچ پورت UDP وارپ از این سرور جواب نداد، پس لیست پیش‌فرض فرض شد.\n"
+            "👉 یا UDP خروجی روی سرور بسته است، یا هویت اسکن ثبت‌شده نیست. "
+            "فایروال را برای پورت‌های <code>2408 500 1701 4500</code> چک کن."
+        ),
+        "pool.note_filtered": (
+            "🛠 <b>علت:</b> کلید اسکن سالم است و روت هم وجود دارد، پس واقعاً این مسیر دارد وارپ را "
+            "دروپ می‌کند.\n"
+            "👉 کمی بعد دوباره امتحان کن یا <code>WARP_POOL_SAMPLE</code> را بالاتر ببر."
+        ),
+        "pool.note_floor": (
+            "🛠 <b>علت:</b> اندپوینت‌ها جواب دادند ولی هیچ‌کدام از کف سلامت رد نشد.\n"
+            "👉 اگر خط الان شلوغ است، موقتاً <code>WARP_HEALTH_FLOOR</code> را پایین‌تر بگذار."
+        ),
+
         "pool.audit_started": (
             "🩺 <b>بررسی کامل استخر شروع شد</b>\n{rule}\n"
             "همه‌ی اندپوینت‌های هر دو استخر دوباره پینگ می‌شوند، "
@@ -168,6 +218,12 @@ WARPPOOL: dict[str, dict[str, str]] = {
             "that cannot work.\n"
             "♻️ A fresh scan just started in the background. Try again in a moment."
         ),
+        "wg.pool_no_route": (
+            "⛔️ <b>This server has no {family} connectivity at all</b>\n{rule}\n"
+            "So the {family} pool can never fill and scanning again will not change that.\n"
+            "🛠 Tell the operator: this host needs a working {family} route.\n"
+            "👉 Use the other option for now."
+        ),
         "wg.identity_failed": "⛔️ WARP identity could not be created: <code>{reason}</code>",
         "wg.family_v4": "IPv4",
         "wg.family_v6": "IPv6",
@@ -176,6 +232,8 @@ WARPPOOL: dict[str, dict[str, str]] = {
         "pool.screen": (
             "🏊 <b>WARP endpoint pools</b>\n{rule}\n"
             "🧩 Scan source: <code>{source}</code>\n"
+            "🔑 Scan identity: {identity}\n"
+            "🛣 Routes on this host: {routes}\n"
             "🤖 Agent: <b>{agent}</b> · every <b>{interval}</b>s · passes: <b>{passes}</b>\n"
             "🔬 Tunnel traffic check: <b>{deep}</b>\n"
             "❤️ Health floor: <b>{floor}</b>\n{rule}\n"
@@ -187,6 +245,9 @@ WARPPOOL: dict[str, dict[str, str]] = {
             "   🌍 <code>{v6ep}</code>\n{rule}\n"
             "🕒 Last updated: {updated}"
         ),
+        "pool.identity_ok": "✅ Cloudflare answers it",
+        "pool.identity_bad": "⛔️ not answered (every endpoint will look dead)",
+        "pool.identity_unknown": "❓ not tested yet",
         "pool.refresh_started": (
             "♻️ <b>Pool refresh started</b>\n{rule}\n"
             "The scan runs in the background, so nothing here is blocked.\n"
@@ -208,6 +269,43 @@ WARPPOOL: dict[str, dict[str, str]] = {
         "pool.refresh_busy": "⏳ A refresh of the {family} pool is already running.",
         "pool.refresh_cooldown": "⏲ Too soon. Give it <b>{wait}</b> more seconds.",
         "pool.refresh_failed": "⛔️ Refreshing the {family} pool failed: <code>{reason}</code>",
+        "pool.refresh_unreachable": (
+            "⛔️ <b>The {family} pool cannot be scanned</b>\n{rule}\n"
+            "This host has no {family} route, so not one packet leaves the box."
+        ),
+
+        # ----------------------------------------- why a sweep found nothing
+        "pool.note_no_route": (
+            "🛠 <b>Cause:</b> this host has no route for that family. On Docker that almost "
+            "always means the container sits on the default bridge network, which has no "
+            "IPv6 at all.\n"
+            "👉 Set <code>network_mode: host</code> in <code>docker-compose.yml</code> (or "
+            "enable IPv6 on the Docker network) and restart the service."
+        ),
+        "pool.note_identity": (
+            "🛠 <b>Cause:</b> Cloudflare is not answering our scan key. WARP drops a handshake "
+            "from an unenrolled device <b>in silence</b>, so every endpoint on earth looks "
+            "dead.\n"
+            "👉 If <code>api.cloudflareclient.com</code> is blocked from this server, install "
+            "the <code>warpep</code> package so its enrolled probing identity can be used."
+        ),
+        "pool.note_ports": (
+            "🛠 <b>Cause:</b> no WARP UDP port answered from this host, so the default list "
+            "was assumed.\n"
+            "👉 Either outbound UDP is blocked here or the scan identity is not enrolled. "
+            "Check the firewall for <code>2408 500 1701 4500</code>."
+        ),
+        "pool.note_filtered": (
+            "🛠 <b>Cause:</b> the scan key works and the route exists, so this path really is "
+            "dropping WARP right now.\n"
+            "👉 Try again shortly, or raise <code>WARP_POOL_SAMPLE</code> to widen the sweep."
+        ),
+        "pool.note_floor": (
+            "🛠 <b>Cause:</b> endpoints answered but none of them cleared the health floor.\n"
+            "👉 If the uplink is congested right now, lower <code>WARP_HEALTH_FLOOR</code> "
+            "temporarily."
+        ),
+
         "pool.audit_started": (
             "🩺 <b>Full pool check started</b>\n{rule}\n"
             "Every endpoint in both pools is being re-pinged, the dead are deleted and "
