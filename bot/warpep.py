@@ -9,6 +9,11 @@ this module is the only seam between the two projects:
   * **the verdict** - WarpEP's 0-100 health formula, where loss dominates,
     latency comes second and jitter third. A row below the floor is never stored,
     so the pool can only ever hold endpoints that actually answered.
+  * **the identity** - the one thing that decides real results from dead ones.
+    Read ``fallback_identity`` below before touching anything in here.
+  * **the routes** - whether this host can even reach a family. A container on
+    Docker's default bridge has no IPv6 route at all, and without ``reachable``
+    the scanner cheerfully reported every IPv6 address as dead.
   * **the deep check** - when the ``warpep`` package is installed an endpoint can
     be proven to *carry traffic* (real ICMP sealed into the tunnel and decrypted
     on the way back), not merely to answer one handshake. That is the difference
@@ -28,9 +33,11 @@ inside one bot would be a bug, not a feature.
 from __future__ import annotations
 
 import asyncio
+import base64
 import ipaddress
 import logging
 import random
+import socket
 from typing import Optional, Sequence
 
 log = logging.getLogger("autovless.warpep")
@@ -85,6 +92,24 @@ CONTROL: dict[str, tuple[tuple[str, int], ...]] = {
     ),
 }
 
+# Cloudflare's WARP WireGuard responder public key. Every WARP client on the
+# planet handshakes against this exact key and it has not changed since WARP
+# shipped, so it is a safe default when a registration payload is unavailable.
+RESPONDER_PUBLIC_KEY = "bmXOC+F1FxEMF9dyiK2H5/1SUtzH0JuVo51h2wPfgyo="
+
+# An *enrolled* WARP device key, already published in other open-source WARP
+# tools and vendored here from WarpEP's own bundled identity.
+#
+# Read this before deleting it. Cloudflare's responder checks mac1 (anybody can
+# compute that), then decrypts the initiation to learn which client is calling,
+# and looks that public key up in its peer list. If the key is not an enrolled
+# WARP device the packet is dropped in silence: no response, no ICMP, nothing.
+# So an unregistered or revoked identity does not make endpoints look slow, it
+# makes every endpoint on earth look dead - which is precisely the "48 scanned,
+# 0 answered" the pools were reporting. This key only ever *probes*; it carries
+# no user traffic and is tied to nobody's account.
+FALLBACK_PRIVATE_KEY = "4OnO86dDLpqJ2U10ODwX3tarx6xlRGLfkmbSBtMgaHg="
+
 # --------------------------------------------------------------------- #
 # prefer the installed package
 # --------------------------------------------------------------------- #
@@ -96,18 +121,30 @@ except Exception:  # noqa: BLE001 - any import problem means "use the copy"
     _upstream = None
     _upstream_version = ""
 
-if _upstream is not None:
-    IPV4_PREFIXES: tuple[str, ...] = tuple(_upstream.IPV4_PREFIXES)
-    IPV6_PREFIXES: tuple[str, ...] = tuple(_upstream.IPV6_PREFIXES)
-    PRIMARY_PORTS: tuple[int, ...] = tuple(_upstream.PRIMARY_PORTS)
-    EXTENDED_PORTS: tuple[int, ...] = tuple(_upstream.EXTENDED_PORTS)
-    SOURCE = f"warpep {_upstream_version or 'installed'}"
-else:
-    IPV4_PREFIXES = _V4_PREFIXES
-    IPV6_PREFIXES = _V6_PREFIXES
-    PRIMARY_PORTS = _PRIMARY_PORTS
-    EXTENDED_PORTS = _EXTENDED_PORTS
-    SOURCE = "warpep (vendored)"
+
+def _upstream_tuple(name: str, fallback: tuple) -> tuple:
+    """Take a constant from the package, and never die because it was renamed.
+
+    The old code read these attributes unguarded, so a single upstream rename
+    would raise ``AttributeError`` at import time and take the whole bot down
+    rather than degrading to the vendored copy.
+    """
+    if _upstream is None:
+        return fallback
+    try:
+        return tuple(getattr(_upstream, name))
+    except Exception:  # noqa: BLE001
+        log.warning("warpep.%s is missing, using the vendored copy", name)
+        return fallback
+
+
+IPV4_PREFIXES: tuple[str, ...] = _upstream_tuple("IPV4_PREFIXES", _V4_PREFIXES)
+IPV6_PREFIXES: tuple[str, ...] = _upstream_tuple("IPV6_PREFIXES", _V6_PREFIXES)
+PRIMARY_PORTS: tuple[int, ...] = _upstream_tuple("PRIMARY_PORTS", _PRIMARY_PORTS)
+EXTENDED_PORTS: tuple[int, ...] = _upstream_tuple("EXTENDED_PORTS", _EXTENDED_PORTS)
+SOURCE = (
+    f"warpep {_upstream_version or 'installed'}" if _upstream is not None else "warpep (vendored)"
+)
 
 ALL_PORTS: tuple[int, ...] = tuple(dict.fromkeys(PRIMARY_PORTS + EXTENDED_PORTS))
 
@@ -158,6 +195,114 @@ def block_of(ip: str) -> str:
 
 
 # --------------------------------------------------------------------- #
+# what this host can actually reach
+# --------------------------------------------------------------------- #
+
+# One address per family, used only to ask the kernel for a route.
+_ROUTE_PROBE: dict[str, str] = {V4: "162.159.192.1", V6: "2606:4700:d0::a29f:c001"}
+
+_routes: dict[str, Optional[bool]] = {V4: None, V6: None}
+
+
+def _probe_route(family: str) -> bool:
+    """Has the kernel got a route for this family at all?
+
+    ``connect`` on a UDP socket sends no packet, so this costs nothing and takes
+    no time. It exists because a container on Docker's default bridge network has
+    no IPv6 route whatsoever: every IPv6 probe then fails instantly with
+    ``ENETUNREACH`` and the old code счёл that a dead endpoint. Forty-eight
+    addresses, zero answers, four seconds, and an IPv6 pool that could never fill
+    no matter how many times anybody pressed refresh.
+    """
+    code = normalise_family(family)
+    inet = socket.AF_INET6 if code == V6 else socket.AF_INET
+    try:
+        with socket.socket(inet, socket.SOCK_DGRAM) as sock:
+            sock.settimeout(0.5)
+            sock.connect((_ROUTE_PROBE[code], 2408))
+    except OSError as error:
+        log.warning(
+            "this host has no usable %s route (%s). %s endpoints cannot be scanned "
+            "until it does - on Docker that usually means the container is on the "
+            "default bridge; use network_mode: host or enable IPv6 on the network.",
+            code.upper(),
+            error,
+            code.upper(),
+        )
+        return False
+    return True
+
+
+def reachable(family: str, refresh: bool = False) -> bool:
+    """True when this host has a usable route for that address family."""
+    code = normalise_family(family)
+    if refresh or _routes.get(code) is None:
+        _routes[code] = _probe_route(code)
+    return bool(_routes[code])
+
+
+def routes(refresh: bool = False) -> dict[str, bool]:
+    return {family: reachable(family, refresh) for family in FAMILIES}
+
+
+def available_families(refresh: bool = False) -> tuple[str, ...]:
+    return tuple(family for family in FAMILIES if reachable(family, refresh))
+
+
+# --------------------------------------------------------------------- #
+# the probing identity
+# --------------------------------------------------------------------- #
+
+
+def fallback_identity() -> dict:
+    """An enrolled probing identity that needs no network call at all.
+
+    Registering a device against ``api.cloudflareclient.com`` is the nice path,
+    but that host is blocked from a great many Iranian servers and Cloudflare
+    rate-limits datacentre ranges hard. Without this function a failed
+    registration meant no scan at all, and a *revoked* cached registration was
+    worse: it scanned happily and reported every endpoint as dead forever.
+
+    Prefers, in order: WarpEP's own cached ``warpep register`` account, WarpEP's
+    bundled enrolled key, then the copy vendored above.
+    """
+    identity = {
+        "private_key": FALLBACK_PRIVATE_KEY,
+        "peer_public_key": RESPONDER_PUBLIC_KEY,
+        # Zero reserved bytes on purpose: a shared probing key routes to no
+        # account, and WarpEP's own scanner handshakes with them at zero too.
+        "reserved": [0, 0, 0],
+        "client_id": "",
+        "v4": "172.16.0.2",
+        "v6": "",
+        "account_type": "probe",
+        # Marks a key that is not ours: the deep tunnel check must never draw a
+        # conclusion from it. See ``deep_verify``.
+        "shared": True,
+        "source": "warpep bundled (vendored)",
+    }
+    if _upstream is None:
+        return identity
+    try:
+        from warpep import resolve_identity  # type: ignore
+
+        resolved = resolve_identity()
+        if not resolved.registered:
+            return identity
+        identity["private_key"] = resolved.keypair.private_b64
+        identity["peer_public_key"] = base64.b64encode(resolved.responder_public).decode("ascii")
+        identity["v4"] = getattr(resolved, "client_ip", "") or "172.16.0.2"
+        identity["v6"] = getattr(resolved, "client_ip_v6", "") or ""
+        identity["source"] = f"warpep {resolved.source}"
+        # WarpEP's own registration *is* a real device, so its tunnel is routable
+        # and the deep check can be trusted again.
+        identity["shared"] = resolved.source != "account"
+    except Exception as error:  # noqa: BLE001
+        log.info("warpep could not hand over an identity: %s", error)
+    return identity
+
+
+# --------------------------------------------------------------------- #
 # candidate generation
 # --------------------------------------------------------------------- #
 
@@ -196,11 +341,20 @@ def candidates(
     is the same choice WarpEP's ``spread()`` makes: a flat random draw over a
     /24-heavy space clusters, and a scan that happens to take twenty addresses
     out of the one block being blackholed reports that nothing works at all.
+
+    Note that IPv6 has two prefixes against IPv4's seven, so the same
+    ``per_prefix`` yields far fewer IPv6 candidates. ``candidates`` therefore
+    tops the IPv6 draw up so both pools get a comparable number of chances.
     """
     picker = rng or random
     wanted = max(1, int(per_prefix))
+    code = normalise_family(family)
+    if code == V6:
+        # Match the IPv4 breadth instead of scanning a quarter as many addresses
+        # and then concluding IPv6 is filtered.
+        wanted = max(wanted, (wanted * len(IPV4_PREFIXES)) // max(1, len(IPV6_PREFIXES)))
     out: list[str] = []
-    for prefix in prefixes(family):
+    for prefix in prefixes(code):
         pool = _addresses_in(prefix)
         if not pool:
             continue
@@ -292,6 +446,15 @@ def badge(score: int, verified: Optional[bool] = None) -> str:
 # --------------------------------------------------------------------- #
 
 
+def deep_possible(identity: Optional[dict] = None) -> bool:
+    """Can the tunnel check produce a meaningful verdict for this identity?"""
+    if _upstream is None:
+        return False
+    if identity is None:
+        return True
+    return not bool(identity.get("shared"))
+
+
 def _deep_sync(
     private_key: str,
     peer_public: str,
@@ -328,13 +491,19 @@ async def deep_verify(
     """Does this endpoint actually carry traffic? ``None`` means "not checked".
 
     Never raises, and never returns ``False`` because of a local problem: a
-    missing package or a thread that blew up is not evidence against an
-    endpoint, and treating it as such would empty a perfectly good pool.
+    missing package, a thread that blew up or a probing key with no tunnel
+    address of its own is not evidence against an endpoint, and treating it as
+    such would empty a perfectly good pool.
     """
     if _upstream is None:
         return None
     private_key = (identity or {}).get("private_key") or ""
     if not private_key:
+        return None
+    if (identity or {}).get("shared"):
+        # A shared probing key is enrolled enough to get handshake answers but it
+        # has no routable tunnel address, so ICMP that never comes back says
+        # nothing about the endpoint. Report "not checked" and move on.
         return None
     try:
         ok, reason, tunnel_ms = await asyncio.to_thread(
