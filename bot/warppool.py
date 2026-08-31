@@ -16,13 +16,30 @@ Exactly three things, and nothing softer:
      times, spaced out, so DPI that kills a session one second in is caught;
   2. its WarpEP health score (loss first, then latency, then jitter) cleared
      ``TUNE.health_floor``;
-  3. where the ``warpep`` package is installed, it carried real ICMP through a
-     real tunnel and gave it back decrypted.
+  3. where the ``warpep`` package is installed *and* the probing identity owns a
+     routable tunnel, it carried real ICMP through a real tunnel and gave it back
+     decrypted.
 
 Anything that fails one of those is never written, and anything already stored
 that starts failing is deleted rather than demoted. ``warpstore.upsert`` enforces
 the floor itself, so the guarantee does not depend on this module remembering to
 apply it.
+
+Why a refresh can legitimately find nothing
+-------------------------------------------
+Three very different reasons, and a report that cannot tell them apart is worse
+than no report at all:
+
+  * **no_route** - this host has no route for the family. A container on Docker's
+    default bridge network has no IPv6 at all, so every IPv6 probe fails
+    instantly with ``ENETUNREACH``. The pool was reporting that as "48 addresses
+    scanned, 0 answered, 4 seconds", which reads like nationwide filtering and
+    is actually one missing line in ``docker-compose.yml``.
+  * **identity** - Cloudflare is not answering our probing key at all, because it
+    is not (or is no longer) an enrolled WARP device. Every endpoint on earth
+    looks dead. ``warpscan`` preflights for this now.
+  * **filtered** - the key works, the route exists, and this network really is
+    dropping WARP on the ports we tried.
 
 The agent
 ---------
@@ -60,7 +77,7 @@ class RefreshReport:
     """What one pool refresh did. Rendered straight onto the admin screen."""
 
     family: str = V4
-    status: str = "done"          # done | busy | cooldown | failed | disabled
+    status: str = "done"          # done | busy | cooldown | unreachable | failed | disabled
     probed: int = 0               # candidate addresses swept
     answered: int = 0             # answered at least one handshake
     healthy: int = 0              # cleared the health floor
@@ -71,9 +88,13 @@ class RefreshReport:
     target: int = 0
     best: Optional[float] = None
     ports: tuple[int, ...] = ()
+    ports_proven: bool = False    # were those ports measured, or just assumed?
     elapsed: float = 0.0
     wait: int = 0
     reason: str = ""
+    # Why nothing was found: no_route | identity | ports | filtered | ""
+    note: str = ""
+    identity: str = ""
 
     @property
     def ok(self) -> bool:
@@ -95,6 +116,7 @@ class AuditReport:
     removed: int = 0
     elapsed: float = 0.0
     reason: str = ""
+    note: str = ""
     families: dict = field(default_factory=dict)
 
     @property
@@ -135,10 +157,20 @@ class WarpPool:
     # ------------------------------------------------------------------ #
 
     @staticmethod
-    def _deep_wanted(deep: Optional[bool]) -> bool:
+    def _deep_wanted(deep: Optional[bool], identity: Optional[dict] = None) -> bool:
+        """Is the deep tunnel check both switched on and *meaningful* right now?
+
+        The second half matters. A shared probing identity gets handshake answers
+        but owns no routable tunnel address, so ICMP that never comes back proves
+        nothing about the endpoint. Running the check anyway used to mark good
+        rows ``verified=False`` and delete them, which emptied the pool it was
+        supposed to be protecting.
+        """
+        if not warpep.deep_possible(identity):
+            return False
         if deep is None:
-            return bool(TUNE.deep_verify and warpep.installed())
-        return bool(deep and warpep.installed())
+            return bool(TUNE.deep_verify)
+        return bool(deep)
 
     def _spawn(self, coro, name: str) -> asyncio.Task:
         """Run something beside the caller and keep a reference to it."""
@@ -214,6 +246,20 @@ class WarpPool:
         if not settings.warp_enabled:
             return RefreshReport(family=code, status="disabled", reason="warp disabled")
 
+        if not warpep.reachable(code):
+            # No route means no result, and spending four seconds proving it is
+            # how this looked like a filtering problem for a week.
+            counts = await warpstore.counts(code)
+            return RefreshReport(
+                family=code,
+                status="unreachable",
+                note="no_route",
+                reason=f"this host has no {code.upper()} route",
+                pool=counts["healthy"],
+                target=counts["target"],
+                best=counts["best"],
+            )
+
         lock = self._locks[code]
         if lock.locked():
             counts = await warpstore.counts(code)
@@ -263,17 +309,36 @@ class WarpPool:
         identity = await warp_scanner.identity()
         if identity is None:
             report.status = "failed"
+            report.note = "identity"
             report.reason = "warp identity unavailable"
+            return report
+        report.identity = warp_scanner.identity_source
+
+        if warp_scanner.identity_ok is False:
+            # Cloudflare answers nothing signed with this key, so a sweep would
+            # measure 168 addresses and conclude the internet is dead. Say so.
+            counts = await warpstore.counts(family)
+            report.status = "failed"
+            report.note = "identity"
+            report.reason = "cloudflare does not answer our probing key"
+            report.pool = counts["healthy"]
+            report.best = counts["best"]
             return report
 
         await warpstore.ensure_schema()
-        want_deep = self._deep_wanted(deep)
+        want_deep = self._deep_wanted(deep, identity)
         semaphore = asyncio.Semaphore(max(8, int(settings.warp_scan_concurrency)))
 
         ports = await warp_scanner.discover_ports_for(family, identity, semaphore)
         ports = list(ports)[: max(1, int(TUNE.pool_ports))]
+        if not ports:
+            report.status = "unreachable"
+            report.note = "no_route"
+            report.reason = f"this host has no {family.upper()} route"
+            return report
         self.ports[family] = tuple(ports)
         report.ports = tuple(ports)
+        report.ports_proven = bool(warp_scanner.ports_proven.get(family))
 
         addresses = warpep.candidates(family, TUNE.pool_sample)
         report.probed = len(addresses)
@@ -325,23 +390,32 @@ class WarpPool:
         report.best = counts["best"]
         report.status = "done"
 
+        if not report.answered:
+            # A sweep that ran cleanly and heard nothing. Name the likely cause
+            # rather than printing a zero and leaving the operator to guess.
+            report.note = "ports" if not report.ports_proven else "filtered"
+        elif not report.pool:
+            report.note = "floor"
+
         await db.log_event(
             "warp_pool",
             detail=(
                 f"family={family} probed={report.probed} answered={report.answered} "
                 f"healthy={report.healthy} proven={report.proven} stored={report.stored} "
                 f"dropped={report.dropped} pool={report.pool}/{report.target} "
-                f"ports={','.join(str(p) for p in ports)} deep={'on' if want_deep else 'off'}"
+                f"ports={','.join(str(p) for p in ports)} deep={'on' if want_deep else 'off'} "
+                f"identity={report.identity or '?'} note={report.note or 'ok'}"
             ),
         )
         log.info(
-            "pool %s refreshed: %s answered, %s healthy, %s stored, pool %s/%s",
+            "pool %s refreshed: %s answered, %s healthy, %s stored, pool %s/%s (%s)",
             family,
             report.answered,
             report.healthy,
             report.stored,
             report.pool,
             report.target,
+            report.note or "ok",
         )
         return report
 
@@ -359,6 +433,8 @@ class WarpPool:
             self._spawn(self.refresh_all(force=force), "warp-pool-refresh-all")
             return
         code = warpep.normalise_family(family)
+        if not warpep.reachable(code):
+            return
         self._spawn(self.refresh(code, force=force), f"warp-pool-refresh-{code}")
 
     # ------------------------------------------------------------------ #
@@ -381,12 +457,40 @@ class WarpPool:
         async with self._audit_lock:
             identity = await warp_scanner.identity()
             if identity is None:
-                return AuditReport(status="failed", reason="warp identity unavailable")
+                return AuditReport(
+                    status="failed", note="identity", reason="warp identity unavailable"
+                )
+            if warp_scanner.identity_ok is False:
+                # Every row would look dead, and the audit deletes what looks
+                # dead. Refusing to run is the only safe answer here.
+                return AuditReport(
+                    status="failed",
+                    note="identity",
+                    reason="cloudflare does not answer our probing key",
+                )
 
-            want_deep = self._deep_wanted(deep)
+            want_deep = self._deep_wanted(deep, identity)
             report = AuditReport()
 
             for family in FAMILIES:
+                if not warpep.reachable(family):
+                    counts = await warpstore.counts(family)
+                    report.families[family] = {
+                        "family": family,
+                        "checked": 0,
+                        "alive": 0,
+                        "proven": 0,
+                        "dead": 0,
+                        "healthy": counts["healthy"],
+                        "target": counts["target"],
+                        "best": counts["best"],
+                        "avg": counts["avg"],
+                        "full": counts["full"],
+                        "note": "no_route",
+                    }
+                    report.note = report.note or "no_route"
+                    continue
+
                 rows = await warpstore.rows_of(family, limit=TUNE.pool_target * 4)
                 alive: list[dict] = []
                 dead = 0
@@ -440,10 +544,13 @@ class WarpPool:
                     "best": counts["best"],
                     "avg": counts["avg"],
                     "full": counts["full"],
+                    "note": "",
                 }
 
             report.removed = await warpstore.purge_unhealthy()
             for family in FAMILIES:
+                if not warpep.reachable(family):
+                    continue
                 await warpstore.trim(TUNE.pool_target, family=family)
                 # A pool that came out of the audit short refills itself now,
                 # while nobody is waiting on it.
@@ -459,7 +566,7 @@ class WarpPool:
             detail=(
                 f"checked={report.checked} alive={report.alive} dead={report.dead} "
                 f"removed={report.removed} verdict={report.verdict} "
-                f"elapsed={report.elapsed}s"
+                f"note={report.note or 'ok'} elapsed={report.elapsed}s"
             ),
         )
         return report
@@ -483,6 +590,9 @@ class WarpPool:
         if rows:
             return warpep.spread(rows, wanted)
 
+        if not warpep.reachable(code):
+            return []
+
         self.request_refresh(code, force=True)
         identity = await warp_scanner.identity()
         if identity is None:
@@ -500,11 +610,15 @@ class WarpPool:
     async def status(self) -> dict:
         """Everything the admin pool screen prints."""
         families = {family: await warpstore.counts(family) for family in FAMILIES}
+        routes = warpep.routes()
         return {
             "families": families,
             "target": int(TUNE.pool_target),
             "floor": int(TUNE.health_floor),
             "source": warpep.describe(),
+            "identity": warp_scanner.identity_source or "-",
+            "identity_ok": warp_scanner.identity_ok,
+            "routes": routes,
             "deep": bool(TUNE.deep_verify and warpep.installed()),
             "deep_possible": warpep.installed(),
             "agent": bool(self._agent is not None and not self._agent.done()),
@@ -513,7 +627,9 @@ class WarpPool:
             "busy": any(lock.locked() for lock in self._locks.values())
             or self._audit_lock.locked(),
             "ports": {family: list(self.ports.get(family, ())) for family in FAMILIES},
-            "healthy": all(item["full"] for item in families.values()),
+            "healthy": all(
+                item["full"] for family, item in families.items() if routes.get(family)
+            ),
             "last_audit": self.last_audit,
         }
 
@@ -533,11 +649,13 @@ class WarpPool:
         if self._agent is None or self._agent.done():
             self._agent = asyncio.create_task(self._agent_loop(), name="warp-pool-agent")
             log.info(
-                "warp pool agent started (every %ss, %s per family, floor %s, deep %s)",
+                "warp pool agent started (every %ss, %s per family, floor %s, deep %s, "
+                "families %s)",
                 TUNE.agent_interval,
                 TUNE.pool_target,
                 TUNE.health_floor,
                 "on" if (TUNE.deep_verify and warpep.installed()) else "off",
+                ",".join(warpep.available_families()) or "none",
             )
 
     async def stop(self) -> None:
@@ -565,6 +683,8 @@ class WarpPool:
         # A cold start gets its pools before it gets its first audit, otherwise
         # the first users of the day are told to come back later.
         for family in FAMILIES:
+            if not warpep.reachable(family):
+                continue
             counts = await warpstore.counts(family)
             if counts["healthy"] < TUNE.pool_target:
                 await self.refresh(family, force=True)
@@ -585,6 +705,8 @@ class WarpPool:
         if self.passes % max(1, int(TUNE.agent_audit_every)) == 0:
             report = await self.audit()
         for family in FAMILIES:
+            if not warpep.reachable(family):
+                continue
             counts = await warpstore.counts(family)
             if counts["healthy"] < TUNE.pool_target:
                 await self.refresh(family, force=True)
