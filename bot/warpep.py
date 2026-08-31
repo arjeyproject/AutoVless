@@ -210,9 +210,9 @@ def _probe_route(family: str) -> bool:
     ``connect`` on a UDP socket sends no packet, so this costs nothing and takes
     no time. It exists because a container on Docker's default bridge network has
     no IPv6 route whatsoever: every IPv6 probe then fails instantly with
-    ``ENETUNREACH`` and the old code счёл that a dead endpoint. Forty-eight
-    addresses, zero answers, four seconds, and an IPv6 pool that could never fill
-    no matter how many times anybody pressed refresh.
+    ``ENETUNREACH``, and the old code counted each of those as a dead endpoint.
+    Forty-eight addresses, zero answers, four seconds, and an IPv6 pool that
+    could never fill no matter how many times anybody pressed refresh.
     """
     code = normalise_family(family)
     inet = socket.AF_INET6 if code == V6 else socket.AF_INET
@@ -343,15 +343,14 @@ def candidates(
     out of the one block being blackholed reports that nothing works at all.
 
     Note that IPv6 has two prefixes against IPv4's seven, so the same
-    ``per_prefix`` yields far fewer IPv6 candidates. ``candidates`` therefore
-    tops the IPv6 draw up so both pools get a comparable number of chances.
+    ``per_prefix`` yields far fewer IPv6 candidates. The IPv6 draw is topped up
+    so both pools get a comparable number of chances rather than IPv6 scanning a
+    quarter as many addresses and then being written off as filtered.
     """
     picker = rng or random
     wanted = max(1, int(per_prefix))
     code = normalise_family(family)
     if code == V6:
-        # Match the IPv4 breadth instead of scanning a quarter as many addresses
-        # and then concluding IPv6 is filtered.
         wanted = max(wanted, (wanted * len(IPV4_PREFIXES)) // max(1, len(IPV6_PREFIXES)))
     out: list[str] = []
     for prefix in prefixes(code):

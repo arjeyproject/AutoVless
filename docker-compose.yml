@@ -1,9 +1,26 @@
+# The WARP scanner needs the host's own network stack, not a NAT.
+#
+# On Docker's default bridge network there is no IPv6 route at all, so every
+# IPv6 handshake fails instantly with ENETUNREACH and the IPv6 pool can never
+# fill - it reports "48 addresses scanned, 0 answered" forever, which reads like
+# nationwide filtering and is actually this one line. Host networking also takes
+# the UDP NAT layer out of the path, which matters when the whole point is
+# measuring UDP round trips honestly.
+#
+# If host networking is not an option, comment `network_mode: host` out, put the
+# `networks:` block below back in, and make sure the Docker daemon has
+# `"ipv6": true` with a routable `fixed-cidr-v6`. Anything less and the IPv6
+# pool will stay empty no matter how many times you press refresh.
 services:
   autovless:
-    build: .
+    build:
+      context: .
+      args:
+        WARPEP: "1"
     image: autovless:latest
     container_name: autovless
     restart: unless-stopped
+    network_mode: host
     env_file: .env
     environment:
       TZ: ${TZ:-Asia/Tehran}
@@ -19,3 +36,18 @@ services:
       resources:
         limits:
           memory: 640M
+
+# Fallback for hosts where network_mode: host is not acceptable. Requires
+# "ipv6": true and a routable fixed-cidr-v6 in /etc/docker/daemon.json.
+#
+#    networks:
+#      - warp
+#
+# networks:
+#   warp:
+#     enable_ipv6: true
+#     driver: bridge
+#     ipam:
+#       config:
+#         - subnet: 172.28.0.0/16
+#         - subnet: fd00:dead:beef::/64
