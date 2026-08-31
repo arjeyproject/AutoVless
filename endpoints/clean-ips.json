@@ -1,862 +1,862 @@
 {
-  "generated_at": 1788200999,
+  "generated_at": 1788211790,
   "count": 121,
-  "verified_this_run": 180,
+  "verified_this_run": 179,
   "ports": {
     "80": [
       {
-        "ip": "104.18.175.32",
+        "ip": "104.16.232.223",
         "port": 80,
-        "latency": 22.2,
-        "jitter": 2.6,
+        "latency": 20.9,
+        "jitter": 0.2,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.23.247",
+        "ip": "172.66.162.168",
         "port": 80,
-        "latency": 22.4,
-        "jitter": 3.2,
+        "latency": 21.4,
+        "jitter": 1.4,
         "colo": "LAX"
       },
       {
-        "ip": "104.26.8.175",
+        "ip": "190.93.247.169",
         "port": 80,
-        "latency": 24.0,
-        "jitter": 2.8,
+        "latency": 21.9,
+        "jitter": 1.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.21.121.228",
+        "ip": "104.21.101.134",
         "port": 80,
-        "latency": 23.0,
-        "jitter": 3.7,
+        "latency": 23.9,
+        "jitter": 1.6,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.151.15",
+        "ip": "104.17.5.173",
         "port": 80,
-        "latency": 20.2,
-        "jitter": 4.9,
+        "latency": 22.8,
+        "jitter": 2.3,
         "colo": "LAX"
       },
       {
-        "ip": "104.26.8.236",
+        "ip": "104.19.218.67",
         "port": 80,
-        "latency": 25.9,
-        "jitter": 3.5,
+        "latency": 21.2,
+        "jitter": 3.0,
         "colo": "LAX"
       },
       {
-        "ip": "172.66.131.108",
+        "ip": "104.21.22.56",
         "port": 80,
-        "latency": 24.8,
+        "latency": 21.4,
+        "jitter": 3.0,
+        "colo": "LAX"
+      },
+      {
+        "ip": "172.67.182.36",
+        "port": 80,
+        "latency": 21.7,
+        "jitter": 2.9,
+        "colo": "LAX"
+      },
+      {
+        "ip": "162.159.145.78",
+        "port": 80,
+        "latency": 23.4,
+        "jitter": 2.4,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.19.218.200",
+        "port": 80,
+        "latency": 21.0,
+        "jitter": 4.1,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.21.60.172",
+        "port": 80,
+        "latency": 21.6,
         "jitter": 4.0,
         "colo": "LAX"
       },
       {
-        "ip": "162.159.138.121",
+        "ip": "162.159.158.40",
         "port": 80,
-        "latency": 24.9,
-        "jitter": 4.6,
+        "latency": 23.3,
+        "jitter": 3.3,
         "colo": "LAX"
       },
       {
-        "ip": "104.20.0.232",
+        "ip": "172.64.91.9",
         "port": 80,
-        "latency": 28.6,
-        "jitter": 3.1,
+        "latency": 22.7,
+        "jitter": 4.4,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.194.6",
+        "ip": "172.67.251.42",
         "port": 80,
-        "latency": 22.1,
+        "latency": 22.8,
+        "jitter": 4.4,
+        "colo": "LAX"
+      },
+      {
+        "ip": "172.64.93.96",
+        "port": 80,
+        "latency": 22.2,
+        "jitter": 4.8,
+        "colo": "LAX"
+      },
+      {
+        "ip": "172.66.137.225",
+        "port": 80,
+        "latency": 22.4,
+        "jitter": 4.8,
+        "colo": "LAX"
+      },
+      {
+        "ip": "172.66.167.178",
+        "port": 80,
+        "latency": 23.6,
+        "jitter": 4.3,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.17.243.120",
+        "port": 80,
+        "latency": 25.6,
+        "jitter": 3.6,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.17.150.115",
+        "port": 80,
+        "latency": 23.6,
+        "jitter": 5.2,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.21.59.253",
+        "port": 80,
+        "latency": 26.2,
+        "jitter": 4.7,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.21.234.124",
+        "port": 80,
+        "latency": 20.7,
         "jitter": 7.1,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.8.59",
+        "ip": "104.18.90.54",
         "port": 80,
-        "latency": 24.5,
-        "jitter": 6.4,
-        "colo": "LAX"
-      },
-      {
-        "ip": "172.67.69.97",
-        "port": 80,
-        "latency": 25.4,
+        "latency": 23.3,
         "jitter": 6.2,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.199.215",
+        "ip": "104.19.231.143",
         "port": 80,
-        "latency": 23.9,
-        "jitter": 7.4,
-        "colo": "LAX"
-      },
-      {
-        "ip": "172.67.147.108",
-        "port": 80,
-        "latency": 24.1,
-        "jitter": 7.6,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.16.150.35",
-        "port": 80,
-        "latency": 24.9,
-        "jitter": 8.2,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.21.101.251",
-        "port": 80,
-        "latency": 26.4,
-        "jitter": 7.9,
-        "colo": "LAX"
-      },
-      {
-        "ip": "172.64.185.232",
-        "port": 80,
-        "latency": 26.4,
-        "jitter": 8.0,
-        "colo": "LAX"
-      },
-      {
-        "ip": "172.66.137.78",
-        "port": 80,
-        "latency": 22.5,
-        "jitter": 10.3,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.19.103.65",
-        "port": 80,
-        "latency": 28.3,
-        "jitter": 8.0,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.18.49.109",
-        "port": 80,
-        "latency": 23.9,
-        "jitter": 9.9,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.18.246.157",
-        "port": 80,
-        "latency": 24.0,
-        "jitter": 9.9,
-        "colo": "LAX"
-      },
-      {
-        "ip": "172.64.91.96",
-        "port": 80,
-        "latency": 24.9,
-        "jitter": 10.1,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.21.193.26",
-        "port": 80,
-        "latency": 24.2,
-        "jitter": 10.4,
+        "latency": 26.5,
+        "jitter": 4.9,
         "colo": "LAX"
       }
     ],
     "443": [
       {
-        "ip": "104.17.14.136",
+        "ip": "104.16.109.65",
         "port": 443,
-        "latency": 98.5,
-        "jitter": 31.8,
+        "latency": 99.7,
+        "jitter": 67.7,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.225.221",
+        "ip": "104.19.152.78",
         "port": 443,
-        "latency": 69.9,
-        "jitter": 59.2,
+        "latency": 115.1,
+        "jitter": 61.5,
         "colo": "LAX"
       },
       {
-        "ip": "162.159.49.180",
+        "ip": "104.19.152.146",
         "port": 443,
-        "latency": 86.4,
-        "jitter": 60.1,
+        "latency": 98.3,
+        "jitter": 91.0,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.8.4",
+        "ip": "104.18.220.221",
         "port": 443,
-        "latency": 139.0,
-        "jitter": 81.2,
+        "latency": 201.1,
+        "jitter": 58.0,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.1.105",
+        "ip": "104.17.14.63",
         "port": 443,
-        "latency": 173.6,
-        "jitter": 68.1,
+        "latency": 122.8,
+        "jitter": 97.4,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.66.115",
+        "ip": "104.16.150.115",
         "port": 443,
-        "latency": 189.1,
-        "jitter": 65.4,
+        "latency": 259.3,
+        "jitter": 63.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.138.144",
+        "ip": "104.16.22.134",
         "port": 443,
-        "latency": 146.0,
-        "jitter": 99.9,
+        "latency": 441.3,
+        "jitter": 40.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.184.157",
+        "ip": "162.159.250.137",
         "port": 443,
-        "latency": 220.0,
-        "jitter": 100.0,
+        "latency": 232.1,
+        "jitter": 126.6,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.225.127",
+        "ip": "104.16.97.91",
         "port": 443,
-        "latency": 191.0,
-        "jitter": 116.8,
+        "latency": 254.1,
+        "jitter": 135.5,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.142.144",
+        "ip": "104.16.142.207",
         "port": 443,
-        "latency": 407.1,
-        "jitter": 54.7,
+        "latency": 517.5,
+        "jitter": 44.1,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.152.67",
+        "ip": "104.16.22.40",
         "port": 443,
-        "latency": 141.0,
-        "jitter": 165.3,
+        "latency": 218.4,
+        "jitter": 173.4,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.238.110",
+        "ip": "198.41.197.15",
         "port": 443,
-        "latency": 206.3,
-        "jitter": 148.7,
+        "latency": 182.7,
+        "jitter": 203.9,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.48.221",
+        "ip": "104.18.8.28",
         "port": 443,
-        "latency": 511.5,
-        "jitter": 53.9,
+        "latency": 347.1,
+        "jitter": 194.4,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.17.144",
+        "ip": "104.16.97.25",
         "port": 443,
-        "latency": 283.4,
-        "jitter": 159.4,
+        "latency": 366.9,
+        "jitter": 221.9,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.133.140",
+        "ip": "104.17.17.54",
         "port": 443,
-        "latency": 359.3,
-        "jitter": 146.0,
+        "latency": 415.9,
+        "jitter": 227.2,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.183.116",
+        "ip": "162.159.192.4",
         "port": 443,
-        "latency": 428.0,
-        "jitter": 125.5,
+        "latency": 365.4,
+        "jitter": 254.1,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.194.13",
+        "ip": "104.19.133.235",
         "port": 443,
-        "latency": 246.9,
-        "jitter": 227.8,
+        "latency": 326.9,
+        "jitter": 273.5,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.14.16",
+        "ip": "104.19.225.85",
         "port": 443,
-        "latency": 251.1,
-        "jitter": 237.3,
+        "latency": 344.3,
+        "jitter": 273.4,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.91.2",
+        "ip": "104.17.203.41",
         "port": 443,
-        "latency": 331.7,
-        "jitter": 223.2,
+        "latency": 225.3,
+        "jitter": 333.3,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.22.99",
+        "ip": "104.17.162.134",
         "port": 443,
-        "latency": 358.3,
-        "jitter": 212.7,
+        "latency": 454.3,
+        "jitter": 262.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.71.186",
+        "ip": "104.17.238.7",
         "port": 443,
-        "latency": 218.9,
-        "jitter": 269.2,
+        "latency": 406.6,
+        "jitter": 302.7,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.71.180",
+        "ip": "104.16.142.229",
         "port": 443,
-        "latency": 482.9,
-        "jitter": 186.8,
+        "latency": 349.8,
+        "jitter": 337.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.56.184",
+        "ip": "104.18.33.227",
         "port": 443,
-        "latency": 325.3,
-        "jitter": 251.5,
+        "latency": 378.7,
+        "jitter": 340.7,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.183.165",
+        "ip": "162.159.253.205",
         "port": 443,
-        "latency": 358.1,
-        "jitter": 243.8,
+        "latency": 191.6,
+        "jitter": 422.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.142.237",
+        "ip": "104.19.66.15",
         "port": 443,
-        "latency": 224.9,
-        "jitter": 303.3,
+        "latency": 291.0,
+        "jitter": 384.2,
         "colo": "LAX"
       }
     ],
     "2053": [
       {
-        "ip": "104.17.30.68",
+        "ip": "104.21.101.251",
         "port": 2053,
-        "latency": 168.4,
-        "jitter": 90.8,
+        "latency": 128.9,
+        "jitter": 46.7,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.166.242",
+        "ip": "141.101.115.17",
         "port": 2053,
-        "latency": 114.3,
-        "jitter": 122.8,
+        "latency": 101.1,
+        "jitter": 68.4,
         "colo": "LAX"
       },
       {
-        "ip": "162.159.148.40",
+        "ip": "162.159.49.180",
         "port": 2053,
-        "latency": 129.8,
-        "jitter": 118.3,
+        "latency": 93.6,
+        "jitter": 83.4,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.16.5.190",
+        "port": 2053,
+        "latency": 174.4,
+        "jitter": 91.2,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.18.180.106",
+        "port": 2053,
+        "latency": 163.6,
+        "jitter": 105.2,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.20.0.232",
+        "port": 2053,
+        "latency": 188.3,
+        "jitter": 104.2,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.19.119.26",
+        "port": 2053,
+        "latency": 202.9,
+        "jitter": 111.7,
+        "colo": "LAX"
+      },
+      {
+        "ip": "172.67.147.73",
+        "port": 2053,
+        "latency": 218.7,
+        "jitter": 117.1,
+        "colo": "LAX"
+      },
+      {
+        "ip": "172.64.149.31",
+        "port": 2053,
+        "latency": 328.0,
+        "jitter": 82.2,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.17.5.212",
+        "port": 2053,
+        "latency": 416.0,
+        "jitter": 54.4,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.17.205.196",
+        "port": 2053,
+        "latency": 279.0,
+        "jitter": 166.0,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.19.66.115",
+        "port": 2053,
+        "latency": 374.2,
+        "jitter": 130.2,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.16.5.242",
+        "port": 2053,
+        "latency": 526.3,
+        "jitter": 121.5,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.18.81.101",
+        "port": 2053,
+        "latency": 395.0,
+        "jitter": 190.2,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.18.255.104",
+        "port": 2053,
+        "latency": 398.9,
+        "jitter": 197.9,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.19.51.195",
+        "port": 2053,
+        "latency": 333.9,
+        "jitter": 251.1,
+        "colo": "LAX"
+      },
+      {
+        "ip": "172.64.93.43",
+        "port": 2053,
+        "latency": 411.6,
+        "jitter": 238.3,
         "colo": "LAX"
       },
       {
         "ip": "172.64.93.96",
         "port": 2053,
-        "latency": 175.2,
-        "jitter": 118.1,
+        "latency": 493.0,
+        "jitter": 244.4,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.81.96",
+        "ip": "104.18.180.235",
         "port": 2053,
-        "latency": 192.5,
-        "jitter": 112.0,
+        "latency": 312.7,
+        "jitter": 332.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.21.60.172",
+        "ip": "104.21.60.93",
         "port": 2053,
-        "latency": 210.0,
-        "jitter": 126.9,
+        "latency": 282.0,
+        "jitter": 349.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.49.76",
+        "ip": "104.19.203.2",
         "port": 2053,
-        "latency": 161.0,
-        "jitter": 176.8,
+        "latency": 427.6,
+        "jitter": 312.7,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.119.225",
+        "ip": "104.26.8.175",
         "port": 2053,
-        "latency": 394.7,
-        "jitter": 113.8,
+        "latency": 444.8,
+        "jitter": 312.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.21.63.171",
+        "ip": "141.101.115.149",
         "port": 2053,
-        "latency": 83.1,
-        "jitter": 245.7,
+        "latency": 505.4,
+        "jitter": 355.9,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.49.182",
+        "ip": "104.18.81.177",
         "port": 2053,
-        "latency": 411.2,
-        "jitter": 122.6,
+        "latency": 362.3,
+        "jitter": 428.4,
         "colo": "LAX"
       },
       {
-        "ip": "172.64.92.199",
+        "ip": "104.19.119.102",
         "port": 2053,
-        "latency": 97.7,
-        "jitter": 252.8,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.16.167.9",
-        "port": 2053,
-        "latency": 440.4,
-        "jitter": 164.8,
-        "colo": "LAX"
-      },
-      {
-        "ip": "172.64.92.166",
-        "port": 2053,
-        "latency": 384.5,
-        "jitter": 202.9,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.21.101.251",
-        "port": 2053,
-        "latency": 378.5,
-        "jitter": 243.6,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.16.167.202",
-        "port": 2053,
-        "latency": 346.2,
-        "jitter": 266.7,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.17.183.19",
-        "port": 2053,
-        "latency": 374.1,
-        "jitter": 257.7,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.16.29.224",
-        "port": 2053,
-        "latency": 184.2,
-        "jitter": 348.0,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.16.29.205",
-        "port": 2053,
-        "latency": 414.2,
-        "jitter": 305.9,
-        "colo": "LAX"
-      },
-      {
-        "ip": "172.67.72.229",
-        "port": 2053,
-        "latency": 443.8,
-        "jitter": 299.3,
-        "colo": "LAX"
-      },
-      {
-        "ip": "172.66.43.50",
-        "port": 2053,
-        "latency": 279.9,
-        "jitter": 381.1,
-        "colo": "LAX"
-      },
-      {
-        "ip": "162.159.148.98",
-        "port": 2053,
-        "latency": 251.4,
-        "jitter": 405.8,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.16.44.38",
-        "port": 2053,
-        "latency": 312.9,
-        "jitter": 402.7,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.17.5.173",
-        "port": 2053,
-        "latency": 431.7,
-        "jitter": 364.3,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.16.173.221",
-        "port": 2053,
-        "latency": 635.7,
-        "jitter": 297.2,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.19.119.7",
-        "port": 2053,
-        "latency": 370.0,
-        "jitter": 448.4,
+        "latency": 242.1,
+        "jitter": 494.9,
         "colo": "LAX"
       }
     ],
     "8080": [
       {
-        "ip": "172.67.147.208",
+        "ip": "104.18.186.174",
         "port": 8080,
-        "latency": 20.5,
-        "jitter": 0.6,
+        "latency": 22.3,
+        "jitter": 0.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.181.75",
+        "ip": "104.18.186.3",
         "port": 8080,
-        "latency": 21.6,
+        "latency": 22.3,
+        "jitter": 1.1,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.17.186.115",
+        "port": 8080,
+        "latency": 21.9,
         "jitter": 1.7,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.156.50",
+        "ip": "104.17.253.187",
         "port": 8080,
-        "latency": 20.0,
-        "jitter": 2.4,
+        "latency": 21.8,
+        "jitter": 2.3,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.57.230",
+        "ip": "104.17.172.60",
         "port": 8080,
-        "latency": 22.1,
-        "jitter": 2.2,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.17.150.115",
-        "port": 8080,
-        "latency": 22.6,
-        "jitter": 2.0,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.19.152.242",
-        "port": 8080,
-        "latency": 23.1,
+        "latency": 23.5,
         "jitter": 1.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.26.8.236",
+        "ip": "104.18.14.35",
         "port": 8080,
-        "latency": 20.8,
+        "latency": 23.8,
+        "jitter": 1.8,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.17.95.215",
+        "port": 8080,
+        "latency": 20.1,
+        "jitter": 3.4,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.19.172.148",
+        "port": 8080,
+        "latency": 24.9,
+        "jitter": 1.6,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.21.4.215",
+        "port": 8080,
+        "latency": 23.2,
+        "jitter": 2.6,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.16.202.8",
+        "port": 8080,
+        "latency": 22.5,
         "jitter": 3.3,
         "colo": "LAX"
       },
       {
-        "ip": "104.20.0.232",
+        "ip": "104.17.253.137",
         "port": 8080,
-        "latency": 24.1,
-        "jitter": 2.1,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.18.18.16",
-        "port": 8080,
-        "latency": 23.9,
-        "jitter": 2.5,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.21.76.58",
-        "port": 8080,
-        "latency": 20.8,
+        "latency": 22.3,
         "jitter": 3.8,
         "colo": "LAX"
       },
       {
-        "ip": "172.66.152.220",
+        "ip": "104.21.70.141",
         "port": 8080,
-        "latency": 24.8,
-        "jitter": 2.2,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.17.181.87",
-        "port": 8080,
-        "latency": 21.4,
-        "jitter": 3.7,
-        "colo": "LAX"
-      },
-      {
-        "ip": "141.101.122.181",
-        "port": 8080,
-        "latency": 23.5,
+        "latency": 24.5,
         "jitter": 2.9,
         "colo": "LAX"
       },
       {
-        "ip": "172.66.165.154",
+        "ip": "162.159.27.219",
         "port": 8080,
-        "latency": 22.3,
-        "jitter": 3.6,
+        "latency": 22.1,
+        "jitter": 4.5,
         "colo": "LAX"
       },
       {
-        "ip": "198.41.194.5",
+        "ip": "104.19.229.241",
         "port": 8080,
-        "latency": 21.3,
-        "jitter": 4.1,
+        "latency": 23.7,
+        "jitter": 4.0,
         "colo": "LAX"
       },
       {
-        "ip": "104.21.121.228",
+        "ip": "104.17.186.9",
         "port": 8080,
-        "latency": 21.1,
+        "latency": 22.0,
         "jitter": 5.0,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.88.40",
+        "ip": "104.17.56.123",
         "port": 8080,
-        "latency": 22.2,
+        "latency": 23.5,
         "jitter": 4.6,
         "colo": "LAX"
       },
       {
-        "ip": "198.41.214.141",
+        "ip": "104.19.106.129",
         "port": 8080,
-        "latency": 23.6,
-        "jitter": 4.1,
+        "latency": 21.6,
+        "jitter": 5.6,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.8.77",
+        "ip": "104.21.200.68",
+        "port": 8080,
+        "latency": 24.5,
+        "jitter": 4.5,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.18.2.232",
+        "port": 8080,
+        "latency": 22.2,
+        "jitter": 5.6,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.17.172.229",
+        "port": 8080,
+        "latency": 24.0,
+        "jitter": 4.9,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.21.76.14",
         "port": 8080,
         "latency": 21.5,
-        "jitter": 5.3,
+        "jitter": 6.3,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.154.169",
+        "ip": "104.16.48.31",
         "port": 8080,
-        "latency": 23.0,
-        "jitter": 5.2,
+        "latency": 23.8,
+        "jitter": 5.6,
         "colo": "LAX"
       },
       {
-        "ip": "104.16.41.133",
+        "ip": "198.41.194.225",
         "port": 8080,
-        "latency": 25.3,
-        "jitter": 4.3,
-        "colo": "LAX"
-      },
-      {
-        "ip": "141.101.122.166",
-        "port": 8080,
-        "latency": 21.3,
-        "jitter": 6.1,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.21.194.131",
-        "port": 8080,
-        "latency": 23.3,
-        "jitter": 5.3,
+        "latency": 22.0,
+        "jitter": 6.7,
         "colo": "LAX"
       }
     ],
     "8443": [
       {
-        "ip": "172.67.147.108",
+        "ip": "172.66.130.121",
         "port": 8443,
-        "latency": 106.5,
-        "jitter": 42.7,
+        "latency": 102.3,
+        "jitter": 29.2,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.243.185",
+        "ip": "162.159.148.40",
         "port": 8443,
-        "latency": 132.7,
-        "jitter": 39.5,
+        "latency": 92.3,
+        "jitter": 38.7,
         "colo": "LAX"
       },
       {
-        "ip": "172.64.48.153",
+        "ip": "104.18.8.77",
         "port": 8443,
-        "latency": 176.8,
-        "jitter": 22.3,
+        "latency": 190.7,
+        "jitter": 19.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.10.199",
+        "ip": "104.18.251.41",
         "port": 8443,
-        "latency": 118.3,
+        "latency": 146.3,
+        "jitter": 43.1,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.19.152.67",
+        "port": 8443,
+        "latency": 212.5,
+        "jitter": 37.5,
+        "colo": "LAX"
+      },
+      {
+        "ip": "172.66.137.78",
+        "port": 8443,
+        "latency": 117.9,
+        "jitter": 102.3,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.18.18.16",
+        "port": 8443,
+        "latency": 164.1,
+        "jitter": 86.2,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.18.1.105",
+        "port": 8443,
+        "latency": 132.9,
+        "jitter": 104.3,
+        "colo": "LAX"
+      },
+      {
+        "ip": "172.67.147.208",
+        "port": 8443,
+        "latency": 147.2,
+        "jitter": 102.1,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.21.60.172",
+        "port": 8443,
+        "latency": 161.3,
+        "jitter": 118.4,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.19.119.225",
+        "port": 8443,
+        "latency": 215.3,
+        "jitter": 136.1,
+        "colo": "LAX"
+      },
+      {
+        "ip": "198.41.194.5",
+        "port": 8443,
+        "latency": 331.3,
+        "jitter": 120.7,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.16.142.237",
+        "port": 8443,
+        "latency": 298.6,
+        "jitter": 140.1,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.16.173.221",
+        "port": 8443,
+        "latency": 543.9,
         "jitter": 56.4,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.85.150",
+        "ip": "172.66.165.154",
         "port": 8443,
-        "latency": 100.3,
-        "jitter": 76.3,
+        "latency": 375.5,
+        "jitter": 141.7,
         "colo": "LAX"
       },
       {
-        "ip": "104.21.91.43",
+        "ip": "104.16.167.9",
         "port": 8443,
-        "latency": 169.4,
-        "jitter": 60.5,
+        "latency": 583.7,
+        "jitter": 59.8,
         "colo": "LAX"
       },
       {
-        "ip": "104.19.242.183",
+        "ip": "141.101.122.166",
         "port": 8443,
-        "latency": 153.0,
-        "jitter": 92.8,
+        "latency": 340.3,
+        "jitter": 180.2,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.184.232",
+        "ip": "104.16.44.38",
         "port": 8443,
-        "latency": 110.9,
-        "jitter": 144.1,
+        "latency": 484.4,
+        "jitter": 132.0,
         "colo": "LAX"
       },
       {
-        "ip": "104.17.145.107",
+        "ip": "172.66.152.220",
         "port": 8443,
-        "latency": 517.7,
-        "jitter": 21.8,
+        "latency": 595.6,
+        "jitter": 123.0,
         "colo": "LAX"
       },
       {
-        "ip": "104.18.49.109",
+        "ip": "104.19.98.79",
         "port": 8443,
-        "latency": 471.3,
-        "jitter": 59.3,
-        "colo": "LAX"
-      },
-      {
-        "ip": "141.101.122.181",
-        "port": 8443,
-        "latency": 402.4,
-        "jitter": 102.4,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.16.171.214",
-        "port": 8443,
-        "latency": 238.9,
-        "jitter": 172.2,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.19.97.100",
-        "port": 8443,
-        "latency": 575.2,
-        "jitter": 53.6,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.21.194.98",
-        "port": 8443,
-        "latency": 280.4,
-        "jitter": 172.8,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.20.0.232",
-        "port": 8443,
-        "latency": 320.1,
-        "jitter": 167.7,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.18.107.47",
-        "port": 8443,
-        "latency": 537.6,
-        "jitter": 105.0,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.21.114.254",
-        "port": 8443,
-        "latency": 346.8,
-        "jitter": 194.3,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.21.26.219",
-        "port": 8443,
-        "latency": 206.7,
-        "jitter": 253.8,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.21.26.247",
-        "port": 8443,
-        "latency": 353.6,
-        "jitter": 225.0,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.18.183.65",
-        "port": 8443,
-        "latency": 385.7,
-        "jitter": 222.2,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.16.104.47",
-        "port": 8443,
-        "latency": 445.8,
-        "jitter": 207.2,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.19.242.92",
-        "port": 8443,
-        "latency": 521.9,
-        "jitter": 182.3,
-        "colo": "LAX"
-      },
-      {
-        "ip": "172.64.185.8",
-        "port": 8443,
-        "latency": 321.1,
-        "jitter": 267.8,
-        "colo": "LAX"
-      },
-      {
-        "ip": "104.21.82.210",
-        "port": 8443,
-        "latency": 254.7,
-        "jitter": 300.7,
+        "latency": 440.0,
+        "jitter": 204.2,
         "colo": "LAX"
       },
       {
         "ip": "104.16.173.53",
         "port": 8443,
-        "latency": 286.4,
-        "jitter": 288.1,
+        "latency": 382.1,
+        "jitter": 230.2,
+        "colo": "LAX"
+      },
+      {
+        "ip": "172.64.185.232",
+        "port": 8443,
+        "latency": 488.4,
+        "jitter": 205.4,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.19.166.242",
+        "port": 8443,
+        "latency": 436.2,
+        "jitter": 228.7,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.21.193.26",
+        "port": 8443,
+        "latency": 423.9,
+        "jitter": 248.7,
+        "colo": "LAX"
+      },
+      {
+        "ip": "104.19.133.140",
+        "port": 8443,
+        "latency": 352.2,
+        "jitter": 280.9,
         "colo": "LAX"
       }
     ]
