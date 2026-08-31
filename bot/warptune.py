@@ -89,6 +89,13 @@ class Tune:
     health_floor: int      # minimum WarpEP health (0-100) to enter a pool
     refresh_gap: int       # seconds between two refreshes of the same family
 
+    # ------------------------------------------- hand entered endpoints
+    # The admin panel can pin endpoints into either pool by hand. They are held
+    # to the same health floor as scanned ones; these two knobs only decide how
+    # hard each pasted address is tested and how many of them one paste may add.
+    manual_probes: int     # spaced handshakes per pasted endpoint
+    manual_max: int        # endpoints accepted from a single paste
+
     # --------------------------------------------------- the deep check
     deep_verify: bool      # prove endpoints carry traffic, not just handshakes
     deep_top: int          # how many of the best rows get the deep check
@@ -125,6 +132,8 @@ def load() -> Tune:
         pool_ports=_int("WARP_POOL_PORTS", 3, 1, 8),
         health_floor=_int("WARP_HEALTH_FLOOR", 55, 1, 99),
         refresh_gap=_int("WARP_REFRESH_GAP", 60, 0, 3600),
+        manual_probes=_int("WARP_MANUAL_PROBES", 3, 2, 8),
+        manual_max=_int("WARP_MANUAL_MAX", 40, 1, 200),
         deep_verify=_flag("WARP_DEEP_VERIFY", True),
         deep_top=_int("WARP_DEEP_TOP", 4, 0, 20),
         deep_echoes=_int("WARP_DEEP_ECHOES", 2, 1, 5),
