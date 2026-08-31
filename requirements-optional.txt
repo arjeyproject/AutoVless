@@ -1,0 +1,15 @@
+# Optional: the real WarpEP package.
+#
+# AutoVless ships a vendored copy of WarpEP's address space, port ladder and
+# health formula, so everything works without this. Installing it adds one thing
+# the copy cannot do: the deep tunnel check, which completes a WireGuard
+# handshake against a candidate endpoint, pushes real ICMP through the tunnel and
+# decrypts the reply. That is what proves an endpoint *carries traffic* instead of
+# merely answering a handshake, and it is how the dead-but-pinging addresses
+# Iranian DPI leaves lying around get thrown out of the pool.
+#
+# Needs git in the build environment:
+#   apt-get install -y git && pip install -r requirements-optional.txt
+#
+# The admin pool screen prints which of the two is in use.
+warpep @ git+https://github.com/arjeyproject/WarpEP.git@main
