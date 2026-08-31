@@ -167,28 +167,53 @@ def _warp_export_rows(lang: str) -> list[list[InlineKeyboardButton]]:
     ]
 
 
-def warp_menu(lang: str, has_identity: bool) -> InlineKeyboardMarkup:
-    rows: list[list[InlineKeyboardButton]] = []
-    if has_identity:
-        rows += _warp_export_rows(lang)
-        rows.append([_b(t(lang, "btn.warp_rebuild"), "wg:rebuild")])
-    # Build always leads to the operator picker: the endpoint family a user needs
-    # depends on their network, and guessing it is how Irancell users end up with
-    # an IPv4 endpoint that their carrier drops.
-    rows.append([_b(t(lang, "btn.warp_build"), "wg:net")])
-    rows.append(
-        [_b(t(lang, "btn.warp_eps"), "wg:eps"), _b(t(lang, "btn.warp_rescan"), "wg:rescan")]
-    )
-    rows.append([_b(t(lang, "btn.warp_why"), "wg:why"), _b(t(lang, "btn.warp_apps"), "wg:apps")])
-    if has_identity:
-        rows.append(
+def _warp_identity_rows(lang: str) -> list[list[InlineKeyboardButton]]:
+    """The actions that only mean anything once a user owns a WARP identity.
+
+    These used to sit on the WARP home screen, which is exactly why two users of
+    the same bot saw two different menus: the home screen silently grew four rows
+    the moment an identity existed and the build button slid down the screen. They
+    now live on the export screen, where an identity is already guaranteed.
+    """
+    return [
+        [_b(t(lang, "btn.warp_rebuild"), "wg:rebuild")],
+        [
+            _b(t(lang, "btn.warp_license"), "wg:license"),
+            _b(t(lang, "btn.warp_delete"), "wg:del"),
+        ],
+    ]
+
+
+def warp_menu(lang: str, has_identity: bool = False) -> InlineKeyboardMarkup:
+    """The WARP home screen. Byte for byte the same for every single user.
+
+    Build, then the endpoint pair, then the two explainers, then back. Nothing on
+    this screen depends on who is looking at it or on what they have built
+    before, so a screenshot of it is a valid instruction for anyone: "press the
+    first button" is true for the user who joined a minute ago and for the one who
+    has held an identity for a month.
+
+    Everything tied to an identity is reached through the build button: the
+    delivery screen and the export screen both carry the export formats, the
+    endpoint refresh, WARP+ and deleting the identity.
+
+    ``has_identity`` is accepted for callers that still pass it and is
+    deliberately ignored. It is what used to fork this screen.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_b(t(lang, "btn.warp_build"), "wg:net")],
             [
-                _b(t(lang, "btn.warp_license"), "wg:license"),
-                _b(t(lang, "btn.warp_delete"), "wg:del"),
-            ]
-        )
-    rows.append(back_row(lang))
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+                _b(t(lang, "btn.warp_eps"), "wg:eps"),
+                _b(t(lang, "btn.warp_rescan"), "wg:rescan"),
+            ],
+            [
+                _b(t(lang, "btn.warp_why"), "wg:why"),
+                _b(t(lang, "btn.warp_apps"), "wg:apps"),
+            ],
+            back_row(lang),
+        ]
+    )
 
 
 def warp_network(lang: str) -> InlineKeyboardMarkup:
@@ -209,13 +234,16 @@ def warp_delivered(lang: str, family: str) -> InlineKeyboardMarkup:
         [_u(t(lang, "btn.amnezia"), AMNEZIA_PLAY_URL)],
     ]
     rows += _warp_export_rows(lang)
+    rows += _warp_identity_rows(lang)
     rows.append([_b(t(lang, "btn.wg_pick_again"), "wg:net")])
     rows.append(back_row(lang, "nav:warp"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def warp_exports(lang: str) -> InlineKeyboardMarkup:
+def warp_exports(lang: str, has_identity: bool = True) -> InlineKeyboardMarkup:
     rows = _warp_export_rows(lang)
+    if has_identity:
+        rows += _warp_identity_rows(lang)
     rows.append([_b(t(lang, "btn.warp_apps"), "wg:apps")])
     rows.append(back_row(lang, "nav:warp"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
