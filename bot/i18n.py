@@ -11,13 +11,15 @@ from .locales.en import EN
 from .locales.fa import FA
 from .locales.support import SUPPORT
 from .locales.warp import WARP
+from .locales.warpmanual import WARPMANUAL
 from .locales.warppool import WARPPOOL
 
 LANGS: tuple[str, ...] = ("fa", "en")
 RULE = "\u2501" * 14
 
-# WARPPOOL is merged last so the pool screens can override an older WARP string
-# without editing that catalogue.
+# WARPPOOL is merged after WARP so the pool screens can override an older WARP
+# string without editing that catalogue, and WARPMANUAL comes last for the same
+# reason: the hand entry screens own their wording.
 CATALOG: dict[str, dict[str, str]] = {
     "fa": {
         **FA,
@@ -27,6 +29,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **WARP["fa"],
         **APPS["fa"],
         **WARPPOOL["fa"],
+        **WARPMANUAL["fa"],
     },
     "en": {
         **EN,
@@ -36,6 +39,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **WARP["en"],
         **APPS["en"],
         **WARPPOOL["en"],
+        **WARPMANUAL["en"],
     },
 }
 
