@@ -4,13 +4,16 @@ from __future__ import annotations
 
 from aiogram import Dispatcher
 
-from . import admin, apps, build, extras, panel, support, user, warp, webapp
+from . import admin, apps, build, extras, panel, pool, support, user, warp, webapp
 
 
 def register(dispatcher: Dispatcher) -> None:
     dispatcher.include_router(admin.router)
     dispatcher.include_router(build.router)
     dispatcher.include_router(panel.router)
+    # Ahead of ``warp`` on purpose: the operator picker owns ``wg:net`` and has to
+    # see it before the generic WARP router does.
+    dispatcher.include_router(pool.router)
     dispatcher.include_router(warp.router)
     dispatcher.include_router(apps.router)
     dispatcher.include_router(support.router)

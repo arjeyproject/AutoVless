@@ -20,6 +20,10 @@ CF_TOKEN_URL = (
     "&accountId=*&zoneId=all&name=AutoVless"
 )
 
+# Where AmneziaVPN really lives. Used by the WARP delivery screen so the app is
+# one tap away from the config it is meant to open.
+AMNEZIA_PLAY_URL = "https://play.google.com/store/apps/details?id=org.amnezia.vpn"
+
 BULLET = "\u2022"
 TICKET_MARKS = {"open": "\U0001f7e0", "answered": "\u2705", "closed": "\U0001f512"}
 
@@ -168,8 +172,10 @@ def warp_menu(lang: str, has_identity: bool) -> InlineKeyboardMarkup:
     if has_identity:
         rows += _warp_export_rows(lang)
         rows.append([_b(t(lang, "btn.warp_rebuild"), "wg:rebuild")])
-    else:
-        rows.append([_b(t(lang, "btn.warp_build"), "wg:build")])
+    # Build always leads to the operator picker: the endpoint family a user needs
+    # depends on their network, and guessing it is how Irancell users end up with
+    # an IPv4 endpoint that their carrier drops.
+    rows.append([_b(t(lang, "btn.warp_build"), "wg:net")])
     rows.append(
         [_b(t(lang, "btn.warp_eps"), "wg:eps"), _b(t(lang, "btn.warp_rescan"), "wg:rescan")]
     )
@@ -185,6 +191,29 @@ def warp_menu(lang: str, has_identity: bool) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
+def warp_network(lang: str) -> InlineKeyboardMarkup:
+    """The two glass buttons: Irancell takes IPv6, everyone else takes IPv4."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_b(t(lang, "btn.wg_irancell"), "wg:net:mtn")],
+            [_b(t(lang, "btn.wg_other"), "wg:net:other")],
+            back_row(lang, "nav:warp"),
+        ]
+    )
+
+
+def warp_delivered(lang: str, family: str) -> InlineKeyboardMarkup:
+    """Attached under a delivered config: next endpoint, the app, the exports."""
+    rows: list[list[InlineKeyboardButton]] = [
+        [_b(t(lang, "btn.wg_next_ep"), f"wg:net:next:{family}")],
+        [_u(t(lang, "btn.amnezia"), AMNEZIA_PLAY_URL)],
+    ]
+    rows += _warp_export_rows(lang)
+    rows.append([_b(t(lang, "btn.wg_pick_again"), "wg:net")])
+    rows.append(back_row(lang, "nav:warp"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
 def warp_exports(lang: str) -> InlineKeyboardMarkup:
     rows = _warp_export_rows(lang)
     rows.append([_b(t(lang, "btn.warp_apps"), "wg:apps")])
@@ -197,6 +226,39 @@ def warp_endpoints(lang: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [_b(t(lang, "btn.warp_rescan"), "wg:rescan")],
             back_row(lang, "nav:warp"),
+        ]
+    )
+
+
+# ------------------------------------------------------------- warp pools
+
+
+def pool_menu(lang: str) -> InlineKeyboardMarkup:
+    """Admin controls for the two family pools.
+
+    Two separate ideas, two separate buttons. Refresh goes hunting for new
+    endpoints in the background; the full check re-pings everything already
+    stored and answers the only question that matters: is the pool healthy.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_b(t(lang, "btn.pool_refresh"), "pool:refresh")],
+            [
+                _b(t(lang, "btn.pool_refresh_v4"), "pool:refresh:v4"),
+                _b(t(lang, "btn.pool_refresh_v6"), "pool:refresh:v6"),
+            ],
+            [_b(t(lang, "btn.pool_audit"), "pool:audit")],
+            [_b(t(lang, "btn.pool_list"), "pool:list")],
+            back_row(lang, "adm:menu"),
+        ]
+    )
+
+
+def pool_back(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_b(t(lang, "btn.pool"), "pool:home")],
+            back_row(lang, "adm:menu"),
         ]
     )
 
@@ -279,6 +341,7 @@ def admin_menu(lang: str) -> InlineKeyboardMarkup:
             [_b(t(lang, "btn.stats"), "adm:stats"), _b(t(lang, "btn.users"), "adm:users")],
             [_b(t(lang, "btn.broadcast"), "adm:broadcast"), _b(t(lang, "btn.channels"), "adm:channels")],
             [_b(t(lang, "btn.engine"), "adm:engine"), _b(t(lang, "btn.options"), "adm:options")],
+            [_b(t(lang, "btn.pool"), "pool:home")],
             [_b(t(lang, "btn.panels"), "adm:panels"), _b(t(lang, "btn.logs"), "adm:logs")],
             [_b(t(lang, "btn.tickets"), "sup:list:open"), _b(t(lang, "btn.backup"), "adm:backup")],
             back_row(lang),
@@ -311,6 +374,7 @@ def admin_engine(lang: str) -> InlineKeyboardMarkup:
             [_b(t(lang, "btn.scan_now"), "adm:scan")],
             [_b(t(lang, "btn.sync_now"), "adm:sync")],
             [_b(t(lang, "btn.warp_rescan"), "wg:rescan")],
+            [_b(t(lang, "btn.pool"), "pool:home")],
             back_row(lang, "adm:menu"),
         ]
     )
