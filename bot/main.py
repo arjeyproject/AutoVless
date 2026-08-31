@@ -17,6 +17,7 @@ from .autopilot import autopilot
 from .config import settings
 from .curator import curator
 from .scanner import proxy_scanner, scanner
+from .warppool import warp_pool
 from .warpscan import warp_scanner
 
 log = logging.getLogger("autovless")
@@ -67,6 +68,7 @@ async def notify_admins(bot: Bot) -> None:
     pool = await db.pool_stats()
     relays = await proxy_scanner.stats()
     warp = await warp_scanner.stats()
+    pools = await warp_pool.status()
     pilot = await autopilot.stats()
     keeper = await curator.stats()
     message = (
@@ -76,6 +78,10 @@ async def notify_admins(bot: Bot) -> None:
         f"\U0001f300 self-healing hostnames: <b>{pool['domains']}</b>\n"
         f"\U0001f6e1 relays ready: <b>{relays['verified']}</b>\n"
         f"\U0001f9ec warp endpoints: <b>{warp['stable']}</b>\n"
+        f"\U0001f3ca warp pools: IPv4 <b>{pools['families']['v4']['healthy']}</b>"
+        f"/{pools['target']} \u00b7 IPv6 <b>{pools['families']['v6']['healthy']}</b>"
+        f"/{pools['target']} (agent {'on' if pools['agent'] else 'off'}, "
+        f"source {pools['source']})\n"
         f"\U0001f916 autopilot: <b>{'on' if pilot['enabled'] else 'off'}</b> "
         f"(every {pilot['interval']}s)\n"
         f"\U0001f9f9 curator: <b>{'on' if keeper['enabled'] else 'off'}</b> "
@@ -108,6 +114,8 @@ async def run() -> None:
     await scanner.start()
     await proxy_scanner.start()
     await warp_scanner.start()
+    # After the scanner: the pool agent borrows its probing identity.
+    await warp_pool.start()
     await autopilot.start()
     await curator.start()
 
@@ -119,6 +127,7 @@ async def run() -> None:
     finally:
         await curator.stop()
         await autopilot.stop()
+        await warp_pool.stop()
         await warp_scanner.stop()
         await proxy_scanner.stop()
         await scanner.stop()
