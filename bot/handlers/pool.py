@@ -14,6 +14,12 @@ healthy, short, or empty. Between presses the agent in ``bot.warppool`` does the
 same job on a timer, so the buttons exist to see its work and to force it, never
 to be the only thing that does it.
 
+Every screen here also has to answer *why* when the answer is zero. A refresh
+that reports "48 addresses swept, 0 answered" is true and useless: the cause is
+either no route for that family on this host, a probing key Cloudflare does not
+answer, or genuine filtering, and those three need three completely different
+fixes. ``report.note`` carries the diagnosis and this module prints it.
+
 This router is registered ahead of ``handlers.warp`` so ``wg:net`` lands here.
 No handler in this module ever awaits a scan: every sweep runs as a background
 task and edits the message that started it.
@@ -73,6 +79,32 @@ def _mark(full: bool) -> str:
 
 def _out_of(value: object, lang: str) -> str:
     return f"{num(int(value or 0), lang)}/{num(100, lang)}"
+
+
+def _note_line(note: str, lang: str) -> str:
+    """The one line that turns a zero into something an operator can act on."""
+    if not note:
+        return ""
+    return "\n" + t(lang, f"pool.note_{note}")
+
+
+def _identity_line(status: dict, lang: str) -> str:
+    ok = status.get("identity_ok")
+    state = (
+        t(lang, "pool.identity_unknown")
+        if ok is None
+        else t(lang, "pool.identity_ok" if ok else "pool.identity_bad")
+    )
+    return f"{esc(str(status.get('identity') or '-'))} · {state}"
+
+
+def _routes_line(status: dict, lang: str) -> str:
+    routes = status.get("routes") or {}
+    parts = []
+    for family in (V4, V6):
+        mark = "\u2705" if routes.get(family) else "\u26d4\ufe0f"
+        parts.append(f"{_family_label(family, lang)} {mark}")
+    return " · ".join(parts)
 
 
 # --------------------------------------------------------------------- #
@@ -152,9 +184,12 @@ async def _deliver(
 
     if not endpoints:
         # ``pick`` has already kicked off a refresh. Say so plainly rather than
-        # shipping a config built on an address nobody has tested.
+        # shipping a config built on an address nobody has tested. If the host has
+        # no route for that family at all, say *that* instead: no amount of
+        # waiting is going to fix it.
+        key = "wg.pool_no_route" if not warpep.reachable(family) else "wg.pool_cold"
         await notice.edit_text(
-            t(lang, "wg.pool_cold", family=_family_label(family, lang)),
+            t(lang, key, family=_family_label(family, lang)),
             reply_markup=keyboards.warp_network(lang),
         )
         return
@@ -208,6 +243,8 @@ async def show_pool(event: CallbackQuery | Message, lang: str) -> None:
         lang,
         "pool.screen",
         source=esc(status["source"]),
+        identity=_identity_line(status, lang),
+        routes=_routes_line(status, lang),
         agent=t(lang, "admin.on" if status["agent"] else "admin.off"),
         interval=num(status["agent_interval"], lang),
         passes=num(status["passes"], lang),
@@ -262,6 +299,9 @@ async def on_pool_list(call: CallbackQuery, lang: str, is_admin: bool) -> None:
                 target=num(counts["target"], lang),
             )
         )
+        if not rows and not warpep.reachable(family):
+            blocks.append(t(lang, "pool.note_no_route"))
+            continue
         for index, row in enumerate(rows, start=1):
             flag = int(row.get("verified", -1) or -1)
             verified = True if flag == 1 else (False if flag == 0 else None)
@@ -291,8 +331,12 @@ def _refresh_text(report: RefreshReport, lang: str) -> str:
         return t(lang, "pool.refresh_busy", family=family)
     if report.status == "cooldown":
         return t(lang, "pool.refresh_cooldown", wait=num(max(1, report.wait), lang))
+    if report.status == "unreachable":
+        return t(lang, "pool.refresh_unreachable", family=family) + _note_line(report.note, lang)
     if report.status == "failed":
-        return t(lang, "pool.refresh_failed", family=family, reason=esc(report.reason or "-"))
+        return t(
+            lang, "pool.refresh_failed", family=family, reason=esc(report.reason or "-")
+        ) + _note_line(report.note, lang)
     return t(
         lang,
         "pool.refresh_done",
@@ -309,7 +353,7 @@ def _refresh_text(report: RefreshReport, lang: str) -> str:
         best=ping_label(report.best, lang),
         ports=" \u00b7 ".join(num(port, lang) for port in report.ports[:4]) or "-",
         secs=num(max(1, round(report.elapsed)), lang),
-    )
+    ) + _note_line(report.note, lang)
 
 
 async def _run_refresh(notice: Message, lang: str, family: Optional[str]) -> None:
@@ -354,7 +398,9 @@ def _audit_text(report: AuditReport, lang: str) -> str:
     if report.status == "busy":
         return t(lang, "pool.audit_busy")
     if report.status == "failed":
-        return t(lang, "pool.audit_failed", reason=esc(report.reason or "-"))
+        return t(
+            lang, "pool.audit_failed", reason=esc(report.reason or "-")
+        ) + _note_line(report.note, lang)
 
     v4 = report.families.get(V4, {})
     v6 = report.families.get(V6, {})
@@ -374,7 +420,7 @@ def _audit_text(report: AuditReport, lang: str) -> str:
         v6mark=_mark(bool(v6.get("full"))),
         v6best=ping_label(v6.get("best"), lang),
         secs=num(max(1, round(report.elapsed)), lang),
-    )
+    ) + _note_line(report.note, lang)
 
 
 async def _run_audit(notice: Message, lang: str) -> None:
