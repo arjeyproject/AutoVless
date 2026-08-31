@@ -5,15 +5,18 @@ every one of them behaves differently from a given network. Iranian DPI makes it
 worse: an endpoint can complete a handshake and be torn down a second later,
 which is indistinguishable from a healthy one if you only probe once.
 
-Four moving parts:
+Five moving parts:
 
-  1. port discovery  which of the 50+ WARP UDP ports leave this box at all
-  2. sweep           one real handshake against sampled addresses on those ports
-  3. verify          several spaced handshakes per survivor, measuring latency,
-                     jitter and loss, then scoring the three together
-  4. watchdog        a small constant re-check of the endpoints already in use,
-                     so a filtered address is retired within a couple of minutes
-                     instead of at the next full sweep
+  1. identity          an *enrolled* WARP key, preflighted against Cloudflare's
+                       own control endpoints. This is first because it is the one
+                       thing that decides real results from meaningless ones.
+  2. port discovery    which of the 50+ WARP UDP ports leave this box at all
+  3. sweep             one real handshake against sampled addresses on those ports
+  4. verify            several spaced handshakes per survivor, measuring latency,
+                       jitter and loss, then scoring the three together
+  5. watchdog          a small constant re-check of the endpoints already in use,
+                       so a filtered address is retired within a couple of minutes
+                       instead of at the next full sweep
 
 One rule runs through all of it: nothing a user waits on may ever wait on a
 scan. A sweep already in flight is *joined* rather than refused, every outcome
@@ -21,15 +24,23 @@ comes back as a distinct report instead of a bare zero, and if the pool is empty
 a scan is kicked off in the background while the caller immediately gets the
 long-lived defaults.
 
+Why the identity comes first
+---------------------------
+Cloudflare's responder decrypts a handshake initiation to learn which client is
+calling and drops the packet without a word if that public key is not an enrolled
+WARP device. A scan signed with a key Cloudflare does not know does not look
+slow, it looks like the entire internet is dead. That is exactly what a stale
+cached registration produced here: forty-eight addresses swept, zero answered,
+every time, forever. ``identity()`` now proves the key gets answers before a
+single candidate is measured, and falls back to WarpEP's enrolled probing key
+when registration is impossible - which on an Iranian VPS it usually is.
+
 The address space itself lives in ``bot.warpep``, which is the bridge to the
 WarpEP scanner: same prefixes, same port ladder, same per-prefix sampling, and
 IPv6 as a first-class family rather than an afterthought. The probing primitives
 are exposed publicly (``measure``, ``fast_pass``, ``verify_rows``,
 ``discover_ports_for``) so ``bot.warppool`` can build the per-family pools on top
 of this engine instead of standing up a second one beside it.
-
-The engine keeps its own throwaway WARP identity so nobody's personal account is
-burned on probing.
 """
 
 from __future__ import annotations
@@ -39,12 +50,12 @@ import json
 import logging
 import statistics
 import time
-from dataclasses import dataclass, replace
+from dataclasses import dataclass, field, replace
 from typing import Optional
 
 from . import db, warp, warpep, warpstore, wireguard
 from .config import settings
-from .warpep import V4
+from .warpep import V4, V6
 from .warptune import TUNE
 
 log = logging.getLogger("autovless.warpscan")
@@ -77,14 +88,24 @@ class ScanReport:
 
     ``status`` is the whole point of this class:
 
-      done      the sweep ran here and now
-      joined    a sweep was already in flight and we waited for its result
-      cooldown  too soon since the last one; ``wait`` says how many seconds
-      failed    something broke; ``reason`` is safe to show
-      disabled  the feature is switched off
+      done        the sweep ran here and now
+      joined      a sweep was already in flight and we waited for its result
+      cooldown    too soon since the last one; ``wait`` says how many seconds
+      unreachable this host has no route for that family at all
+      failed      something broke; ``reason`` is safe to show
+      disabled    the feature is switched off
+
+    ``note`` is the diagnosis when a sweep ran and still found nothing, which
+    used to be reported as a bare zero that told nobody anything:
+
+      no_route  the kernel has no route for this family
+      identity  Cloudflare is not answering our key, so nothing can be found
+      filtered  the key works elsewhere but this network drops WARP
     """
 
     status: str = "done"
+    family: str = V4
+    families: tuple[str, ...] = ()
     found: int = 0
     alive: int = 0
     best: Optional[float] = None
@@ -93,6 +114,7 @@ class ScanReport:
     wait: int = 0
     rescued: bool = False
     reason: str = ""
+    note: str = ""
 
     @property
     def ok(self) -> bool:
@@ -105,12 +127,18 @@ class WarpScanner:
         self._watch_task: Optional[asyncio.Task] = None
         self._side_tasks: set[asyncio.Task] = set()
         self._lock = asyncio.Lock()
+        self._identity_lock = asyncio.Lock()
         self._inflight: Optional[asyncio.Future] = None
         self._stop = asyncio.Event()
         self._identity: Optional[dict] = None
         self._finished_at: float = 0.0
         self.ports: tuple[int, ...] = tuple(settings.warp_ports) or COMMON_PORTS
         self.family_ports: dict[str, tuple[int, ...]] = {}
+        # False means "we fell back to the hardcoded list", which is a very
+        # different thing from "these ports were measured to work".
+        self.ports_proven: dict[str, bool] = {}
+        self.identity_source: str = ""
+        self.identity_ok: Optional[bool] = None
         self.running: bool = False
         self.last_run: int = 0
         self.last_found: int = 0
@@ -126,6 +154,18 @@ class WarpScanner:
             return
         await warpstore.ensure_schema()
         self._stop.clear()
+        available = warpep.available_families(refresh=True)
+        if not available:
+            log.error(
+                "this host has no route to Cloudflare over IPv4 or IPv6. "
+                "No scan can find anything until that is fixed."
+            )
+        elif V6 not in available:
+            log.warning(
+                "no IPv6 route on this host, so the IPv6 pool will stay empty. "
+                "On Docker put the container on the host network "
+                "(network_mode: host) or enable IPv6 on its network."
+            )
         if self._scan_task is None or self._scan_task.done():
             self._scan_task = asyncio.create_task(self._scan_loop(), name="warp-scanner")
             log.info("warp engine started (interval=%ss)", settings.warp_scan_interval)
@@ -192,30 +232,107 @@ class WarpScanner:
     # ------------------------------------------------------------------ #
 
     async def identity(self) -> Optional[dict]:
-        """A throwaway WARP device used purely for probing, cached in the db."""
+        """An identity Cloudflare will actually answer. Resolved once, then cached."""
         if self._identity:
             return self._identity
+        async with self._identity_lock:
+            if self._identity:
+                return self._identity
+            self._identity = await self._resolve_identity()
+            return self._identity
 
+    async def _resolve_identity(self) -> Optional[dict]:
+        """Pick a probing identity, in the order that actually works.
+
+        1. the identity cached in the db - but only if it still gets answers,
+        2. a fresh registration against ``api.cloudflareclient.com``,
+        3. WarpEP's enrolled probing identity, which needs no network at all.
+
+        Step 1 used to be the *only* step, and that was the bug. Cloudflare
+        silently drops handshakes from a device it has forgotten, so one revoked
+        registration made every scan from then on report "48 swept, 0 answered"
+        with no way to tell that from real filtering. Step 3 is what keeps a scan
+        working on a box where the WARP API itself is blocked.
+        """
         stored = await db.get_option(IDENTITY_OPTION)
         if stored:
+            candidate: Optional[dict] = None
             try:
                 candidate = json.loads(stored)
-                if candidate.get("private_key") and candidate.get("peer_public_key"):
-                    self._identity = candidate
-                    return self._identity
             except (ValueError, AttributeError):
-                log.info("stored scanner identity is unusable, registering a new one")
+                log.info("stored scanner identity is unreadable, registering a new one")
+            if candidate and candidate.get("private_key") and candidate.get("peer_public_key"):
+                if await self._identity_answers(candidate):
+                    self.identity_source = candidate.get("source") or "registered (cached)"
+                    self.identity_ok = True
+                    log.info("scanner identity: %s", self.identity_source)
+                    return candidate
+                log.warning(
+                    "the cached scanner identity is not answered by a single control "
+                    "endpoint. Cloudflare has most likely dropped the device, so every "
+                    "scan would report zero. Registering a new one."
+                )
 
         try:
             fresh = await warp.provision()
         except warp.WarpError as error:
             log.warning("scanner identity could not be registered: %s", error)
-            return None
+        else:
+            fresh["source"] = f"registered ({fresh.get('account_type', 'free')})"
+            fresh["shared"] = False
+            self.identity_ok = await self._identity_answers(fresh)
+            if self.identity_ok:
+                await db.set_option(IDENTITY_OPTION, json.dumps(fresh, ensure_ascii=False))
+                self.identity_source = fresh["source"]
+                log.info("scanner warp identity registered (%s)", fresh.get("account_type"))
+                return fresh
+            log.warning(
+                "a freshly registered device is not answered either, falling back to "
+                "the WarpEP probing identity"
+            )
 
-        self._identity = fresh
-        await db.set_option(IDENTITY_OPTION, json.dumps(fresh, ensure_ascii=False))
-        log.info("scanner warp identity registered (%s)", fresh.get("account_type"))
-        return fresh
+        spare = warpep.fallback_identity()
+        self.identity_ok = await self._identity_answers(spare)
+        self.identity_source = spare.get("source") or "warpep bundled"
+        if self.identity_ok:
+            log.info("scanner identity: %s", self.identity_source)
+        else:
+            log.error(
+                "neither a registered device nor the bundled WarpEP identity gets an "
+                "answer from any Cloudflare control endpoint. Outbound UDP is almost "
+                "certainly blocked on this box; no scan can succeed until it is not."
+            )
+        return spare
+
+    async def _identity_answers(self, identity: dict) -> bool:
+        """Does Cloudflare answer this key at all? Asked against its own endpoints.
+
+        A handful of packets, and the only way to tell "this key is not enrolled"
+        apart from "this network filters WARP". Without it a scan cannot report
+        the difference, and a bare zero is exactly the report nobody can act on.
+        """
+        pairs: list[tuple[str, int]] = []
+        for family in warpep.available_families():
+            pairs.extend(warpep.CONTROL.get(family, ())[:2])
+        if not pairs:
+            return False
+        semaphore = asyncio.Semaphore(8)
+        results = await asyncio.gather(
+            *(self._probe_once(host, port, identity, semaphore) for host, port in pairs),
+            return_exceptions=True,
+        )
+        return any(
+            not isinstance(item, BaseException) and item is not None for item in results
+        )
+
+    async def recheck_identity(self) -> bool:
+        """Throw the cached identity away and resolve a new one. For the panel."""
+        async with self._identity_lock:
+            self._identity = None
+            self.identity_ok = None
+            self.identity_source = ""
+        identity = await self.identity()
+        return bool(identity and self.identity_ok)
 
     # ------------------------------------------------------------------ #
     # probing
@@ -307,6 +424,8 @@ class WarpScanner:
         identity: Optional[dict] = None,
     ) -> Optional[dict]:
         """Measure one endpoint. ``None`` means it never answered."""
+        if not warpep.reachable(warpep.family_of(host)):
+            return None
         identity = identity or await self.identity()
         if identity is None:
             return None
@@ -350,15 +469,26 @@ class WarpScanner:
         Asked per family on purpose: an ISP that drops UDP 2408 over IPv4 quite
         often leaves the same port alone over IPv6, and assuming otherwise is how
         an IPv6 pool ends up empty for no reason.
+
+        ``ports_proven[family]`` records whether these ports were *measured* or
+        merely assumed, because "2408 500 1701" in a report meant both and the
+        second one is a symptom rather than a result.
         """
         code = warpep.normalise_family(family)
         if settings.warp_ports:
             ports = list(settings.warp_ports)
             self.family_ports[code] = tuple(ports)
+            self.ports_proven[code] = False
             return ports
+
+        if not warpep.reachable(code):
+            self.family_ports[code] = ()
+            self.ports_proven[code] = False
+            return []
 
         identity = identity or await self.identity()
         if identity is None:
+            self.ports_proven[code] = False
             return list(COMMON_PORTS[:3])
         semaphore = semaphore or asyncio.Semaphore(settings.warp_scan_concurrency)
 
@@ -386,8 +516,15 @@ class WarpScanner:
                 )
                 log.info("warp ports reachable over %s: %s", code, ordered)
                 self.family_ports[code] = tuple(ordered[:6])
+                self.ports_proven[code] = True
                 return ordered[:6]
-        log.warning("no warp port answered over %s, falling back to the common list", code)
+        log.warning(
+            "no warp port answered over %s. Either the probing identity is not "
+            "enrolled or this network drops WARP entirely; assuming the common list.",
+            code,
+        )
+        self.family_ports[code] = tuple(COMMON_PORTS[:3])
+        self.ports_proven[code] = False
         return list(COMMON_PORTS[:3])
 
     async def discover_ports(self, identity: dict, semaphore: asyncio.Semaphore) -> list[int]:
@@ -440,17 +577,24 @@ class WarpScanner:
             rows.append(item)
         return rows
 
-    async def _rescue(self, identity: dict) -> list[dict]:
-        """Last resort: measure the long-lived defaults and keep whatever answers.
+    async def _rescue(self, identity: dict, family: str = V4) -> list[dict]:
+        """Last resort: measure the published defaults for this family.
 
-        An empty pool is worse than a mediocre one, because then every user gets
-        the same hardcoded address with no measurement behind it.
+        Family-aware on purpose. The old version always measured the IPv4
+        fallback list, so an IPv6 sweep that found nothing was rescued with four
+        IPv4 addresses that the IPv6 pool could never use.
         """
+        code = warpep.normalise_family(family)
+        targets: tuple[tuple[str, int], ...] = warpep.CONTROL.get(code, ())
+        if code == V4:
+            targets = tuple(dict.fromkeys(targets + warp.FALLBACK_ENDPOINTS))
+        if not targets:
+            return []
         semaphore = asyncio.Semaphore(8)
         results = await asyncio.gather(
             *(
                 self._measure(host, port, identity, semaphore, probes=2)
-                for host, port in warp.FALLBACK_ENDPOINTS
+                for host, port in targets
             ),
             return_exceptions=True,
         )
@@ -471,14 +615,14 @@ class WarpScanner:
         quick: bool = False,
         force: bool = False,
         sample: Optional[int] = None,
-        family: str = V4,
+        family: Optional[str] = None,
     ) -> ScanReport:
         """Run a sweep, or join the one already running. Never raises.
 
-        This is the method the rescan button calls. It used to be possible for a
-        user to press it, land on the background sweep's lock and be told to come
-        back later while a perfectly good scan was running two lines away. Now
-        they simply wait for that scan's result.
+        This is the method the rescan button calls. ``family=None`` now means
+        *every family this host can reach* rather than IPv4: the old default
+        silently pinned the admin scan to IPv4, so pressing it could never put a
+        single address into the IPv6 pool no matter how long anybody waited.
         """
         if not settings.warp_enabled:
             return ScanReport(status="disabled", reason="warp disabled")
@@ -507,7 +651,10 @@ class WarpScanner:
         future: asyncio.Future = loop.create_future()
         self._inflight = future
         try:
-            report = await self._sweep(quick=quick, sample=sample, family=family)
+            if family is None:
+                report = await self._sweep_all(quick=quick, sample=sample)
+            else:
+                report = await self._sweep(quick=quick, sample=sample, family=family)
         except asyncio.CancelledError:
             if not future.done():
                 future.cancel()
@@ -524,6 +671,48 @@ class WarpScanner:
         self._inflight = None
         return report
 
+    async def _sweep_all(
+        self,
+        quick: bool = False,
+        sample: Optional[int] = None,
+    ) -> ScanReport:
+        """Sweep both families and merge the outcome into one report.
+
+        Sequential rather than parallel: two sweeps racing for the same socket
+        budget measure each other's congestion instead of the endpoints.
+        """
+        merged = ScanReport(status="done")
+        parts: list[ScanReport] = []
+        for code in warpep.FAMILIES:
+            if not warpep.reachable(code):
+                parts.append(
+                    ScanReport(
+                        status="unreachable",
+                        family=code,
+                        note="no_route",
+                        reason=f"no {code} route on this host",
+                    )
+                )
+                continue
+            parts.append(await self._sweep(quick=quick, sample=sample, family=code))
+
+        done = [part for part in parts if part.status == "done"]
+        merged.families = tuple(part.family for part in done)
+        merged.alive = sum(part.alive for part in parts)
+        merged.found = max((part.found for part in parts), default=0)
+        merged.elapsed = round(sum(part.elapsed for part in parts), 1)
+        merged.ports = tuple(dict.fromkeys(port for part in parts for port in part.ports))
+        pings = [part.best for part in parts if part.best]
+        merged.best = min(pings) if pings else None
+        merged.rescued = any(part.rescued for part in parts)
+        if not done:
+            merged.status = parts[0].status if parts else "failed"
+            merged.note = parts[0].note if parts else ""
+            merged.reason = "; ".join(part.reason for part in parts if part.reason)[:180]
+        elif not merged.alive:
+            merged.note = next((part.note for part in done if part.note), "filtered")
+        return merged
+
     async def _sweep(
         self,
         quick: bool = False,
@@ -532,17 +721,36 @@ class WarpScanner:
     ) -> ScanReport:
         started = time.perf_counter()
         code = warpep.normalise_family(family)
+        if not warpep.reachable(code):
+            return ScanReport(
+                status="unreachable",
+                family=code,
+                note="no_route",
+                reason=f"no {code} route on this host",
+            )
         async with self._lock:
             self.running = True
             try:
                 identity = await self.identity()
                 if identity is None:
-                    return ScanReport(status="failed", reason="warp identity unavailable")
+                    return ScanReport(
+                        status="failed",
+                        family=code,
+                        note="identity",
+                        reason="warp identity unavailable",
+                    )
 
                 await warpstore.ensure_schema()
                 semaphore = asyncio.Semaphore(settings.warp_scan_concurrency)
 
                 ports = await self.discover_ports_for(code, identity, semaphore)
+                if not ports:
+                    return ScanReport(
+                        status="unreachable",
+                        family=code,
+                        note="no_route",
+                        reason=f"no {code} route on this host",
+                    )
                 self.ports = tuple(ports)
 
                 per_prefix = sample or (
@@ -559,8 +767,9 @@ class WarpScanner:
                 rescued = False
                 if not stable:
                     # Nothing survived. Keep the shaky rows if there are any, and
-                    # fall back to the defaults so the pool is never empty.
-                    stable = verified or await self._rescue(identity)
+                    # fall back to this family's published endpoints so a cold
+                    # pool is never left with literally nothing.
+                    stable = verified or await self._rescue(identity, code)
                     rescued = not verified and bool(stable)
                     if stable:
                         log.info("warp sweep found nothing stable, kept %s rows", len(stable))
@@ -568,21 +777,30 @@ class WarpScanner:
                 if stable:
                     await warpstore.upsert(stable)
                 retired = await warpstore.retire()
-                await warpstore.trim(settings.warp_pool_size)
+                # Per family. A single global cap ranked both families in one
+                # list, so a busy IPv4 pool could evict every IPv6 row the sweep
+                # had just found and the IPv6 pool stayed at zero for ever.
+                await warpstore.trim(settings.warp_pool_size, family=code)
 
                 pool = await warpstore.stats()
                 elapsed = time.perf_counter() - started
                 self.last_run = db.now()
                 self.last_found = int(pool["stable"]) or len(stable)
 
+                note = ""
+                if not answered:
+                    note = "identity" if self.identity_ok is False else "filtered"
+
                 await db.log_event(
                     "warp_scan",
                     detail=(
                         f"family={code} mode={'quick' if quick else 'full'} "
-                        f"alive={len(answered)} verified={len(verified)} stored={len(stable)} "
+                        f"swept={len(candidates)} alive={len(answered)} "
+                        f"verified={len(verified)} stored={len(stable)} "
                         f"pool={pool['stable']}/{pool['total']} retired={retired} "
                         f"ports={','.join(str(p) for p in ports[:3])} "
-                        f"elapsed={elapsed:.1f}s"
+                        f"identity={self.identity_source or '?'} "
+                        f"note={note or 'ok'} elapsed={elapsed:.1f}s"
                     ),
                 )
                 log.info(
@@ -595,12 +813,15 @@ class WarpScanner:
                 )
                 return ScanReport(
                     status="done",
+                    family=code,
+                    families=(code,),
                     found=self.last_found,
                     alive=len(answered),
                     best=pool.get("best"),
                     ports=self.ports,
                     elapsed=round(elapsed, 1),
                     rescued=rescued,
+                    note=note,
                 )
             finally:
                 self.running = False
@@ -788,6 +1009,9 @@ class WarpScanner:
         )
         data["next_scan"] = self.next_scan_in()
         data["source"] = warpep.describe()
+        data["identity"] = self.identity_source
+        data["identity_ok"] = self.identity_ok
+        data["routes"] = warpep.routes()
         return data
 
     async def snapshot(self, limit: Optional[int] = None) -> list[dict]:
