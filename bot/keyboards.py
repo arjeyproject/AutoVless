@@ -236,9 +236,14 @@ def warp_endpoints(lang: str) -> InlineKeyboardMarkup:
 def pool_menu(lang: str) -> InlineKeyboardMarkup:
     """Admin controls for the two family pools.
 
-    Two separate ideas, two separate buttons. Refresh goes hunting for new
-    endpoints in the background; the full check re-pings everything already
-    stored and answers the only question that matters: is the pool healthy.
+    Separate ideas, separate buttons. Refresh goes hunting for new endpoints in
+    the background; the full check re-pings everything already stored; the two
+    entry buttons pin addresses the admin already trusts into one pool each.
+
+    The entry buttons are per family and never combined, because that split is
+    the whole product: Irancell is served from the IPv6 pool and every other
+    operator from the IPv4 one, so "which pool" is a decision the admin has to
+    make explicitly rather than a guess made from the address they pasted.
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
@@ -247,9 +252,58 @@ def pool_menu(lang: str) -> InlineKeyboardMarkup:
                 _b(t(lang, "btn.pool_refresh_v4"), "pool:refresh:v4"),
                 _b(t(lang, "btn.pool_refresh_v6"), "pool:refresh:v6"),
             ],
+            [
+                _b(t(lang, "btn.pool_add_v4"), "pool:add:v4"),
+                _b(t(lang, "btn.pool_add_v6"), "pool:add:v6"),
+            ],
+            [_b(t(lang, "btn.pool_manual"), "pool:manual")],
             [_b(t(lang, "btn.pool_audit"), "pool:audit")],
             [_b(t(lang, "btn.pool_list"), "pool:list")],
             back_row(lang, "adm:menu"),
+        ]
+    )
+
+
+def pool_manual(lang: str, v4: int = 0, v6: int = 0) -> InlineKeyboardMarkup:
+    """The hand entered endpoints screen: add, re-check, clear.
+
+    A clear button only appears for a family that actually has something pinned,
+    so the screen cannot offer to delete nothing.
+    """
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            _b(t(lang, "btn.pool_add_v4"), "pool:add:v4"),
+            _b(t(lang, "btn.pool_add_v6"), "pool:add:v6"),
+        ],
+        [_b(t(lang, "btn.pool_manual_check"), "pool:manual:check")],
+    ]
+    clear: list[InlineKeyboardButton] = []
+    if v4:
+        clear.append(_b(t(lang, "btn.pool_manual_clear_v4"), "pool:manual:ask:v4"))
+    if v6:
+        clear.append(_b(t(lang, "btn.pool_manual_clear_v6"), "pool:manual:ask:v6"))
+    if clear:
+        rows.append(clear)
+    rows.append([_b(t(lang, "btn.pool"), "pool:home")])
+    rows.append(back_row(lang, "adm:menu"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def pool_manual_cancel(lang: str) -> InlineKeyboardMarkup:
+    """Shown while the bot is waiting for a pasted list."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[[_b(t(lang, "btn.cancel"), "pool:manual")]]
+    )
+
+
+def pool_manual_confirm(lang: str, family: str) -> InlineKeyboardMarkup:
+    """Deleting a whole family's pinned list is worth one extra tap."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [
+                _b(t(lang, "btn.confirm"), f"pool:manual:wipe:{family}"),
+                _b(t(lang, "btn.cancel"), "pool:manual"),
+            ]
         ]
     )
 

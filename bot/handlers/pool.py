@@ -7,12 +7,28 @@ IPv6 endpoint because that is the path MTN leaves alone; everyone else gets IPv4
 Nothing is guessed from the phone number or the language, because a wrong guess
 here is a config that cannot connect and a user who blames the bot.
 
-**Admins** get a pool screen with exactly two verbs. *Refresh* goes hunting for
-new endpoints in the background. *Full check* re-pings everything already stored,
+**Admins** get a pool screen with four verbs. *Refresh* goes hunting for new
+endpoints in the background. *Full check* re-pings everything already stored,
 deletes the dead, re-sorts the survivors by ping and prints a straight verdict:
-healthy, short, or empty. Between presses the agent in ``bot.warppool`` does the
-same job on a timer, so the buttons exist to see its work and to force it, never
-to be the only thing that does it.
+healthy, short, or empty. *Add IPv4* and *Add IPv6* pin endpoints the admin
+already trusts into one pool each. Between presses the agent in ``bot.warppool``
+does the automatic half of that job on a timer, so the buttons exist to see its
+work and to force it, never to be the only thing that does it.
+
+Why hand entry earns its buttons
+--------------------------------
+Cloudflare's IPv6 WARP prefixes are reachable from an Irancell handset and not
+from most Iranian VPS hosts, so the box that scans usually has no IPv6 route and
+the IPv6 pool - the one Irancell users are served from - can never fill by
+itself. The admin, meanwhile, has a list of IPv6 endpoints that work. Two
+buttons, one per family, never mixed: the family *is* the operator mapping, so it
+is a decision the admin makes explicitly and not one inferred from a paste.
+
+A pinned endpoint is not a privileged one. It goes through the same real
+handshake, the same WarpEP health floor and the same ``warp_pool.pick`` as a
+scanned one, so "only healthy endpoints reach users" still holds. What it does
+get is permanence: hygiene never trims it away, and if it dies it is sidelined
+and shown as dead rather than silently deleted.
 
 Every screen here also has to answer *why* when the answer is zero. A refresh
 that reports "48 addresses swept, 0 answered" is true and useless: the cause is
@@ -33,9 +49,11 @@ from typing import Optional
 
 from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
+from aiogram.fsm.context import FSMContext
+from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from .. import db, keyboards, operators, warpconf, warpep, warpstore
+from .. import db, keyboards, operators, warpconf, warpep, warpmanual, warpstore
 from .. import warp as warpcore
 from ..config import settings
 from ..i18n import num, t
@@ -54,8 +72,30 @@ CHOICES: dict[str, dict[str, str]] = {
     "other": {"family": V4, "operator": "other"},
 }
 
+# How each verdict on a pasted line is marked. The admin needs to see at a glance
+# which of their addresses made it and which did not.
+VERDICT_MARKS: dict[str, str] = {
+    "stored": "\u2705",
+    "untested": "\U0001f552",
+    "dead": "\U0001f480",
+    "weak": "\u26a0\ufe0f",
+    "family": "\U0001f6ab",
+    "dup": "\U0001f501",
+    "bad": "\u274c",
+    "over": "\u26d4\ufe0f",
+}
+
+# Lines printed back after an import before the list is cut short.
+REPORT_LINES = 24
+
 # Live background jobs, held so the loop cannot collect them mid-sweep.
 _jobs: set[asyncio.Task] = set()
+
+
+class PoolFlow(StatesGroup):
+    """Waiting for a pasted endpoint list. The family is kept in the state data."""
+
+    manual = State()
 
 
 def _spawn(coro, name: str) -> None:
@@ -66,6 +106,11 @@ def _spawn(coro, name: str) -> None:
 
 def _family_label(family: str, lang: str) -> str:
     return t(lang, "wg.family_v6" if family == V6 else "wg.family_v4")
+
+
+def _operator_hint(family: str, lang: str) -> str:
+    """Which button on the user side this pool feeds. Named on every screen."""
+    return t(lang, "btn.wg_irancell" if family == V6 else "btn.wg_other")
 
 
 def _app_link() -> str:
@@ -95,7 +140,7 @@ def _identity_line(status: dict, lang: str) -> str:
         if ok is None
         else t(lang, "pool.identity_ok" if ok else "pool.identity_bad")
     )
-    return f"{esc(str(status.get('identity') or '-'))} · {state}"
+    return f"{esc(str(status.get('identity') or '-'))} \u00b7 {state}"
 
 
 def _routes_line(status: dict, lang: str) -> str:
@@ -104,7 +149,11 @@ def _routes_line(status: dict, lang: str) -> str:
     for family in (V4, V6):
         mark = "\u2705" if routes.get(family) else "\u26d4\ufe0f"
         parts.append(f"{_family_label(family, lang)} {mark}")
-    return " · ".join(parts)
+    return " \u00b7 ".join(parts)
+
+
+def _guard(is_admin: bool) -> bool:
+    return bool(is_admin)
 
 
 # --------------------------------------------------------------------- #
@@ -186,7 +235,8 @@ async def _deliver(
         # ``pick`` has already kicked off a refresh. Say so plainly rather than
         # shipping a config built on an address nobody has tested. If the host has
         # no route for that family at all, say *that* instead: no amount of
-        # waiting is going to fix it.
+        # waiting is going to fix it, but an admin pinning known good endpoints
+        # by hand will.
         key = "wg.pool_no_route" if not warpep.reachable(family) else "wg.pool_cold"
         await notice.edit_text(
             t(lang, key, family=_family_label(family, lang)),
@@ -267,28 +317,43 @@ async def show_pool(event: CallbackQuery | Message, lang: str) -> None:
         v6ep=esc(v6["best_endpoint"] or "-"),
         updated=ago(max(v4["updated_at"], v6["updated_at"]), lang),
     )
+    # The hand entered endpoints get their own line rather than more placeholders
+    # inside ``pool.screen``: they are a different kind of thing from a scan
+    # result and the admin needs to see at a glance how much of each pool is
+    # theirs.
+    manual = await warpmanual.both()
+    text += "\n" + t(
+        lang,
+        "pool.manual_block",
+        v4=num(manual[V4]["healthy"], lang),
+        v4all=num(manual[V4]["total"], lang),
+        v6=num(manual[V6]["healthy"], lang),
+        v6all=num(manual[V6]["total"], lang),
+    )
     await edit(event, text, keyboards.pool_menu(lang))
 
 
 @router.callback_query(F.data == "pool:home")
-async def on_pool_home(call: CallbackQuery, lang: str, is_admin: bool) -> None:
-    if not is_admin:
+async def on_pool_home(call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool) -> None:
+    if not _guard(is_admin):
         await call.answer(t(lang, "admin.denied"), show_alert=True)
         return
+    await state.clear()
     await show_pool(call, lang)
     await call.answer()
 
 
 @router.callback_query(F.data == "pool:list")
-async def on_pool_list(call: CallbackQuery, lang: str, is_admin: bool) -> None:
+async def on_pool_list(call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool) -> None:
     """Every endpoint in both pools, in ping order, with what was proven about it."""
-    if not is_admin:
+    if not _guard(is_admin):
         await call.answer(t(lang, "admin.denied"), show_alert=True)
         return
+    await state.clear()
 
     blocks: list[str] = []
     for family in (V4, V6):
-        rows = await warpstore.pool(family, limit=TUNE.pool_target)
+        rows = await warpstore.pool(family, limit=TUNE.pool_target * 3)
         counts = await warpstore.counts(family)
         blocks.append(
             t(
@@ -303,19 +368,29 @@ async def on_pool_list(call: CallbackQuery, lang: str, is_admin: bool) -> None:
             blocks.append(t(lang, "pool.note_no_route"))
             continue
         for index, row in enumerate(rows, start=1):
-            flag = int(row.get("verified", -1) or -1)
-            verified = True if flag == 1 else (False if flag == 0 else None)
-            points = int(row.get("health") or 0)
-            blocks.append(
-                f"{num(index, lang)}. {warpep.badge(points, verified)} "
-                f"<code>{esc(warpep.host_port(row['ip'], row['port']))}</code> \u00b7 "
-                f"{ping_label(row['latency'], lang)} \u00b7 "
-                f"\u2764\ufe0f {num(points, lang)}"
-            )
+            blocks.append(f"{num(index, lang)}. {_row_line(row, lang)}")
 
     listing = "\n".join(blocks).strip() or t(lang, "pool.list_empty")
     await edit(call, t(lang, "pool.list", list=listing), keyboards.pool_menu(lang))
     await call.answer()
+
+
+def _row_line(row: dict, lang: str) -> str:
+    """One stored endpoint, with everything that was actually proven about it.
+
+    The hand icon matters: an admin looking at a thin pool needs to know which
+    rows the scanner found and which ones they pinned themselves.
+    """
+    flag = int(row.get("verified", -1) or -1)
+    verified = True if flag == 1 else (False if flag == 0 else None)
+    points = int(row.get("health") or 0)
+    hand = " \U0001f590" if int(row.get("manual") or 0) else ""
+    return (
+        f"{warpep.badge(points, verified)}{hand} "
+        f"<code>{esc(warpep.host_port(row['ip'], row['port']))}</code> \u00b7 "
+        f"{ping_label(row.get('latency'), lang)} \u00b7 "
+        f"\u2764\ufe0f {num(points, lang)}"
+    )
 
 
 # --------------------------------------------------------------------- #
@@ -370,14 +445,17 @@ async def _run_refresh(notice: Message, lang: str, family: Optional[str]) -> Non
 
 
 @router.callback_query(F.data.startswith("pool:refresh"))
-async def on_pool_refresh(call: CallbackQuery, lang: str, is_admin: bool) -> None:
+async def on_pool_refresh(
+    call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool
+) -> None:
     """Answers instantly. The sweep runs beside this handler and reports back."""
-    if not is_admin:
+    if not _guard(is_admin):
         await call.answer(t(lang, "admin.denied"), show_alert=True)
         return
     if not await db.get_flag("warp_enabled"):
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
+    await state.clear()
 
     tail = (call.data or "").split(":")[2:]
     family = warpep.normalise_family(tail[0]) if tail else None
@@ -385,6 +463,271 @@ async def on_pool_refresh(call: CallbackQuery, lang: str, is_admin: bool) -> Non
     await call.answer(t(lang, "btn.pool_refresh"))
     notice = await call.message.answer(t(lang, "pool.refresh_started"))
     _spawn(_run_refresh(notice, lang, family), f"pool-refresh-{family or 'all'}")
+
+
+# --------------------------------------------------------------------- #
+# admin: filling a pool by hand
+# --------------------------------------------------------------------- #
+
+
+@router.callback_query(F.data.startswith("pool:add:"))
+async def on_manual_ask(
+    call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool
+) -> None:
+    """Ask for a pasted list for exactly one family."""
+    if not _guard(is_admin):
+        await call.answer(t(lang, "admin.denied"), show_alert=True)
+        return
+
+    tail = (call.data or "").split(":")[2:]
+    family = warpep.normalise_family(tail[0] if tail else V4)
+    counts = await warpstore.manual_counts(family)
+
+    await state.set_state(PoolFlow.manual)
+    await state.update_data(family=family)
+
+    text = t(
+        lang,
+        "pool.manual_prompt",
+        family=_family_label(family, lang),
+        operator=_operator_hint(family, lang),
+        port=num(warpmanual.DEFAULT_PORT, lang),
+        cap=num(TUNE.manual_max, lang),
+        floor=num(TUNE.health_floor, lang),
+        pinned=num(counts["healthy"], lang),
+        total=num(counts["total"], lang),
+    )
+    if not warpep.reachable(family):
+        # The single most important sentence on this screen when it applies: the
+        # host cannot test this family, so whatever is pasted is taken on trust.
+        text += "\n" + t(lang, "pool.manual_no_route", family=_family_label(family, lang))
+    await edit(call, text, keyboards.pool_manual_cancel(lang))
+    await call.answer()
+
+
+@router.message(PoolFlow.manual, F.text)
+async def on_manual_text(
+    message: Message, state: FSMContext, lang: str, is_admin: bool
+) -> None:
+    """Take the paste, answer immediately, prove the endpoints in the background."""
+    if not _guard(is_admin):
+        return
+
+    data = await state.get_data()
+    family = warpep.normalise_family(data.get("family") or V4)
+    body = message.text or ""
+    tokens = warpmanual.tokens_of(body)
+    if not tokens:
+        await message.answer(
+            t(lang, "pool.manual_empty"), reply_markup=keyboards.pool_manual_cancel(lang)
+        )
+        return
+
+    await state.clear()
+    notice = await message.answer(
+        t(
+            lang,
+            "pool.manual_started",
+            family=_family_label(family, lang),
+            count=num(len(tokens), lang),
+        )
+    )
+    _spawn(_run_manual(notice, lang, family, body), f"pool-manual-{family}")
+
+
+def _entry_line(entry: warpmanual.Entry, lang: str) -> str:
+    mark = VERDICT_MARKS.get(entry.verdict, "\u2022")
+    line = f"{mark} <code>{esc(entry.label)}</code> \u00b7 {t(lang, f'pool.manual_v_{entry.verdict}')}"
+    if entry.verdict in {"stored", "weak"}:
+        line += (
+            f" \u00b7 {ping_label(entry.latency, lang)} \u00b7 "
+            f"\u2764\ufe0f {num(entry.health, lang)}"
+        )
+    return line
+
+
+def _manual_text(report: warpmanual.ImportReport, lang: str) -> str:
+    """The whole outcome of one paste, line by line. Nothing summarised away."""
+    family = _family_label(report.family, lang)
+    if report.status == "empty":
+        return t(lang, "pool.manual_empty")
+    if report.status == "none":
+        return t(lang, "pool.manual_none", family=family)
+    if report.status == "identity":
+        return t(lang, "pool.manual_identity") + _note_line("identity", lang)
+
+    lines = [_entry_line(entry, lang) for entry in report.entries[:REPORT_LINES]]
+    if len(report.entries) > REPORT_LINES:
+        lines.append(
+            t(lang, "pool.manual_more", count=num(len(report.entries) - REPORT_LINES, lang))
+        )
+
+    text = t(
+        lang,
+        "pool.manual_done",
+        family=family,
+        operator=_operator_hint(report.family, lang),
+        given=num(len(report.entries), lang),
+        stored=num(report.stored, lang),
+        untested=num(report.untested, lang),
+        dead=num(report.dead, lang),
+        weak=num(report.weak, lang),
+        skipped=num(report.skipped, lang),
+        pinned=num(report.manual_healthy, lang),
+        total=num(report.manual, lang),
+        pool=num(report.pool, lang),
+        target=num(TUNE.pool_target, lang),
+        secs=num(max(1, round(report.elapsed)), lang),
+        list="\n".join(lines),
+    )
+    if not report.tested:
+        text += "\n" + t(lang, "pool.manual_untested_note", family=family)
+    return text
+
+
+async def _run_manual(notice: Message, lang: str, family: str, body: str) -> None:
+    """The background half of hand entry: real handshakes, then the verdicts."""
+    try:
+        report = await warpmanual.import_pool(family, body)
+        text = _manual_text(report, lang)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:  # noqa: BLE001
+        log.exception("manual endpoint import failed")
+        text = t(lang, "pool.manual_failed", reason=esc(str(error)[:180]))
+    counts = await warpmanual.both()
+    try:
+        await notice.edit_text(
+            text,
+            reply_markup=keyboards.pool_manual(
+                lang, counts[V4]["total"], counts[V6]["total"]
+            ),
+        )
+    except TelegramBadRequest as error:
+        log.info("could not update the manual import notice: %s", error)
+
+
+async def show_manual(event: CallbackQuery | Message, lang: str) -> None:
+    """Everything an admin has pinned, per family, with what it measured."""
+    counts = await warpmanual.both()
+    blocks: list[str] = []
+    for family in (V4, V6):
+        state = counts[family]
+        blocks.append(
+            t(
+                lang,
+                "pool.manual_family",
+                family=_family_label(family, lang),
+                operator=_operator_hint(family, lang),
+                healthy=num(state["healthy"], lang),
+                total=num(state["total"], lang),
+                untested=num(state["untested"], lang),
+            )
+        )
+        rows = await warpmanual.listing(family, limit=30)
+        if not rows:
+            blocks.append(t(lang, "pool.manual_family_empty"))
+            continue
+        for index, row in enumerate(rows, start=1):
+            blocks.append(f"{num(index, lang)}. {_row_line(row, lang)}")
+
+    await edit(
+        event,
+        t(lang, "pool.manual_screen", list="\n".join(blocks).strip()),
+        keyboards.pool_manual(lang, counts[V4]["total"], counts[V6]["total"]),
+    )
+
+
+@router.callback_query(F.data == "pool:manual")
+async def on_manual_home(
+    call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool
+) -> None:
+    if not _guard(is_admin):
+        await call.answer(t(lang, "admin.denied"), show_alert=True)
+        return
+    await state.clear()
+    await show_manual(call, lang)
+    await call.answer()
+
+
+@router.callback_query(F.data == "pool:manual:check")
+async def on_manual_check(
+    call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool
+) -> None:
+    """Re-probe only the pinned endpoints. Cheaper than the full audit, and the
+    question an admin staring at this screen is actually asking."""
+    if not _guard(is_admin):
+        await call.answer(t(lang, "admin.denied"), show_alert=True)
+        return
+    await state.clear()
+    await call.answer(t(lang, "btn.pool_manual_check"))
+    notice = await call.message.answer(t(lang, "pool.manual_check_started"))
+    _spawn(_run_manual_check(notice, lang), "pool-manual-check")
+
+
+async def _run_manual_check(notice: Message, lang: str) -> None:
+    outcome = await warpmanual.recheck()
+    counts = await warpmanual.both()
+    text = t(
+        lang,
+        "pool.manual_check_done",
+        checked=num(outcome["checked"], lang),
+        alive=num(outcome["alive"], lang),
+        dead=num(outcome["dead"], lang),
+        skipped=num(outcome["skipped"], lang),
+        v4=num(counts[V4]["healthy"], lang),
+        v4all=num(counts[V4]["total"], lang),
+        v6=num(counts[V6]["healthy"], lang),
+        v6all=num(counts[V6]["total"], lang),
+    )
+    try:
+        await notice.edit_text(
+            text,
+            reply_markup=keyboards.pool_manual(
+                lang, counts[V4]["total"], counts[V6]["total"]
+            ),
+        )
+    except TelegramBadRequest as error:
+        log.info("could not update the manual check notice: %s", error)
+
+
+@router.callback_query(F.data.startswith("pool:manual:ask:"))
+async def on_manual_clear_ask(call: CallbackQuery, lang: str, is_admin: bool) -> None:
+    """Deleting a whole family's pinned list asks first. It is not recoverable."""
+    if not _guard(is_admin):
+        await call.answer(t(lang, "admin.denied"), show_alert=True)
+        return
+    family = warpep.normalise_family((call.data or "").split(":")[-1])
+    counts = await warpstore.manual_counts(family)
+    await edit(
+        call,
+        t(
+            lang,
+            "pool.manual_clear_ask",
+            family=_family_label(family, lang),
+            count=num(counts["total"], lang),
+        ),
+        keyboards.pool_manual_confirm(lang, family),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("pool:manual:wipe:"))
+async def on_manual_clear(call: CallbackQuery, lang: str, is_admin: bool) -> None:
+    if not _guard(is_admin):
+        await call.answer(t(lang, "admin.denied"), show_alert=True)
+        return
+    family = warpep.normalise_family((call.data or "").split(":")[-1])
+    removed = await warpmanual.clear(family)
+    await call.answer(
+        t(
+            lang,
+            "pool.manual_cleared",
+            family=_family_label(family, lang),
+            count=num(removed, lang),
+        )
+    )
+    await show_manual(call, lang)
 
 
 # --------------------------------------------------------------------- #
@@ -432,14 +775,17 @@ async def _run_audit(notice: Message, lang: str) -> None:
 
 
 @router.callback_query(F.data == "pool:audit")
-async def on_pool_audit(call: CallbackQuery, lang: str, is_admin: bool) -> None:
+async def on_pool_audit(
+    call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool
+) -> None:
     """Is the pool actually healthy? This is the button that answers it."""
-    if not is_admin:
+    if not _guard(is_admin):
         await call.answer(t(lang, "admin.denied"), show_alert=True)
         return
     if not await db.get_flag("warp_enabled"):
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
+    await state.clear()
 
     await call.answer(t(lang, "btn.pool_audit"))
     notice = await call.message.answer(t(lang, "pool.audit_started"))
