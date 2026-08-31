@@ -19,9 +19,14 @@ One rule runs through all of it: nothing a user waits on may ever wait on a
 scan. A sweep already in flight is *joined* rather than refused, every outcome
 comes back as a distinct report instead of a bare zero, and if the pool is empty
 a scan is kicked off in the background while the caller immediately gets the
-long-lived defaults. That is what the old ``scan_once() -> 0`` could not express:
-busy, empty and broken all rendered as the same "a scan is already running"
-message.
+long-lived defaults.
+
+The address space itself lives in ``bot.warpep``, which is the bridge to the
+WarpEP scanner: same prefixes, same port ladder, same per-prefix sampling, and
+IPv6 as a first-class family rather than an afterthought. The probing primitives
+are exposed publicly (``measure``, ``fast_pass``, ``verify_rows``,
+``discover_ports_for``) so ``bot.warppool`` can build the per-family pools on top
+of this engine instead of standing up a second one beside it.
 
 The engine keeps its own throwaway WARP identity so nobody's personal account is
 burned on probing.
@@ -30,65 +35,40 @@ burned on probing.
 from __future__ import annotations
 
 import asyncio
-import ipaddress
 import json
 import logging
-import random
 import statistics
 import time
 from dataclasses import dataclass, replace
 from typing import Optional
 
-from . import db, warp, warpstore, wireguard
+from . import db, warp, warpep, warpstore, wireguard
 from .config import settings
+from .warpep import V4
 from .warptune import TUNE
 
 log = logging.getLogger("autovless.warpscan")
 
 IDENTITY_OPTION = "warp_scanner_identity"
 
-# Cloudflare WARP endpoint pools.
-PREFIXES_V4: tuple[str, ...] = (
-    "162.159.192.0/24",
-    "162.159.195.0/24",
-    "188.114.96.0/24",
-    "188.114.97.0/24",
-    "188.114.98.0/24",
-    "188.114.99.0/24",
-)
-PREFIXES_V6: tuple[str, ...] = (
-    "2606:4700:d0::/64",
-    "2606:4700:d1::/64",
-)
+# Cloudflare WARP endpoint pools, straight from the WarpEP bridge. Kept under the
+# old names because scripts and older imports reach for them.
+PREFIXES_V4: tuple[str, ...] = warpep.IPV4_PREFIXES
+PREFIXES_V6: tuple[str, ...] = warpep.IPV6_PREFIXES
 
 # Ports WARP listens on. The first few are the ones that usually survive.
-COMMON_PORTS: tuple[int, ...] = (2408, 500, 1701, 4500, 854, 894, 880, 943)
-ALL_PORTS: tuple[int, ...] = (
-    500, 854, 859, 864, 878, 880, 890, 891, 894, 903, 908, 928, 934, 939, 942,
-    943, 945, 946, 955, 968, 987, 988, 1002, 1010, 1014, 1018, 1070, 1074,
-    1180, 1387, 1701, 1843, 2371, 2408, 2506, 3138, 3476, 3581, 3854, 4177,
-    4198, 4233, 4500, 5279, 5956, 7103, 7152, 7156, 7281, 7559, 8319, 8742,
-    8854, 8886,
-)
-
-_NETWORKS_V4 = [ipaddress.ip_network(prefix) for prefix in PREFIXES_V4]
+COMMON_PORTS: tuple[int, ...] = warpep.PRIMARY_PORTS
+ALL_PORTS: tuple[int, ...] = warpep.ALL_PORTS
 
 
-def sample_addresses(per_prefix: int) -> list[str]:
-    """Random addresses spread evenly over the WARP pools."""
-    picked: list[str] = []
-    for network in _NETWORKS_V4:
-        size = network.num_addresses
-        offsets = random.sample(range(1, size - 1), min(max(1, per_prefix), size - 2))
-        picked.extend(str(network.network_address + offset) for offset in offsets)
-    random.shuffle(picked)
-    return picked
+def sample_addresses(per_prefix: int, family: str = V4) -> list[str]:
+    """Random addresses spread evenly over the WARP pools of one family."""
+    return warpep.candidates(family, per_prefix)
 
 
 def _subnet_of(ip: str) -> str:
-    """Group key used to spread a user's endpoints over different subnets."""
-    text = str(ip)
-    return text.rsplit(".", 1)[0] if "." in text else text.rsplit(":", 1)[0]
+    """Group key used to spread a user's endpoints over different blocks."""
+    return warpep.block_of(ip)
 
 
 @dataclass
@@ -130,6 +110,7 @@ class WarpScanner:
         self._identity: Optional[dict] = None
         self._finished_at: float = 0.0
         self.ports: tuple[int, ...] = tuple(settings.warp_ports) or COMMON_PORTS
+        self.family_ports: dict[str, tuple[int, ...]] = {}
         self.running: bool = False
         self.last_run: int = 0
         self.last_found: int = 0
@@ -307,21 +288,87 @@ class WarpScanner:
         return {
             "ip": host,
             "port": int(port),
+            "family": warpep.family_of(host),
             "latency": round(latency, 1),
             "jitter": round(jitter, 1),
             "loss": round(loss, 3),
             "score": warpstore.score_of(latency, jitter, loss),
+            "health": warpep.health(latency, jitter, loss),
             "stable": loss <= TUNE.loss_max,
         }
 
-    async def discover_ports(self, identity: dict, semaphore: asyncio.Semaphore) -> list[int]:
-        """Which WARP ports get out of this network. Cheap, and worth a lot."""
-        if settings.warp_ports:
-            return list(settings.warp_ports)
+    # -- public probing surface, used by bot.warppool -------------------- #
 
-        probes = sample_addresses(1)[:4] or ["162.159.192.1"]
-        probes = list(dict.fromkeys(probes + ["162.159.192.1"]))
-        for wave in (COMMON_PORTS, tuple(p for p in ALL_PORTS if p not in COMMON_PORTS)):
+    async def measure(
+        self,
+        host: str,
+        port: int,
+        probes: Optional[int] = None,
+        identity: Optional[dict] = None,
+    ) -> Optional[dict]:
+        """Measure one endpoint. ``None`` means it never answered."""
+        identity = identity or await self.identity()
+        if identity is None:
+            return None
+        return await self._measure(
+            str(host), int(port), identity, asyncio.Semaphore(2), probes=probes
+        )
+
+    async def fast_pass(
+        self,
+        addresses: list[str],
+        ports: list[int],
+        identity: Optional[dict] = None,
+        semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> dict[str, dict]:
+        """One handshake per address and port. Keeps the fastest port per address."""
+        identity = identity or await self.identity()
+        if identity is None:
+            return {}
+        semaphore = semaphore or asyncio.Semaphore(settings.warp_scan_concurrency)
+        return await self._fast_pass(list(addresses), list(ports), identity, semaphore)
+
+    async def verify_rows(
+        self,
+        shortlist: list[dict],
+        identity: Optional[dict] = None,
+    ) -> list[dict]:
+        """Second, spaced opinion on a shortlist, with jitter and loss."""
+        identity = identity or await self.identity()
+        if identity is None:
+            return []
+        return await self._verify_pass(shortlist, identity)
+
+    async def discover_ports_for(
+        self,
+        family: str,
+        identity: Optional[dict] = None,
+        semaphore: Optional[asyncio.Semaphore] = None,
+    ) -> list[int]:
+        """Which WARP ports get out of this network, for one address family.
+
+        Asked per family on purpose: an ISP that drops UDP 2408 over IPv4 quite
+        often leaves the same port alone over IPv6, and assuming otherwise is how
+        an IPv6 pool ends up empty for no reason.
+        """
+        code = warpep.normalise_family(family)
+        if settings.warp_ports:
+            ports = list(settings.warp_ports)
+            self.family_ports[code] = tuple(ports)
+            return ports
+
+        identity = identity or await self.identity()
+        if identity is None:
+            return list(COMMON_PORTS[:3])
+        semaphore = semaphore or asyncio.Semaphore(settings.warp_scan_concurrency)
+
+        probes = warpep.candidates(code, 2)[:4]
+        controls = [host for host, _ in warpep.CONTROL.get(code, ())][:2]
+        probes = list(dict.fromkeys(probes + controls)) or controls
+        for wave in (
+            COMMON_PORTS,
+            tuple(port for port in ALL_PORTS if port not in COMMON_PORTS),
+        ):
             pairs = [(host, port) for port in wave for host in probes]
             results = await asyncio.gather(
                 *(self._probe_once(host, port, identity, semaphore) for host, port in pairs),
@@ -337,10 +384,15 @@ class WarpScanner:
                     alive,
                     key=lambda port: COMMON_PORTS.index(port) if port in COMMON_PORTS else 99,
                 )
-                log.info("warp ports reachable: %s", ordered)
+                log.info("warp ports reachable over %s: %s", code, ordered)
+                self.family_ports[code] = tuple(ordered[:6])
                 return ordered[:6]
-        log.warning("no warp port answered, falling back to the common list")
+        log.warning("no warp port answered over %s, falling back to the common list", code)
         return list(COMMON_PORTS[:3])
+
+    async def discover_ports(self, identity: dict, semaphore: asyncio.Semaphore) -> list[int]:
+        """IPv4 port discovery, kept for the legacy sweep path."""
+        return await self.discover_ports_for(V4, identity, semaphore)
 
     async def _fast_pass(
         self,
@@ -361,7 +413,12 @@ class WarpScanner:
                 continue
             current = best.get(host)
             if current is None or float(rtt) < current["latency"]:
-                best[host] = {"ip": host, "port": int(port), "latency": float(rtt)}
+                best[host] = {
+                    "ip": host,
+                    "port": int(port),
+                    "family": warpep.family_of(host),
+                    "latency": float(rtt),
+                }
         return best
 
     async def _verify_pass(self, shortlist: list[dict], identity: dict) -> list[dict]:
@@ -414,6 +471,7 @@ class WarpScanner:
         quick: bool = False,
         force: bool = False,
         sample: Optional[int] = None,
+        family: str = V4,
     ) -> ScanReport:
         """Run a sweep, or join the one already running. Never raises.
 
@@ -449,7 +507,7 @@ class WarpScanner:
         future: asyncio.Future = loop.create_future()
         self._inflight = future
         try:
-            report = await self._sweep(quick=quick, sample=sample)
+            report = await self._sweep(quick=quick, sample=sample, family=family)
         except asyncio.CancelledError:
             if not future.done():
                 future.cancel()
@@ -466,8 +524,14 @@ class WarpScanner:
         self._inflight = None
         return report
 
-    async def _sweep(self, quick: bool = False, sample: Optional[int] = None) -> ScanReport:
+    async def _sweep(
+        self,
+        quick: bool = False,
+        sample: Optional[int] = None,
+        family: str = V4,
+    ) -> ScanReport:
         started = time.perf_counter()
+        code = warpep.normalise_family(family)
         async with self._lock:
             self.running = True
             try:
@@ -478,13 +542,13 @@ class WarpScanner:
                 await warpstore.ensure_schema()
                 semaphore = asyncio.Semaphore(settings.warp_scan_concurrency)
 
-                ports = await self.discover_ports(identity, semaphore)
+                ports = await self.discover_ports_for(code, identity, semaphore)
                 self.ports = tuple(ports)
 
                 per_prefix = sample or (
                     TUNE.quick_sample if quick else settings.warp_scan_sample
                 )
-                candidates = sample_addresses(per_prefix)
+                candidates = warpep.candidates(code, per_prefix)
                 answered = await self._fast_pass(candidates, list(ports[:3]), identity, semaphore)
 
                 shortlist = sorted(answered.values(), key=lambda row: row["latency"])
@@ -514,15 +578,16 @@ class WarpScanner:
                 await db.log_event(
                     "warp_scan",
                     detail=(
-                        f"mode={'quick' if quick else 'full'} alive={len(answered)} "
-                        f"verified={len(verified)} stored={len(stable)} "
+                        f"family={code} mode={'quick' if quick else 'full'} "
+                        f"alive={len(answered)} verified={len(verified)} stored={len(stable)} "
                         f"pool={pool['stable']}/{pool['total']} retired={retired} "
                         f"ports={','.join(str(p) for p in ports[:3])} "
                         f"elapsed={elapsed:.1f}s"
                     ),
                 )
                 log.info(
-                    "warp scan: %s answered, %s verified, %s stored, pool %s stable",
+                    "warp scan (%s): %s answered, %s verified, %s stored, pool %s stable",
+                    code,
                     len(answered),
                     len(verified),
                     len(stable),
@@ -593,9 +658,8 @@ class WarpScanner:
                 dropped += 1
                 fails = await warpstore.mark_fail(row["ip"], row["port"])
                 log.info(
-                    "warp watchdog: %s:%s went quiet (%s strikes)",
-                    row["ip"],
-                    row["port"],
+                    "warp watchdog: %s went quiet (%s strikes)",
+                    warpep.host_port(row["ip"], row["port"]),
                     fails,
                 )
                 continue
@@ -634,44 +698,37 @@ class WarpScanner:
             {
                 "ip": host,
                 "port": int(port),
+                "family": warpep.family_of(host),
                 "latency": 0.0,
                 "jitter": 0.0,
                 "loss": 0.0,
                 "score": 0.0,
+                "health": 0,
                 "stable": False,
             }
             for host, port in warp.FALLBACK_ENDPOINTS[: max(1, count)]
         ]
 
     async def _pool(self, count: int) -> list[dict]:
-        rows = await warpstore.best(count * 6, stable_only=True, max_loss=TUNE.loss_max)
+        # Pinned to IPv4 on purpose. This feeds the legacy export renderers in
+        # ``bot.warp``, which format an endpoint as ``host:port`` and would emit a
+        # broken line for an IPv6 literal. Anything that needs both families goes
+        # through ``bot.warppool`` and ``bot.warpconf`` instead.
+        rows = await warpstore.best(
+            count * 6, stable_only=True, max_loss=TUNE.loss_max, family=V4
+        )
         if len(rows) < count:
             seen = {(row["ip"], row["port"]) for row in rows}
             rows += [
                 row
-                for row in await warpstore.best(count * 6, stable_only=False)
+                for row in await warpstore.best(count * 6, stable_only=False, family=V4)
                 if (row["ip"], row["port"]) not in seen
             ]
         return rows
 
     def _spread(self, rows: list[dict], count: int) -> list[dict]:
-        """Spread the picks over subnets so one bad /24 cannot sink a user."""
-        spread: list[dict] = []
-        seen_subnets: set[str] = set()
-        for row in rows:
-            subnet = _subnet_of(row["ip"])
-            if subnet in seen_subnets:
-                continue
-            seen_subnets.add(subnet)
-            spread.append(row)
-            if len(spread) >= count:
-                break
-        for row in rows:  # top up if the spread was too strict
-            if len(spread) >= count:
-                break
-            if row not in spread:
-                spread.append(row)
-        return spread[:count]
+        """Spread the picks over blocks so one bad /24 cannot sink a user."""
+        return warpep.spread(rows, count)
 
     async def pick(self, count: Optional[int] = None) -> list[dict]:
         """Best endpoints for one config. Returns immediately, always.
@@ -709,7 +766,10 @@ class WarpScanner:
                     if str(row["ip"]) != str(head["ip"])
                 ]
                 return [dict(head, latency=latency)] + spares[: max(0, count - 1)]
-            log.info("warp failover: %s:%s is gone, switching", head.get("ip"), head.get("port"))
+            log.info(
+                "warp failover: %s is gone, switching",
+                warpep.host_port(head.get("ip", "?"), head.get("port", 0)),
+            )
         return await self.pick(count)
 
     def next_scan_in(self) -> int:
@@ -727,6 +787,7 @@ class WarpScanner:
             TUNE.watch_enabled and self._watch_task is not None and not self._watch_task.done()
         )
         data["next_scan"] = self.next_scan_in()
+        data["source"] = warpep.describe()
         return data
 
     async def snapshot(self, limit: Optional[int] = None) -> list[dict]:
