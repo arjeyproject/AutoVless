@@ -345,7 +345,7 @@ async def show_pool(event: CallbackQuery | Message, lang: str) -> None:
         deep=(
             t(lang, "admin.on")
             if status["deep"]
-            else (t(lang, "admin.on") if status["deep_possible"] else t(lang, "pool.deep_off"))
+            else (t(lang, "admin.off") if status["deep_possible"] else t(lang, "pool.deep_off"))
         ),
         floor=_out_of(status["floor"], lang),
         target=num(status["target"], lang),
