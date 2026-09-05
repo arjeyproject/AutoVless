@@ -1,44 +1,8 @@
-"""The operator picker, and the admin controls for the two endpoint pools.
+"""Device/operator selection and admin controls for the endpoint pools.
 
-Two audiences, one file, because they are two ends of the same pipe.
-
-**Users** press build and are asked one question: which operator. Irancell gets an
-IPv6 endpoint because that is the path MTN leaves alone; everyone else gets IPv4.
-Nothing is guessed from the phone number or the language, because a wrong guess
-here is a config that cannot connect and a user who blames the bot.
-
-**Admins** get a pool screen with four verbs. *Refresh* goes hunting for new
-endpoints in the background. *Full check* re-pings everything already stored,
-deletes the dead, re-sorts the survivors by ping and prints a straight verdict:
-healthy, short, or empty. *Add IPv4* and *Add IPv6* pin endpoints the admin
-already trusts into one pool each. Between presses the agent in ``bot.warppool``
-does the automatic half of that job on a timer, so the buttons exist to see its
-work and to force it, never to be the only thing that does it.
-
-Why hand entry earns its buttons
---------------------------------
-Cloudflare's IPv6 WARP prefixes are reachable from an Irancell handset and not
-from most Iranian VPS hosts, so the box that scans usually has no IPv6 route and
-the IPv6 pool - the one Irancell users are served from - can never fill by
-itself. The admin, meanwhile, has a list of IPv6 endpoints that work. Two
-buttons, one per family, never mixed: the family *is* the operator mapping, so it
-is a decision the admin makes explicitly and not one inferred from a paste.
-
-A pinned endpoint is not a privileged one. It goes through the same real
-handshake, the same WarpEP health floor and the same ``warp_pool.pick`` as a
-scanned one, so "only healthy endpoints reach users" still holds. What it does
-get is permanence: hygiene never trims it away, and if it dies it is sidelined
-and shown as dead rather than silently deleted.
-
-Every screen here also has to answer *why* when the answer is zero. A refresh
-that reports "48 addresses swept, 0 answered" is true and useless: the cause is
-either no route for that family on this host, a probing key Cloudflare does not
-answer, or genuine filtering, and those three need three completely different
-fixes. ``report.note`` carries the diagnosis and this module prints it.
-
-This router is registered ahead of ``handlers.warp`` so ``wg:net`` lands here.
-No handler in this module ever awaits a scan: every sweep runs as a background
-task and edits the message that started it.
+Device choice controls file syntax, not network reachability. Pool measurements
+are from the server, not proof of connectivity on the user's mobile network.
+This router is registered ahead of handlers.warp.
 """
 
 from __future__ import annotations
@@ -51,7 +15,9 @@ from aiogram import F, Router
 from aiogram.exceptions import TelegramBadRequest
 from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
-from aiogram.types import BufferedInputFile, CallbackQuery, Message
+from aiogram.types import (
+    BufferedInputFile, CallbackQuery, Message, InlineKeyboardButton, InlineKeyboardMarkup,
+)
 
 from .. import db, keyboards, operators, warpconf, warpep, warpmanual, warpstore
 from .. import warp as warpcore
@@ -65,15 +31,13 @@ from ..warptune import TUNE
 log = logging.getLogger("autovless.handlers.pool")
 router = Router(name="pool")
 
-# Which endpoint family each button hands out, and which operator profile it maps
-# to. This table is the whole product decision, so it lives in one visible place.
 CHOICES: dict[str, dict[str, str]] = {
     "mtn": {"family": V6, "operator": "mtn"},
     "other": {"family": V4, "operator": "other"},
 }
+PLATFORMS = ("android", "ios")
+WIREGUARD_IOS = "https://apps.apple.com/app/wireguard/id1441195209"
 
-# How each verdict on a pasted line is marked. The admin needs to see at a glance
-# which of their addresses made it and which did not.
 VERDICT_MARKS: dict[str, str] = {
     "stored": "\u2705",
     "untested": "\U0001f552",
@@ -84,12 +48,10 @@ VERDICT_MARKS: dict[str, str] = {
     "bad": "\u274c",
     "over": "\u26d4\ufe0f",
 }
-
-# Lines printed back after an import before the list is cut short.
 REPORT_LINES = 24
-
-# Live background jobs, held so the loop cannot collect them mid-sweep.
 _jobs: set[asyncio.Task] = set()
+# A second tap must not register another identity or race endpoint rotation.
+_building: set[int] = set()
 
 
 class PoolFlow(StatesGroup):
@@ -109,12 +71,12 @@ def _family_label(family: str, lang: str) -> str:
 
 
 def _operator_hint(family: str, lang: str) -> str:
-    """Which button on the user side this pool feeds. Named on every screen."""
     return t(lang, "btn.wg_irancell" if family == V6 else "btn.wg_other")
 
 
-def _app_link() -> str:
-    """AmneziaVPN, as a real tappable store link rather than a bare app name."""
+def _app_link(platform: str = "android") -> str:
+    if platform == "ios":
+        return f'<a href="{WIREGUARD_IOS}">WireGuard</a>'
     return f'<a href="{keyboards.AMNEZIA_PLAY_URL}">AmneziaVPN</a>'
 
 
@@ -127,7 +89,6 @@ def _out_of(value: object, lang: str) -> str:
 
 
 def _note_line(note: str, lang: str) -> str:
-    """The one line that turns a zero into something an operator can act on."""
     if not note:
         return ""
     return "\n" + t(lang, f"pool.note_{note}")
@@ -156,54 +117,123 @@ def _guard(is_admin: bool) -> bool:
     return bool(is_admin)
 
 
-# --------------------------------------------------------------------- #
-# user flow: pick an operator, get a config
-# --------------------------------------------------------------------- #
+def _next_endpoints(endpoints: list[dict], current: list[dict]) -> list[dict]:
+    """Rotate relative to the last delivered (IP, port), not a fixed pool slot."""
+    if len(endpoints) < 2 or not current:
+        return endpoints
+    key = (str(current[0]["ip"]), int(current[0]["port"]))
+    for index, row in enumerate(endpoints):
+        if (str(row["ip"]), int(row["port"])) == key:
+            start = (index + 1) % len(endpoints)
+            return endpoints[start:] + endpoints[:start]
+    return endpoints
+
+
+def _device_menu(lang: str) -> InlineKeyboardMarkup:
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=t(lang, f"btn.apps_{platform}"),
+                              callback_data=f"wg:device:{platform}")
+         for platform in PLATFORMS],
+        keyboards.back_row(lang, "nav:warp"),
+    ])
+
+
+def _network_menu(lang: str, platform: str) -> InlineKeyboardMarkup:
+    menu = keyboards.warp_network(lang)
+    for row in menu.inline_keyboard:
+        for button in row:
+            if button.callback_data in ("wg:net:mtn", "wg:net:other"):
+                button.callback_data += f":{platform}"
+            elif button.callback_data == "nav:warp":
+                button.callback_data = "wg:net"
+    return menu
+
+
+def _delivered_menu(lang: str, family: str, platform: str) -> InlineKeyboardMarkup:
+    menu = keyboards.warp_delivered(lang, family)
+    for row in menu.inline_keyboard:
+        for button in row:
+            if button.callback_data == f"wg:net:next:{family}":
+                button.callback_data += f":{platform}"
+            if platform == "ios" and button.url == keyboards.AMNEZIA_PLAY_URL:
+                button.text, button.url = "WireGuard (iPhone)", WIREGUARD_IOS
+    other = V4 if family == V6 else V6
+    choice = "other" if other == V4 else "mtn"
+    text = f"Try IPv{other[-1]}" if lang == "en" else f"امتحان IPv{other[-1]}"
+    menu.inline_keyboard.insert(1, [
+        InlineKeyboardButton(text=text, callback_data=f"wg:net:{choice}:{platform}"),
+    ])
+    return menu
 
 
 @router.callback_query(F.data == "wg:net")
 async def on_pick_network(call: CallbackQuery, lang: str) -> None:
-    """The two glass buttons. Shows how full each pool is, so nobody flies blind."""
+    """Build starts with an explicit device choice, including for existing users."""
     if not await db.get_flag("warp_enabled"):
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
+    prompt = ("Choose your device:" if lang == "en"
+              else "کانفیگ را برای کدام دستگاه می‌خواهی؟")
+    await edit(call, prompt, _device_menu(lang))
+    await call.answer()
 
+
+@router.callback_query(F.data.startswith("wg:device:"))
+async def on_device_chosen(call: CallbackQuery, lang: str) -> None:
+    if not await db.get_flag("warp_enabled"):
+        await call.answer(t(lang, "warp.off"), show_alert=True)
+        return
+    platform = (call.data or "").split(":")[-1]
+    if platform not in PLATFORMS:
+        await on_pick_network(call, lang)
+        return
     v4 = await warpstore.counts(V4)
     v6 = await warpstore.counts(V6)
     await edit(
         call,
-        t(
-            lang,
-            "wg.pick_net",
-            v4=num(v4["healthy"], lang),
-            v6=num(v6["healthy"], lang),
-            target=num(TUNE.pool_target, lang),
-        ),
-        keyboards.warp_network(lang),
+        t(lang, "wg.pick_net", v4=num(v4["healthy"], lang),
+          v6=num(v6["healthy"], lang), target=num(TUNE.pool_target, lang)),
+        _network_menu(lang, platform),
     )
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("wg:net:"))
 async def on_network_chosen(call: CallbackQuery, lang: str) -> None:
-    """Build and deliver a config on an endpoint of the right family."""
     if not await db.get_flag("warp_enabled"):
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
-
     tail = (call.data or "").split(":")[2:]
     rotate = bool(tail and tail[0] == "next")
+    expected = 3 if rotate else 2
+    # Old keyboards have no device information. Never silently assume Android.
+    if len(tail) != expected or tail[-1] not in PLATFORMS:
+        await on_pick_network(call, lang)
+        return
+    platform = tail[-1]
     if rotate:
-        family = warpep.normalise_family(tail[1] if len(tail) > 1 else V4)
+        family = tail[1]
+        if family not in (V4, V6):
+            await on_pick_network(call, lang)
+            return
         operator = "mtn" if family == V6 else "other"
     else:
-        choice = CHOICES.get(tail[0] if tail else "other", CHOICES["other"])
-        family = choice["family"]
-        operator = choice["operator"]
-
-    await call.answer()
-    notice = await call.message.answer(t(lang, "wg.making", family=_family_label(family, lang)))
-    await _deliver(call, notice, lang, family, operator, rotate)
+        choice = CHOICES.get(tail[0])
+        if choice is None:
+            await on_pick_network(call, lang)
+            return
+        family, operator = choice["family"], choice["operator"]
+    user_id = call.from_user.id
+    if user_id in _building:
+        await call.answer(t(lang, "warp.building"))
+        return
+    _building.add(user_id)
+    try:
+        await call.answer()
+        notice = await call.message.answer(t(lang, "wg.making", family=_family_label(family, lang)))
+        await _deliver(call, notice, lang, family, operator, rotate, platform)
+    finally:
+        _building.discard(user_id)
 
 
 async def _deliver(
@@ -213,10 +243,27 @@ async def _deliver(
     family: str,
     operator: str,
     rotate: bool,
+    platform: str = "android",
 ) -> None:
-    """Identity, endpoints, config, instructions. In that order, or not at all."""
+    if platform not in PLATFORMS:
+        raise ValueError("unsupported device")
     record = await db.get_warp_user(call.from_user.id)
-    identity = (record or {}).get("identity")
+    endpoints = await warp_pool.pick(family, count=settings.warp_per_config)
+    if rotate:
+        endpoints = _next_endpoints(endpoints, (record or {}).get("endpoints") or [])
+    if not endpoints:
+        # Check the pool before registering: repeated taps on an empty pool used
+        # to create unused WARP devices and consume registration quota.
+        text = (
+            "No endpoint is available in this pool. Try the other IP family; "
+            "server tests do not establish reachability on your phone."
+            if lang == "en" else
+            "این مخزن فعلاً آدرس آماده ندارد. خانواده IP دیگر را امتحان کن؛ "
+            "تست سرور به معنی اتصال قطعی روی گوشی تو نیست."
+        )
+        await notice.edit_text(text, reply_markup=_network_menu(lang, platform))
+        return
+    identity = dict((record or {}).get("identity") or {})
     if not identity:
         try:
             identity = await warpcore.provision()
@@ -224,58 +271,55 @@ async def _deliver(
             log.warning("warp provisioning failed: %s", error)
             await notice.edit_text(t(lang, "wg.identity_failed", reason=esc(error)))
             return
-
-    endpoints = await warp_pool.pick(family, count=settings.warp_per_config)
-    if rotate and len(endpoints) > 1:
-        # "Next endpoint" has to mean the one after the address that just failed
-        # them, not a reshuffle that can hand back the same one.
-        endpoints = endpoints[1:] + endpoints[:1]
-
-    if not endpoints:
-        # ``pick`` has already kicked off a refresh. Say so plainly rather than
-        # shipping a config built on an address nobody has tested. If the host has
-        # no route for that family at all, say *that* instead: no amount of
-        # waiting is going to fix it, but an admin pinning known good endpoints
-        # by hand will.
-        key = "wg.pool_no_route" if not warpep.reachable(family) else "wg.pool_cold"
-        await notice.edit_text(
-            t(lang, key, family=_family_label(family, lang)),
-            reply_markup=keyboards.warp_network(lang),
-        )
-        return
-
-    await db.save_warp_user(call.from_user.id, identity, endpoints)
-    await db.log_event("warp_build", call.from_user.id, f"{operator}/{family}")
-
+    # Extra metadata is preserved in the existing encrypted identity JSON.
+    identity["platform"] = platform
+    mtu = 1280 if platform == "ios" else max(1280, min(1420, settings.warp_mtu))
     profile = warpcore.obfuscation(identity.get("private_key", ""))
-    body = warpconf.amnezia_conf(identity, endpoints, profile)
-    head = endpoints[0]
-
-    # The file first, then the instructions. A Telegram caption caps out around a
-    # thousand characters and the how-to does not fit inside one.
+    if platform == "ios":
+        body = warpconf.wireguard_conf(identity, endpoints, mtu=mtu)
+        kind = "wg"
+    else:
+        body = warpconf.amnezia_conf(identity, endpoints, profile, mtu=mtu)
+        kind = "awg"
+    # Short, ASCII tunnel names work with strict WireGuard importers too.
+    filename = f"av-{family}-{kind}.conf"
+    await db.save_warp_user(call.from_user.id, identity, endpoints)
+    await db.log_event("warp_build", call.from_user.id, f"{operator}/{family}/{platform}")
     await call.message.answer_document(
-        BufferedInputFile(body.encode("utf-8"), filename=warpconf.filename(family, "awg")),
-        caption=t(lang, "wg.caption", family=_family_label(family, lang)),
+        BufferedInputFile(body.encode("utf-8"), filename=filename),
+        caption=f"{'WireGuard' if platform == 'ios' else 'AmneziaWG'} / IPv{family[-1]}",
+    )
+    head = endpoints[0]
+    if platform == "ios":
+        text = (
+            f"Import the .conf file in {_app_link(platform)} using "
+            "'Create from file or archive'. This is standard WireGuard, not AmneziaWG."
+            if lang == "en" else
+            f"فایل .conf را در {_app_link(platform)} با گزینه "
+            "«Create from file or archive» وارد کن. این فایل WireGuard استاندارد است، نه AmneziaWG."
+        )
+    else:
+        text = t(
+            lang, "wg.sent",
+            operator=esc(operators.label(operator, lang) or operator),
+            family=_family_label(family, lang), endpoint=esc(warpconf.label(endpoints)),
+            ping=ping_label(head.get("latency"), lang),
+            health=_out_of(head.get("health"), lang),
+            spares=num(max(0, len(endpoints) - 1), lang),
+            jc=num(profile["jc"], lang), jmin=num(profile["jmin"], lang),
+            jmax=num(profile["jmax"], lang), mtu=num(mtu, lang), app=_app_link(platform),
+        )
+    text += (
+        "\nConnectivity still depends on your network. IPv6 needs an IPv6 route on "
+        "the phone; if UDP is blocked, changing the file format cannot unblock it. "
+        "Try another endpoint or IP family. Importing a file is not a traffic test."
+        if lang == "en" else
+        "\nاتصال به شبکه تو بستگی دارد. IPv6 به مسیر IPv6 روی گوشی نیاز دارد؛ "
+        "اگر UDP مسدود باشد تغییر فرمت فایل آن را باز نمی‌کند. آدرس بعدی یا "
+        "خانواده IP دیگر را امتحان کن. وارد شدن فایل به معنی عبور ترافیک نیست."
     )
     try:
-        await notice.edit_text(
-            t(
-                lang,
-                "wg.sent",
-                operator=esc(operators.label(operator, lang) or operator),
-                family=_family_label(family, lang),
-                endpoint=esc(warpconf.label(endpoints)),
-                ping=ping_label(head.get("latency"), lang),
-                health=_out_of(head.get("health"), lang),
-                spares=num(max(0, len(endpoints) - 1), lang),
-                jc=num(profile["jc"], lang),
-                jmin=num(profile["jmin"], lang),
-                jmax=num(profile["jmax"], lang),
-                mtu=num(settings.warp_mtu, lang),
-                app=_app_link(),
-            ),
-            reply_markup=keyboards.warp_delivered(lang, family),
-        )
+        await notice.edit_text(text, reply_markup=_delivered_menu(lang, family, platform))
     except TelegramBadRequest as error:
         log.info("could not update the delivery notice: %s", error)
 
@@ -301,7 +345,7 @@ async def show_pool(event: CallbackQuery | Message, lang: str) -> None:
         deep=(
             t(lang, "admin.on")
             if status["deep"]
-            else (t(lang, "admin.off") if status["deep_possible"] else t(lang, "pool.deep_off"))
+            else (t(lang, "admin.on") if status["deep_possible"] else t(lang, "pool.deep_off"))
         ),
         floor=_out_of(status["floor"], lang),
         target=num(status["target"], lang),
@@ -317,10 +361,6 @@ async def show_pool(event: CallbackQuery | Message, lang: str) -> None:
         v6ep=esc(v6["best_endpoint"] or "-"),
         updated=ago(max(v4["updated_at"], v6["updated_at"]), lang),
     )
-    # The hand entered endpoints get their own line rather than more placeholders
-    # inside ``pool.screen``: they are a different kind of thing from a scan
-    # result and the admin needs to see at a glance how much of each pool is
-    # theirs.
     manual = await warpmanual.both()
     text += "\n" + t(
         lang,
@@ -376,11 +416,7 @@ async def on_pool_list(call: CallbackQuery, state: FSMContext, lang: str, is_adm
 
 
 def _row_line(row: dict, lang: str) -> str:
-    """One stored endpoint, with everything that was actually proven about it.
-
-    The hand icon matters: an admin looking at a thin pool needs to know which
-    rows the scanner found and which ones they pinned themselves.
-    """
+    """One stored endpoint, with everything that was actually proven about it."""
     flag = int(row.get("verified", -1) or -1)
     verified = True if flag == 1 else (False if flag == 0 else None)
     points = int(row.get("health") or 0)
@@ -432,7 +468,6 @@ def _refresh_text(report: RefreshReport, lang: str) -> str:
 
 
 async def _run_refresh(notice: Message, lang: str, family: Optional[str]) -> None:
-    """The background half of the refresh button."""
     families = (V4, V6) if family is None else (family,)
     parts: list[str] = []
     for code in families:
@@ -448,7 +483,6 @@ async def _run_refresh(notice: Message, lang: str, family: Optional[str]) -> Non
 async def on_pool_refresh(
     call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool
 ) -> None:
-    """Answers instantly. The sweep runs beside this handler and reports back."""
     if not _guard(is_admin):
         await call.answer(t(lang, "admin.denied"), show_alert=True)
         return
@@ -456,10 +490,8 @@ async def on_pool_refresh(
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
     await state.clear()
-
     tail = (call.data or "").split(":")[2:]
     family = warpep.normalise_family(tail[0]) if tail else None
-
     await call.answer(t(lang, "btn.pool_refresh"))
     notice = await call.message.answer(t(lang, "pool.refresh_started"))
     _spawn(_run_refresh(notice, lang, family), f"pool-refresh-{family or 'all'}")
@@ -474,18 +506,14 @@ async def on_pool_refresh(
 async def on_manual_ask(
     call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool
 ) -> None:
-    """Ask for a pasted list for exactly one family."""
     if not _guard(is_admin):
         await call.answer(t(lang, "admin.denied"), show_alert=True)
         return
-
     tail = (call.data or "").split(":")[2:]
     family = warpep.normalise_family(tail[0] if tail else V4)
     counts = await warpstore.manual_counts(family)
-
     await state.set_state(PoolFlow.manual)
     await state.update_data(family=family)
-
     text = t(
         lang,
         "pool.manual_prompt",
@@ -498,8 +526,6 @@ async def on_manual_ask(
         total=num(counts["total"], lang),
     )
     if not warpep.reachable(family):
-        # The single most important sentence on this screen when it applies: the
-        # host cannot test this family, so whatever is pasted is taken on trust.
         text += "\n" + t(lang, "pool.manual_no_route", family=_family_label(family, lang))
     await edit(call, text, keyboards.pool_manual_cancel(lang))
     await call.answer()
@@ -509,10 +535,8 @@ async def on_manual_ask(
 async def on_manual_text(
     message: Message, state: FSMContext, lang: str, is_admin: bool
 ) -> None:
-    """Take the paste, answer immediately, prove the endpoints in the background."""
     if not _guard(is_admin):
         return
-
     data = await state.get_data()
     family = warpep.normalise_family(data.get("family") or V4)
     body = message.text or ""
@@ -522,7 +546,6 @@ async def on_manual_text(
             t(lang, "pool.manual_empty"), reply_markup=keyboards.pool_manual_cancel(lang)
         )
         return
-
     await state.clear()
     notice = await message.answer(
         t(
@@ -547,7 +570,6 @@ def _entry_line(entry: warpmanual.Entry, lang: str) -> str:
 
 
 def _manual_text(report: warpmanual.ImportReport, lang: str) -> str:
-    """The whole outcome of one paste, line by line. Nothing summarised away."""
     family = _family_label(report.family, lang)
     if report.status == "empty":
         return t(lang, "pool.manual_empty")
@@ -555,13 +577,11 @@ def _manual_text(report: warpmanual.ImportReport, lang: str) -> str:
         return t(lang, "pool.manual_none", family=family)
     if report.status == "identity":
         return t(lang, "pool.manual_identity") + _note_line("identity", lang)
-
     lines = [_entry_line(entry, lang) for entry in report.entries[:REPORT_LINES]]
     if len(report.entries) > REPORT_LINES:
         lines.append(
             t(lang, "pool.manual_more", count=num(len(report.entries) - REPORT_LINES, lang))
         )
-
     text = t(
         lang,
         "pool.manual_done",
@@ -586,13 +606,12 @@ def _manual_text(report: warpmanual.ImportReport, lang: str) -> str:
 
 
 async def _run_manual(notice: Message, lang: str, family: str, body: str) -> None:
-    """The background half of hand entry: real handshakes, then the verdicts."""
     try:
         report = await warpmanual.import_pool(family, body)
         text = _manual_text(report, lang)
     except asyncio.CancelledError:
         raise
-    except Exception as error:  # noqa: BLE001
+    except Exception as error:
         log.exception("manual endpoint import failed")
         text = t(lang, "pool.manual_failed", reason=esc(str(error)[:180]))
     counts = await warpmanual.both()
@@ -608,7 +627,6 @@ async def _run_manual(notice: Message, lang: str, family: str, body: str) -> Non
 
 
 async def show_manual(event: CallbackQuery | Message, lang: str) -> None:
-    """Everything an admin has pinned, per family, with what it measured."""
     counts = await warpmanual.both()
     blocks: list[str] = []
     for family in (V4, V6):
@@ -630,7 +648,6 @@ async def show_manual(event: CallbackQuery | Message, lang: str) -> None:
             continue
         for index, row in enumerate(rows, start=1):
             blocks.append(f"{num(index, lang)}. {_row_line(row, lang)}")
-
     await edit(
         event,
         t(lang, "pool.manual_screen", list="\n".join(blocks).strip()),
@@ -654,8 +671,6 @@ async def on_manual_home(
 async def on_manual_check(
     call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool
 ) -> None:
-    """Re-probe only the pinned endpoints. Cheaper than the full audit, and the
-    question an admin staring at this screen is actually asking."""
     if not _guard(is_admin):
         await call.answer(t(lang, "admin.denied"), show_alert=True)
         return
@@ -693,7 +708,6 @@ async def _run_manual_check(notice: Message, lang: str) -> None:
 
 @router.callback_query(F.data.startswith("pool:manual:ask:"))
 async def on_manual_clear_ask(call: CallbackQuery, lang: str, is_admin: bool) -> None:
-    """Deleting a whole family's pinned list asks first. It is not recoverable."""
     if not _guard(is_admin):
         await call.answer(t(lang, "admin.denied"), show_alert=True)
         return
@@ -744,7 +758,6 @@ def _audit_text(report: AuditReport, lang: str) -> str:
         return t(
             lang, "pool.audit_failed", reason=esc(report.reason or "-")
         ) + _note_line(report.note, lang)
-
     v4 = report.families.get(V4, {})
     v6 = report.families.get(V6, {})
     return t(
@@ -755,7 +768,7 @@ def _audit_text(report: AuditReport, lang: str) -> str:
         alive=num(report.alive, lang),
         dead=num(report.dead, lang),
         removed=num(report.removed, lang),
-        target=num(TUNE.pool_target, lang),
+        target=num(report.target, lang),
         v4=num(v4.get("healthy", 0), lang),
         v4mark=_mark(bool(v4.get("full"))),
         v4best=ping_label(v4.get("best"), lang),
@@ -778,7 +791,6 @@ async def _run_audit(notice: Message, lang: str) -> None:
 async def on_pool_audit(
     call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool
 ) -> None:
-    """Is the pool actually healthy? This is the button that answers it."""
     if not _guard(is_admin):
         await call.answer(t(lang, "admin.denied"), show_alert=True)
         return
@@ -786,7 +798,6 @@ async def on_pool_audit(
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
     await state.clear()
-
-    await call.answer(t(lang, "btn.pool_audit"))
+    await call.answer(t(lang, "pool.audit_started"))
     notice = await call.message.answer(t(lang, "pool.audit_started"))
     _spawn(_run_audit(notice, lang), "pool-audit")
