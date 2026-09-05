@@ -441,12 +441,18 @@ async def panels_due(limit: int, max_age: int) -> list[dict]:
 
     Only panels with a stored token can be refreshed silently, and the oldest
     sync goes first so a large user base rotates evenly.
+    
+    Panels marked healthy=0 (failed) are only retried once per HEALTHY_COOLDOWN
+    seconds to avoid infinite redeploy loops when endpoints are temporarily unreachable.
     """
     cutoff = now() - max(60, max_age)
+    # Don't retry failed panels more than once per 5 minutes
+    healthy_cooldown = now() - 300  
     rows = await fetch_all(
         "SELECT * FROM panels WHERE token_enc IS NOT NULL "
-        "AND (synced_at <= ? OR healthy = 0) ORDER BY synced_at ASC LIMIT ?",
-        (cutoff, limit),
+        "AND (synced_at <= ? OR (healthy = 0 AND updated_at <= ?)) "
+        "ORDER BY synced_at ASC LIMIT ?",
+        (cutoff, healthy_cooldown, limit),
     )
     return [_panel_row(row) for row in rows]
 
