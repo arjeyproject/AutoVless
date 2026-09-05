@@ -2,7 +2,9 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
+import random
 import secrets
 from typing import Any, Optional
 
@@ -28,11 +30,30 @@ class CloudflareError(Exception):
         self.status = status
 
 
+class RateLimitError(CloudflareError):
+    """Raised when hitting Cloudflare rate limits."""
+
+    def __init__(self, retry_after: Optional[float] = None) -> None:
+        super().__init__("rate limit exceeded", status=429)
+        self.retry_after = retry_after or 1.0
+
+
+def _exponential_backoff(attempt: int, max_jitter: float = 0.1) -> float:
+    """Exponential backoff with jitter: 2^attempt + random(0, max_jitter)."""
+    base = min(2 ** attempt, 32)  # Cap at 32s
+    jitter = random.uniform(0, max_jitter)
+    return base + jitter
+
+
 class CloudflareClient:
     def __init__(self, token: str, timeout: Optional[float] = None) -> None:
         self.token = token.strip()
         self._timeout = timeout or settings.request_timeout
         self._client: Optional[httpx.AsyncClient] = None
+        # Circuit breaker: if too many failures in a row, fail fast
+        self._consecutive_failures = 0
+        self._max_consecutive_failures = 5
+        self._circuit_open_until = 0.0
 
     async def __aenter__(self) -> "CloudflareClient":
         self._client = httpx.AsyncClient(
@@ -53,27 +74,68 @@ class CloudflareClient:
     # ------------------------------------------------------------------ #
 
     async def _call(self, method: str, path: str, **kwargs: Any) -> Any:
+        """Make a Cloudflare API call with automatic backoff and rate limit handling."""
         if self._client is None:
             raise CloudflareError("client is not open")
-        try:
-            response = await self._client.request(method, f"{API}{path}", **kwargs)
-        except httpx.TimeoutException as exc:
-            raise CloudflareError("cloudflare timed out") from exc
-        except httpx.HTTPError as exc:
-            raise CloudflareError(f"network error: {exc}") from exc
 
-        try:
-            payload = response.json()
-        except ValueError:
-            raise CloudflareError(f"unexpected response ({response.status_code})", status=response.status_code)
+        import time
 
-        if isinstance(payload, dict) and payload.get("success"):
-            return payload.get("result")
+        # Circuit breaker: if open, fail immediately
+        now = time.time()
+        if now < self._circuit_open_until:
+            raise CloudflareError(
+                f"circuit breaker open (will retry in {int(self._circuit_open_until - now)}s)"
+            )
 
-        errors = payload.get("errors") or [] if isinstance(payload, dict) else []
-        first = errors[0] if errors else {}
-        message = first.get("message") or f"cloudflare returned {response.status_code}"
-        raise CloudflareError(message, code=first.get("code"), status=response.status_code)
+        max_retries = 3
+        for attempt in range(max_retries):
+            try:
+                response = await self._client.request(method, f"{API}{path}", **kwargs)
+            except httpx.TimeoutException as exc:
+                raise CloudflareError("cloudflare timed out") from exc
+            except httpx.HTTPError as exc:
+                raise CloudflareError(f"network error: {exc}") from exc
+
+            try:
+                payload = response.json()
+            except ValueError:
+                raise CloudflareError(f"unexpected response ({response.status_code})", status=response.status_code)
+
+            if isinstance(payload, dict) and payload.get("success"):
+                self._consecutive_failures = 0
+                return payload.get("result")
+
+            # Handle rate limit (429) with backoff
+            if response.status_code == 429:
+                retry_after = float(response.headers.get("Retry-After", "1"))
+                if attempt < max_retries - 1:
+                    wait = max(retry_after, _exponential_backoff(attempt))
+                    await asyncio.sleep(wait)
+                    continue
+                # Final retry failed, raise rate limit error
+                raise RateLimitError(retry_after)
+
+            # Handle 5xx errors with backoff
+            if 500 <= response.status_code < 600:
+                if attempt < max_retries - 1:
+                    wait = _exponential_backoff(attempt)
+                    await asyncio.sleep(wait)
+                    continue
+
+            # Non-retryable error or final attempt
+            errors = payload.get("errors") or [] if isinstance(payload, dict) else []
+            first = errors[0] if errors else {}
+            message = first.get("message") or f"cloudflare returned {response.status_code}"
+            self._consecutive_failures += 1
+
+            # Open circuit if too many consecutive failures
+            if self._consecutive_failures >= self._max_consecutive_failures:
+                self._circuit_open_until = time.time() + 60  # Open for 60s
+                raise CloudflareError(f"circuit breaker activated: {message}")
+
+            raise CloudflareError(message, code=first.get("code"), status=response.status_code)
+
+        raise CloudflareError("max retries exceeded")
 
     # ------------------------------------------------------------------ #
     # identity

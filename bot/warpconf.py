@@ -71,6 +71,24 @@ def filename(family: str, kind: str) -> str:
     return _name(family, {"awg": ".conf", "awg2": "-v2.conf", "plain": "-wg.conf"}.get(kind, ".conf"))
 
 
+def _allowed_ips(identity: dict) -> str:
+    """Build AllowedIPs based on what address families the identity actually has.
+    
+    Only include IPv6 routes if the identity has an IPv6 address, and only IPv4
+    if it has IPv4. This fixes clients like iPhone WireGuard that reject configs
+    with AllowedIPs that reference unreachable address families.
+    """
+    allowed = []
+    if identity.get("v4"):
+        allowed.append("0.0.0.0/0")
+    if identity.get("v6"):
+        allowed.append("::/0")
+    # Fallback: if somehow neither is set, include both (shouldn't happen)
+    if not allowed:
+        return "0.0.0.0/0, ::/0"
+    return ", ".join(allowed)
+
+
 # --------------------------------------------------------------------- #
 # formats
 # --------------------------------------------------------------------- #
@@ -94,7 +112,7 @@ def wireguard_conf(
             "",
             "[Peer]",
             f"PublicKey = {identity['peer_public_key']}",
-            "AllowedIPs = 0.0.0.0/0, ::/0",
+            f"AllowedIPs = {_allowed_ips(identity)}",
             f"Endpoint = {warpep.host_port(host, port)}",
             "PersistentKeepalive = 25",
             "",
@@ -141,7 +159,7 @@ def amnezia_conf(
         "",
         "[Peer]",
         f"PublicKey = {identity['peer_public_key']}",
-        "AllowedIPs = 0.0.0.0/0, ::/0",
+        f"AllowedIPs = {_allowed_ips(identity)}",
         f"Endpoint = {warpep.host_port(host, port)}",
         "PersistentKeepalive = 25",
         "",
