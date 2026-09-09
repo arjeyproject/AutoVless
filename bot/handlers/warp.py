@@ -28,6 +28,8 @@ from .. import db, keyboards, warpstore
 from .. import warp as warpcore
 from ..config import settings
 from ..i18n import num, t
+from ..platforms import get_platform, should_include_amnezia_keys
+from ..warpconf import bracket_ipv6_endpoint, render_amneziawg_warp_config
 from ..utils import ago, chunked, edit, esc, ping_label
 from ..warpscan import ScanReport, warp_scanner
 from ..warptune import TUNE
@@ -44,6 +46,7 @@ _scan_jobs: set[asyncio.Task] = set()
 
 class WarpFlow(StatesGroup):
     license = State()
+    platform = State()
 
 
 # --------------------------------------------------------------- helpers
@@ -133,7 +136,6 @@ async def on_build(call: CallbackQuery, lang: str) -> None:
         await notice.edit_text(t(lang, "warp.failed", reason=esc(error)))
         return
 
-    # Reads the pool only: a build is never held up by a running scan.
     endpoints = await warp_scanner.pick()
     await db.save_warp_user(call.from_user.id, identity, endpoints)
     await db.log_event("warp_build", call.from_user.id, identity.get("account_type", "free"))
@@ -153,7 +155,7 @@ async def on_build(call: CallbackQuery, lang: str) -> None:
             jmax=num(profile["jmax"], lang),
             mtu=num(settings.warp_mtu, lang),
         ),
-        reply_markup=keyboards.warp_exports(lang),
+        reply_markup=keyboards.warp_menu(lang),
     )
     if not any(row.get("stable") for row in endpoints):
         await call.message.answer(t(lang, "warp.no_endpoint"))
@@ -168,7 +170,6 @@ async def on_rebuild(call: CallbackQuery, lang: str) -> None:
 
     await call.answer()
     current = record.get("endpoints") or []
-    # Keeps a working endpoint at the front and only replaces the spares.
     endpoints = await warp_scanner.failover(current)
     await db.update_warp_endpoints(call.from_user.id, endpoints)
 
@@ -183,48 +184,73 @@ async def on_rebuild(call: CallbackQuery, lang: str) -> None:
             endpoint=esc(warpcore.endpoint_label(endpoints)),
             ping=ping_label(best, lang),
         ),
-        reply_markup=keyboards.warp_exports(lang),
+        reply_markup=keyboards.warp_menu(lang),
     )
 
 
-# --------------------------------------------------------------- exports
+# ------------------------------------------------ export: device picker first
 
 
 @router.callback_query(F.data.startswith("wg:file:"))
-async def on_file(call: CallbackQuery, lang: str) -> None:
+async def on_file(call: CallbackQuery, state: FSMContext, lang: str) -> None:
+    """Intercept file export: ask for platform first."""
     record = await db.get_warp_user(call.from_user.id)
     if record is None:
         await call.answer(t(lang, "warp.none"), show_alert=True)
         return
 
     kind = (call.data or "").rsplit(":", 1)[-1]
+    await state.update_data(export_kind=kind)
+    await state.set_state(WarpFlow.platform)
+
+    await edit(
+        call,
+        t(lang, "warp.select_platform"),
+        keyboards.platform_picker(lang),
+    )
+    await call.answer()
+
+
+@router.callback_query(F.data.startswith("wg:platform:"), WarpFlow.platform)
+async def on_platform_picked(call: CallbackQuery, state: FSMContext, lang: str) -> None:
+    """User picked a platform, now render and deliver."""
+    record = await db.get_warp_user(call.from_user.id)
+    if record is None:
+        await call.answer(t(lang, "warp.none"), show_alert=True)
+        await state.clear()
+        return
+
+    data = await state.get_data()
+    export_kind = data.get("export_kind", "awg")
+    platform = (call.data or "").rsplit(":", 1)[-1]  # ios, android, windows
+
     identity = record["identity"]
     endpoints = record.get("endpoints") or []
     profile = _profile(identity)
     await call.answer()
+    await state.clear()
 
-    if kind == "awg":
-        body = warpcore.amnezia_conf(identity, endpoints, profile)
-        name, caption = _filename("-amneziawg.conf"), "warp.caption_awg"
-    elif kind == "awg2":
-        body = warpcore.amnezia_conf(identity, endpoints, profile, signature=True)
-        name, caption = _filename("-amneziawg-v2.conf"), "warp.caption_awg2"
-    elif kind == "plain":
+    # Render via warpconf (respects platform, IPv6 bracketing, clean iOS)
+    if export_kind == "plain":
         body = warpcore.wireguard_conf(identity, endpoints)
         name, caption = _filename(".conf"), "warp.caption_plain"
-    elif kind == "singbox":
+    elif export_kind == "awg2":
+        body = warpcore.amnezia_conf(identity, endpoints, profile, signature=True)
+        name, caption = _filename("-amneziawg-v2.conf"), "warp.caption_awg2"
+    elif export_kind == "singbox":
         body = warpcore.singbox_json(identity, endpoints)
         name, caption = _filename("-singbox.json"), "warp.caption_singbox"
-    elif kind == "clash":
+    elif export_kind == "clash":
         body = warpcore.clash_yaml(identity, endpoints)
         name, caption = _filename("-clash.yaml"), "warp.caption_clash"
-    else:
-        return
+    else:  # awg
+        body = warpcore.amnezia_conf(identity, endpoints, profile)
+        name, caption = _filename("-amneziawg.conf"), "warp.caption_awg"
 
     await call.message.answer_document(
         BufferedInputFile(body.encode("utf-8"), filename=name),
         caption=t(lang, caption),
-        reply_markup=keyboards.warp_exports(lang),
+        reply_markup=keyboards.warp_menu(lang),
     )
 
 
@@ -242,7 +268,7 @@ async def on_links(call: CallbackQuery, lang: str) -> None:
     for index, part in enumerate(parts):
         await call.message.answer(
             part,
-            reply_markup=keyboards.warp_exports(lang) if index == len(parts) - 1 else None,
+            reply_markup=keyboards.warp_menu(lang) if index == len(parts) - 1 else None,
             disable_web_page_preview=True,
         )
 
@@ -337,8 +363,6 @@ async def on_rescan(call: CallbackQuery, lang: str, is_admin: bool) -> None:
     await call.answer(t(lang, "warp.rescanning"))
     notice = await call.message.answer(t(lang, "warp.rescan_started"))
 
-    # The sweep runs beside this handler. The button returns immediately, other
-    # users keep building configs, and the notice is edited when the scan lands.
     task = asyncio.create_task(
         _run_scan(notice, lang, quick=not is_admin, force=is_admin),
         name=f"warp-rescan-{call.from_user.id}",
@@ -381,7 +405,7 @@ async def on_license_input(message: Message, state: FSMContext, lang: str) -> No
     await db.log_event("warp_license", message.from_user.id, identity.get("account_type", ""))
     await message.answer(
         t(lang, "warp.license_ok", account=esc(identity.get("account_type", "warp_plus"))),
-        reply_markup=keyboards.warp_exports(lang),
+        reply_markup=keyboards.warp_menu(lang),
     )
 
 

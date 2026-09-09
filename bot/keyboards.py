@@ -20,8 +20,6 @@ CF_TOKEN_URL = (
     "&accountId=*&zoneId=all&name=AutoVless"
 )
 
-# Where AmneziaVPN really lives. Used by the WARP delivery screen so the app is
-# one tap away from the config it is meant to open.
 AMNEZIA_PLAY_URL = "https://play.google.com/store/apps/details?id=org.amnezia.vpn"
 
 BULLET = "\u2022"
@@ -34,6 +32,22 @@ def _b(text: str, data: str) -> InlineKeyboardButton:
 
 def _u(text: str, url: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, url=url)
+
+
+def glass_button(text: str, callback: str) -> InlineKeyboardButton:
+    """A wide glass-effect button (simplified, just a normal button with wider padding)."""
+    return _b(text, callback)
+
+
+def platform_picker(lang: str) -> InlineKeyboardMarkup:
+    """Platform (OS) picker for WARP exports: iOS, Android, Windows."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [glass_button("\U0001f34f iOS", "wg:platform:ios")],
+            [glass_button("\U0001f916 Android", "wg:platform:android")],
+            [glass_button("\U0001fa9f Windows", "wg:platform:windows")],
+        ]
+    )
 
 
 def ticket_mark(status: object) -> str:
@@ -168,13 +182,7 @@ def _warp_export_rows(lang: str) -> list[list[InlineKeyboardButton]]:
 
 
 def _warp_identity_rows(lang: str) -> list[list[InlineKeyboardButton]]:
-    """The actions that only mean anything once a user owns a WARP identity.
-
-    These used to sit on the WARP home screen, which is exactly why two users of
-    the same bot saw two different menus: the home screen silently grew four rows
-    the moment an identity existed and the build button slid down the screen. They
-    now live on the export screen, where an identity is already guaranteed.
-    """
+    """The actions that only mean anything once a user owns a WARP identity."""
     return [
         [_b(t(lang, "btn.warp_rebuild"), "wg:rebuild")],
         [
@@ -185,24 +193,10 @@ def _warp_identity_rows(lang: str) -> list[list[InlineKeyboardButton]]:
 
 
 def warp_menu(lang: str, has_identity: bool = False) -> InlineKeyboardMarkup:
-    """The WARP home screen. Byte for byte the same for every single user.
-
-    Build, then the endpoint pair, then the two explainers, then back. Nothing on
-    this screen depends on who is looking at it or on what they have built
-    before, so a screenshot of it is a valid instruction for anyone: "press the
-    first button" is true for the user who joined a minute ago and for the one who
-    has held an identity for a month.
-
-    Everything tied to an identity is reached through the build button: the
-    delivery screen and the export screen both carry the export formats, the
-    endpoint refresh, WARP+ and deleting the identity.
-
-    ``has_identity`` is accepted for callers that still pass it and is
-    deliberately ignored. It is what used to fork this screen.
-    """
+    """The WARP home screen."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_b(t(lang, "btn.warp_build"), "wg:net")],
+            [_b(t(lang, "btn.warp_build"), "wg:build")],
             [
                 _b(t(lang, "btn.warp_eps"), "wg:eps"),
                 _b(t(lang, "btn.warp_rescan"), "wg:rescan"),
@@ -262,17 +256,7 @@ def warp_endpoints(lang: str) -> InlineKeyboardMarkup:
 
 
 def pool_menu(lang: str) -> InlineKeyboardMarkup:
-    """Admin controls for the two family pools.
-
-    Separate ideas, separate buttons. Refresh goes hunting for new endpoints in
-    the background; the full check re-pings everything already stored; the two
-    entry buttons pin addresses the admin already trusts into one pool each.
-
-    The entry buttons are per family and never combined, because that split is
-    the whole product: Irancell is served from the IPv6 pool and every other
-    operator from the IPv4 one, so "which pool" is a decision the admin has to
-    make explicitly rather than a guess made from the address they pasted.
-    """
+    """Admin controls for the two family pools."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_b(t(lang, "btn.pool_refresh"), "pool:refresh")],
@@ -293,11 +277,7 @@ def pool_menu(lang: str) -> InlineKeyboardMarkup:
 
 
 def pool_manual(lang: str, v4: int = 0, v6: int = 0) -> InlineKeyboardMarkup:
-    """The hand entered endpoints screen: add, re-check, clear.
-
-    A clear button only appears for a family that actually has something pinned,
-    so the screen cannot offer to delete nothing.
-    """
+    """The hand entered endpoints screen: add, re-check, clear."""
     rows: list[list[InlineKeyboardButton]] = [
         [
             _b(t(lang, "btn.pool_add_v4"), "pool:add:v4"),
