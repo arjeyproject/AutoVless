@@ -27,6 +27,7 @@ from __future__ import annotations
 
 import asyncio
 import datetime as dt
+import ipaddress
 import json
 import logging
 import random
@@ -70,6 +71,17 @@ class WarpError(Exception):
     pass
 
 
+def _hostport(ip: str, port: int) -> str:
+    """Format endpoint, bracketing IPv6 for WireGuard syntax."""
+    try:
+        addr = ipaddress.ip_address(ip)
+        if isinstance(addr, ipaddress.IPv6Address):
+            return f"[{ip}]:{port}"
+    except ValueError:
+        pass
+    return f"{ip}:{port}"
+
+
 # --------------------------------------------------------------------- #
 # registration
 # --------------------------------------------------------------------- #
@@ -104,8 +116,6 @@ async def _register_on(
         "serial_number": "",
         "locale": "en_US",
         "type": device_type,
-        # Ask for the tunnel to be live from the start. Older builds ignore this
-        # and need the PATCH below; newer ones honour it and save a round trip.
         "warp_enabled": True,
     }
     headers = {**BASE_HEADERS, "CF-Client-Version": client_version}
@@ -199,7 +209,6 @@ async def provision(timeout: Optional[float] = None) -> dict:
                 try:
                     identity = await _apply(client, identity, settings.warp_license)
                 except WarpError as error:
-                    # A bad global license must not cost the user their identity.
                     log.warning("default warp license refused: %s", error)
             return identity
 
@@ -239,7 +248,6 @@ async def _apply(client: httpx.AsyncClient, identity: dict, license_key: str) ->
     except ValueError:
         pass
 
-    # Re-read the device so a rotated peer key is not missed.
     try:
         fresh = await client.get(f"{API_HOST}/{version}/reg/{device_id}", headers=auth)
         if fresh.status_code < 400:
@@ -318,7 +326,7 @@ def _endpoint(endpoints: Sequence[dict], index: int = 0) -> tuple[str, int]:
 
 def endpoint_label(endpoints: Sequence[dict], index: int = 0) -> str:
     host, port = _endpoint(endpoints, index)
-    return f"{host}:{port}"
+    return _hostport(host, port)
 
 
 # --------------------------------------------------------------------- #
@@ -341,12 +349,12 @@ def wireguard_conf(
             f"Address = {', '.join(_addresses(identity))}",
             f"DNS = {dns or settings.warp_dns}",
             f"MTU = {mtu or settings.warp_mtu}",
+            f"PersistentKeepalive = 25",
             "",
             "[Peer]",
             f"PublicKey = {identity['peer_public_key']}",
             "AllowedIPs = 0.0.0.0/0, ::/0",
-            f"Endpoint = {host}:{port}",
-            "PersistentKeepalive = 25",
+            f"Endpoint = {_hostport(host, port)}",
             "",
         ]
     )
@@ -373,7 +381,6 @@ def amnezia_conf(
         f"Jc = {profile['jc']}",
         f"Jmin = {profile['jmin']}",
         f"Jmax = {profile['jmax']}",
-        # Left at WireGuard defaults on purpose: Cloudflare's peer is unmodified.
         "S1 = 0",
         "S2 = 0",
         "H1 = 1",
@@ -388,7 +395,7 @@ def amnezia_conf(
         "[Peer]",
         f"PublicKey = {identity['peer_public_key']}",
         "AllowedIPs = 0.0.0.0/0, ::/0",
-        f"Endpoint = {host}:{port}",
+        f"Endpoint = {_hostport(host, port)}",
         "PersistentKeepalive = 25",
         "",
     ]
@@ -408,7 +415,7 @@ def warp_link(
     reserved = "%2C".join(str(part) for part in identity.get("reserved") or [0, 0, 0])
     address = "%2C".join(quote(item, safe="") for item in _addresses(identity))
     return (
-        f"wireguard://{quote(identity['private_key'], safe='')}@{host}:{port}"
+        f"wireguard://{quote(identity['private_key'], safe='')}@{_hostport(host, port)}"
         f"?address={address}"
         f"&publickey={quote(identity['peer_public_key'], safe='')}"
         f"&reserved={reserved}"

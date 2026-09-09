@@ -9,6 +9,7 @@ from .locales.apps import APPS
 from .locales.curator import CURATOR
 from .locales.en import EN
 from .locales.fa import FA
+from .locales.proton import PROTON_STRINGS
 from .locales.support import SUPPORT
 from .locales.warp import WARP
 from .locales.warpmanual import WARPMANUAL
@@ -19,7 +20,7 @@ RULE = "\u2501" * 14
 
 # WARPPOOL is merged after WARP so the pool screens can override an older WARP
 # string without editing that catalogue, and WARPMANUAL comes last for the same
-# reason: the hand entry screens own their wording.
+# reason: the hand entry screens own their wording. Proton comes at the end.
 CATALOG: dict[str, dict[str, str]] = {
     "fa": {
         **FA,
@@ -30,6 +31,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **APPS["fa"],
         **WARPPOOL["fa"],
         **WARPMANUAL["fa"],
+        **PROTON_STRINGS.get("fa", {}),
     },
     "en": {
         **EN,
@@ -40,6 +42,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **APPS["en"],
         **WARPPOOL["en"],
         **WARPMANUAL["en"],
+        **PROTON_STRINGS.get("en", {}),
     },
 }
 
