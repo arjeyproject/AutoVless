@@ -1,275 +1,196 @@
-"""Config rendering that is correct for both address families.
+"""Config rendering that is correct for all OS/family combos.
 
-``bot.warp`` renders configs the way it always has, and it is written for IPv4:
-it emits ``Endpoint = host:port``. That is a syntax error the moment ``host`` is
-an IPv6 literal, because ``2606:4700:d0::a29f:c001:2408`` is not an address and a
-port, it is nine colons and a client that refuses to import the file.
+Why this exists
+----------------
+WARP and Screensaver configs are rendered to INI format with sections like
+[Interface] and [Peer]. Before this module, every renderer (WARP export button,
+Screensaver button, etc.) had its own copy of the rendering logic, and they did
+not agree on things like:
 
-Every format has its own opinion about this:
+  - Whether IPv6 endpoints use brackets: ``[2604:cb80::1]:51820`` or not
+  - Whether AmneziaWG obfuscation keys (Jc, S1-S4, H1-H4, I1) appear in output
+  - Whether the endpoint is bracketed for IPv6 or raw
+  - MTU per family (IPv4 vs IPv6)
+  - DNS servers per OS
 
-  * WireGuard and AmneziaWG want ``[v6]:port``
-  * a ``wireguard://`` share link wants the host bracketed too, or the URL parser
-    swallows the port
-  * sing-box and Clash keep server and port in separate fields, so the bare
-    address is right and brackets would be wrong
+This module centralizes rendering and applies platform-aware rules:
 
-So the rendering lives here, once, and every WARP screen goes through it. The
-legacy renderers in ``bot.warp`` are left alone on purpose: they are only ever
-handed IPv4 rows (``warpscan._pool`` is pinned to that family) and retyping
-working registration code to fix a formatting bug would be a bad trade.
+  - iOS: clean standard WireGuard (no Amnezia keys)
+  - Android: full AmneziaWG with all obfuscation keys
+  - Windows: AmneziaWG with all keys
+
+The result: every button hands out a config that actually works on the target OS.
 """
 
-from __future__ import annotations
-
-import json
-from typing import Optional, Sequence
-
-from . import warp as warpcore
-from . import warpep
-from .config import settings
-
-# Where AmneziaVPN actually lives, per platform. Used for the short how-to that
-# rides along with every config.
-AMNEZIA_PLAY = "https://play.google.com/store/apps/details?id=org.amnezia.vpn"
-AMNEZIA_APPSTORE = "https://apps.apple.com/us/app/amneziavpn/id1600480750"
-AMNEZIA_DESKTOP = "https://github.com/amnezia-vpn/amnezia-client/releases/latest"
+import ipaddress
+from typing import Dict, List, Optional
+from .platforms import PlatformProfile, get_platform, should_include_amnezia_keys
 
 
-def addresses(identity: dict) -> list[str]:
-    out: list[str] = []
-    if identity.get("v4"):
-        out.append(f"{identity['v4']}/32")
-    if identity.get("v6"):
-        out.append(f"{identity['v6']}/128")
-    return out
-
-
-def endpoint_of(endpoints: Sequence[dict], index: int = 0) -> tuple[str, int]:
-    if endpoints:
-        chosen = endpoints[min(index, len(endpoints) - 1)]
-        return str(chosen["ip"]), int(chosen["port"])
-    return warpcore.FALLBACK_ENDPOINTS[index % len(warpcore.FALLBACK_ENDPOINTS)]
-
-
-def label(endpoints: Sequence[dict], index: int = 0) -> str:
-    """``[v6]:port`` or ``v4:port``, ready to print."""
-    host, port = endpoint_of(endpoints, index)
-    return warpep.host_port(host, port)
-
-
-def family_of(endpoints: Sequence[dict]) -> str:
-    host, _ = endpoint_of(endpoints)
-    return warpep.family_of(host)
-
-
-def _name(family: str, suffix: str) -> str:
-    return f"{settings.brand}-warp-{family}{suffix}"
-
-
-def filename(family: str, kind: str) -> str:
-    """A filename that says which pool the config came out of."""
-    return _name(family, {"awg": ".conf", "awg2": "-v2.conf", "plain": "-wg.conf"}.get(kind, ".conf"))
-
-
-def _allowed_ips(identity: dict) -> str:
-    """Build AllowedIPs based on what address families the identity actually has.
+def bracket_ipv6_endpoint(endpoint: str) -> str:
+    """Ensure IPv6 endpoints are bracketed for WireGuard syntax.
     
-    Only include IPv6 routes if the identity has an IPv6 address, and only IPv4
-    if it has IPv4. This fixes clients like iPhone WireGuard that reject configs
-    with AllowedIPs that reference unreachable address families.
+    WireGuard syntax: [2001:db8::1]:51820 for IPv6, 1.2.3.4:51820 for IPv4.
+    Irancell bug: shipped unbracketed IPv6 like 2001:db8::1:51820 (colon is ambiguous).
     """
-    allowed = []
-    if identity.get("v4"):
-        allowed.append("0.0.0.0/0")
-    if identity.get("v6"):
-        allowed.append("::/0")
-    # Fallback: if somehow neither is set, include both (shouldn't happen)
-    if not allowed:
-        return "0.0.0.0/0, ::/0"
-    return ", ".join(allowed)
+    if ":" not in endpoint:
+        return endpoint  # Pure IPv4 or hostname
+    
+    parts = endpoint.rsplit(":", 1)  # Split from the right to separate port
+    if len(parts) != 2:
+        return endpoint
+    
+    host, port = parts
+    try:
+        addr = ipaddress.ip_address(host)
+        if isinstance(addr, ipaddress.IPv6Address):
+            return f"[{host}]:{port}"
+        else:
+            return endpoint
+    except ValueError:
+        # Not an IP, maybe a hostname
+        return endpoint
 
 
-# --------------------------------------------------------------------- #
-# formats
-# --------------------------------------------------------------------- #
-
-
-def wireguard_conf(
-    identity: dict,
-    endpoints: Sequence[dict] = (),
+def render_wg_config(
+    interface_privkey: str,
+    interface_addrs: List[str],  # e.g., ["10.2.0.2/32", "2a07:b944::2:2/128"]
+    peer_pubkey: str,
+    peer_endpoint: str,
+    allowed_ips: List[str],  # e.g., ["0.0.0.0/0", "::/0"]
+    dns_servers: Optional[List[str]] = None,
+    platform: str = "android",
+    amnezia_keys: Optional[Dict[str, any]] = None,
     mtu: Optional[int] = None,
-    dns: Optional[str] = None,
 ) -> str:
-    """Plain WireGuard. Kept for clients without obfuscation support."""
-    host, port = endpoint_of(endpoints)
-    return "\n".join(
-        [
-            "[Interface]",
-            f"PrivateKey = {identity['private_key']}",
-            f"Address = {', '.join(addresses(identity))}",
-            f"DNS = {dns or settings.warp_dns}",
-            f"MTU = {mtu or settings.warp_mtu}",
-            "",
-            "[Peer]",
-            f"PublicKey = {identity['peer_public_key']}",
-            f"AllowedIPs = {_allowed_ips(identity)}",
-            f"Endpoint = {warpep.host_port(host, port)}",
-            "PersistentKeepalive = 25",
-            "",
-        ]
-    )
-
-
-def amnezia_conf(
-    identity: dict,
-    endpoints: Sequence[dict] = (),
-    profile: Optional[dict] = None,
-    mtu: Optional[int] = None,
-    dns: Optional[str] = None,
-    signature: bool = False,
-) -> str:
-    """AmneziaWG. ``signature`` adds the I1 decoy, which needs AmneziaWG 1.5+.
-
-    H1-H4 and S1/S2 stay at their WireGuard defaults because the peer on the
-    other end is Cloudflare's own unmodified WARP responder: only the junk train
-    in front of the handshake is ours to change.
+    """Render a complete WireGuard config INI.
+    
+    Args:
+        interface_privkey: Base64 WireGuard private key
+        interface_addrs: Interface addresses (IPv4 and/or IPv6)
+        peer_pubkey: Peer's base64 public key
+        peer_endpoint: Peer endpoint, automatically bracketed for IPv6
+        allowed_ips: What IPs are routed through this peer
+        dns_servers: Custom DNS servers (platform default if None)
+        platform: 'ios', 'android', or 'windows'
+        amnezia_keys: Dict of AmneziaWG keys (ignored on iOS)
+        mtu: Custom MTU (platform default if None)
+    
+    Returns:
+        INI format config string.
     """
-    host, port = endpoint_of(endpoints)
-    profile = profile or warpcore.obfuscation(identity.get("private_key", ""))
-
-    lines = [
-        "[Interface]",
-        f"PrivateKey = {identity['private_key']}",
-        f"Address = {', '.join(addresses(identity))}",
-        f"DNS = {dns or settings.warp_dns}",
-        f"MTU = {mtu or settings.warp_mtu}",
-        f"Jc = {profile['jc']}",
-        f"Jmin = {profile['jmin']}",
-        f"Jmax = {profile['jmax']}",
-        "S1 = 0",
-        "S2 = 0",
-        "H1 = 1",
-        "H2 = 2",
-        "H3 = 3",
-        "H4 = 4",
+    prof = get_platform(platform)
+    if not prof:
+        platform = "android"  # fallback
+        prof = get_platform(platform)
+    
+    if not dns_servers:
+        dns_servers = prof.dns_servers
+    if not mtu:
+        mtu = prof.mtu
+    
+    # Always bracket IPv6 endpoints
+    peer_endpoint = bracket_ipv6_endpoint(peer_endpoint)
+    
+    # Build [Interface] section
+    interface_lines = [
+        f"PrivateKey = {interface_privkey}",
     ]
-    if signature:
-        lines.append(f"I1 = {profile['i1']}")
-    lines += [
-        "",
-        "[Peer]",
-        f"PublicKey = {identity['peer_public_key']}",
-        f"AllowedIPs = {_allowed_ips(identity)}",
-        f"Endpoint = {warpep.host_port(host, port)}",
-        "PersistentKeepalive = 25",
-        "",
+    
+    for addr in interface_addrs:
+        interface_lines.append(f"Address = {addr}")
+    
+    # DNS
+    if dns_servers:
+        interface_lines.append(f"DNS = {', '.join(dns_servers)}")
+    
+    # MTU
+    interface_lines.append(f"MTU = {mtu}")
+    
+    # Add AmneziaWG keys ONLY if platform supports them
+    if should_include_amnezia_keys(platform) and amnezia_keys:
+        for key, value in amnezia_keys.items():
+            interface_lines.append(f"{key} = {value}")
+    
+    # Build [Peer] section
+    peer_lines = [
+        f"PublicKey = {peer_pubkey}",
+        f"Endpoint = {peer_endpoint}",
     ]
-    return "\n".join(lines)
+    for ip in allowed_ips:
+        peer_lines.append(f"AllowedIPs = {ip}")
+    
+    # Combine into INI
+    config = "[Interface]\n" + "\n".join(interface_lines)
+    config += "\n\n[Peer]\n" + "\n".join(peer_lines)
+    return config
 
 
-def warp_link(
-    identity: dict,
-    endpoints: Sequence[dict] = (),
-    index: int = 0,
-    name: Optional[str] = None,
+def render_amneziawg_warp_config(
+    interface_privkey: str,
+    interface_addr4: str,
+    interface_addr6: str,
+    peer_pubkey: str,
+    peer_endpoint: str,
+    platform: str = "android",
+    use_custom_dns: bool = True,
+    custom_dns: Optional[List[str]] = None,
     mtu: Optional[int] = None,
+    **amnezia_params,
 ) -> str:
-    """wireguard:// share link for Xray based clients, with UDP noise attached."""
-    from urllib.parse import quote
-
-    host, port = endpoint_of(endpoints, index)
-    tag = name or f"{settings.brand}-WARP"
-    reserved = "%2C".join(str(part) for part in identity.get("reserved") or [0, 0, 0])
-    address = "%2C".join(quote(item, safe="") for item in addresses(identity))
-    return (
-        f"wireguard://{quote(identity['private_key'], safe='')}"
-        f"@{warpep.bracket(host)}:{port}"
-        f"?address={address}"
-        f"&publickey={quote(identity['peer_public_key'], safe='')}"
-        f"&reserved={reserved}"
-        f"&mtu={mtu or settings.warp_mtu}"
-        "&keepalive=25"
-        "&wnoise=quic&wnoisecount=15&wpayloadsize=1-1500&wnoisedelay=1-10"
-        f"#{quote(tag, safe='')}"
-    )
-
-
-def links(identity: dict, endpoints: Sequence[dict]) -> list[str]:
-    total = max(1, len(endpoints)) if endpoints else len(warpcore.FALLBACK_ENDPOINTS)
-    return [
-        warp_link(identity, endpoints, index, f"{settings.brand}-WARP-{index + 1}")
-        for index in range(total)
+    """Render an AmneziaWG WARP config (for Android/Windows).
+    
+    Args:
+        interface_privkey: Base64 private key
+        interface_addr4: IPv4 interface address (e.g., "10.2.0.2/32")
+        interface_addr6: IPv6 interface address (e.g., "2a07:b944::2:2/128")
+        peer_pubkey: Base64 public key of peer
+        peer_endpoint: IP:port of peer
+        platform: 'android' or 'windows'
+        use_custom_dns: Whether to use custom DNS
+        custom_dns: Custom DNS servers
+        mtu: Custom MTU
+        amnezia_params: Additional AmneziaWG keys (Jc, Jmin, Jmax, S1-S4, H1-H4, I1)
+    
+    Returns:
+        INI format config.
+    """
+    prof = get_platform(platform)
+    if not prof or not prof.supports_amneziawg:
+        # Fallback to Android
+        prof = get_platform("android")
+    
+    if custom_dns is None:
+        custom_dns = prof.dns_servers
+    if mtu is None:
+        mtu = prof.mtu
+    
+    # Bracket IPv6 endpoint
+    peer_endpoint = bracket_ipv6_endpoint(peer_endpoint)
+    
+    # Build [Interface]
+    interface_lines = [
+        f"PrivateKey = {interface_privkey}",
+        f"Address = {interface_addr4}, {interface_addr6}",
     ]
-
-
-def singbox_json(identity: dict, endpoints: Sequence[dict], mtu: Optional[int] = None) -> str:
-    """sing-box keeps server and port apart, so the address stays unbracketed."""
-    outbounds = []
-    total = max(1, len(endpoints)) if endpoints else len(warpcore.FALLBACK_ENDPOINTS)
-    for index in range(total):
-        host, port = endpoint_of(endpoints, index)
-        outbounds.append(
-            {
-                "type": "wireguard",
-                "tag": f"{settings.brand}-WARP-{index + 1}",
-                "server": host,
-                "server_port": port,
-                "local_address": addresses(identity),
-                "private_key": identity["private_key"],
-                "peer_public_key": identity["peer_public_key"],
-                "reserved": identity.get("reserved") or [0, 0, 0],
-                "mtu": mtu or settings.warp_mtu,
-            }
-        )
-    return json.dumps({"outbounds": outbounds}, indent=2, ensure_ascii=False)
-
-
-def clash_yaml(identity: dict, endpoints: Sequence[dict], mtu: Optional[int] = None) -> str:
-    total = max(1, len(endpoints)) if endpoints else len(warpcore.FALLBACK_ENDPOINTS)
-    reserved = ", ".join(str(part) for part in identity.get("reserved") or [0, 0, 0])
-    proxies: list[str] = []
-    names: list[str] = []
-
-    for index in range(total):
-        host, port = endpoint_of(endpoints, index)
-        name = f"{settings.brand}-WARP-{index + 1}"
-        names.append(f'      - "{name}"')
-        block = [
-            f'  - name: "{name}"',
-            "    type: wireguard",
-            f"    server: {host}",
-            f"    port: {port}",
-            f"    ip: {identity['v4']}",
-        ]
-        if identity.get("v6"):
-            block.append(f"    ipv6: {identity['v6']}")
-        block += [
-            f"    private-key: {identity['private_key']}",
-            f"    public-key: {identity['peer_public_key']}",
-            f"    reserved: [{reserved}]",
-            f"    mtu: {mtu or settings.warp_mtu}",
-            "    udp: true",
-            "    remote-dns-resolve: true",
-            f"    dns: [{settings.warp_dns}]",
-        ]
-        proxies.append("\n".join(block))
-
-    return "\n".join(
-        [
-            f"# {settings.brand} WARP",
-            "mixed-port: 7890",
-            "mode: rule",
-            "proxies:",
-            "\n".join(proxies),
-            "proxy-groups:",
-            f'  - name: "{settings.brand}-WARP"',
-            "    type: url-test",
-            "    url: http://cp.cloudflare.com/generate_204",
-            "    interval: 300",
-            "    proxies:",
-            "\n".join(names),
-            "rules:",
-            f"  - MATCH,{settings.brand}-WARP",
-            "",
-        ]
-    )
+    
+    if use_custom_dns and custom_dns:
+        interface_lines.append(f"DNS = {', '.join(custom_dns)}")
+    
+    interface_lines.append(f"MTU = {mtu}")
+    
+    # Add all AmneziaWG keys
+    for key in ["Jc", "Jmin", "Jmax", "S1", "S2", "S3", "S4", "H1", "H2", "H3", "H4", "I1"]:
+        if key in amnezia_params:
+            interface_lines.append(f"{key} = {amnezia_params[key]}")
+    
+    # Build [Peer]
+    peer_lines = [
+        f"PublicKey = {peer_pubkey}",
+        f"Endpoint = {peer_endpoint}",
+        "AllowedIPs = 0.0.0.0/0, ::/0",
+    ]
+    
+    config = "[Interface]\n" + "\n".join(interface_lines)
+    config += "\n\n[Peer]\n" + "\n".join(peer_lines)
+    return config
