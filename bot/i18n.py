@@ -7,6 +7,7 @@ from typing import Any
 from .locales.admin import ADMIN
 from .locales.apps import APPS
 from .locales.curator import CURATOR
+from .locales.device import DEVICE
 from .locales.en import EN
 from .locales.fa import FA
 from .locales.proton import PROTON_STRINGS
@@ -19,8 +20,11 @@ LANGS: tuple[str, ...] = ("fa", "en")
 RULE = "\u2501" * 14
 
 # WARPPOOL is merged after WARP so the pool screens can override an older WARP
-# string without editing that catalogue, and WARPMANUAL comes last for the same
-# reason: the hand entry screens own their wording. Proton comes at the end.
+# string without editing that catalogue, and WARPMANUAL comes after it for the
+# same reason: the hand entry screens own their wording. DEVICE is merged last of
+# the WARP family because the device picker owns anything it names - including
+# ``warp.select_platform``, which had no entry anywhere and was rendering its own
+# key as the screen body. Proton comes at the very end.
 CATALOG: dict[str, dict[str, str]] = {
     "fa": {
         **FA,
@@ -31,6 +35,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **APPS["fa"],
         **WARPPOOL["fa"],
         **WARPMANUAL["fa"],
+        **DEVICE["fa"],
         **PROTON_STRINGS.get("fa", {}),
     },
     "en": {
@@ -42,6 +47,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **APPS["en"],
         **WARPPOOL["en"],
         **WARPMANUAL["en"],
+        **DEVICE["en"],
         **PROTON_STRINGS.get("en", {}),
     },
 }
@@ -76,3 +82,10 @@ def t(lang: str, key: str, **kwargs: Any) -> str:
 
 def other_lang(lang: str) -> str:
     return "en" if normalise(lang) == "fa" else "fa"
+
+
+def device_label(platform: str, lang: str) -> str:
+    """The picker button's text, reused as a plain device name in messages."""
+    from .platforms import label_key, normalise_platform
+
+    return t(lang, label_key(normalise_platform(platform)))
