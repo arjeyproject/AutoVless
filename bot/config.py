@@ -23,6 +23,24 @@ DEFAULT_CLEAN_DOMAINS = ("cf.090227.xyz", "cdn.xn--b6gac.eu.org", "cf.877774.xyz
 DEFAULT_PROXY_SOURCES = ("https://ipdb.api.030101.xyz/?type=bestproxy", "https://raw.githubusercontent.com/ymyuuu/IPDB/main/bestproxy.txt")
 DEFAULT_PROXY_SEEDS = ("proxyip.fxxk.dedyn.io", "proxyip.aliyun.fxxk.dedyn.io", "proxyip.oracle.fxxk.dedyn.io", "proxyip.digitalocean.fxxk.dedyn.io", "cdn.xn--b6gac.eu.org", "cdn-all.xn--b6gac.eu.org", "bpb.yousef.isegaro.com", "edgetunnel.anycast.eu.org")
 
+# Destinations the worker sends through a pinned relay instead of straight out.
+#
+# Two different problems, one fix. ChatGPT, Claude and Perplexity are
+# Cloudflare-fronted, and a Worker cannot open a socket to a Cloudflare address at
+# all, so a direct attempt can only fail. Gemini is reachable directly but treats
+# a Cloudflare datacentre egress as suspicious, which surfaces as endless
+# re-logins. Exiting through one steady relay solves both. The worker carries this
+# same list as its own default, so leaving AI_DOMAINS blank changes nothing.
+DEFAULT_AI_DOMAINS = (
+    "openai.com", "chatgpt.com", "oaistatic.com", "oaiusercontent.com", "sora.com",
+    "gemini.google.com", "bard.google.com", "aistudio.google.com",
+    "generativelanguage.googleapis.com", "ai.google.dev", "notebooklm.google.com",
+    "anthropic.com", "claude.ai", "perplexity.ai", "x.ai", "grok.com",
+    "copilot.microsoft.com", "githubcopilot.com", "huggingface.co", "midjourney.com",
+    "suno.com", "elevenlabs.io", "cursor.com", "poe.com", "mistral.ai", "groq.com",
+    "deepseek.com", "qwen.ai",
+)
+
 def _str(name: str, default: str = "") -> str:
     return (os.getenv(name) or default).strip()
 
@@ -70,6 +88,7 @@ class Settings:
     source_ttl: int; source_retry: int; seed_limit: int; max_fails: int
     proxy_ip: str; proxy_seeds: tuple[str, ...]; proxy_sources: tuple[str, ...]; proxy_ports: tuple[int, ...]
     proxy_scan_interval: int; proxy_scan_limit: int; proxy_pool_size: int; proxy_per_panel: int; relay_strikes: int
+    ai_route: bool; ai_proxy_ip: tuple[str, ...]; ai_domains: tuple[str, ...]; ai_relays: int
     dns_server: str; fallback_host: str; health_attempts: int; sub_sources: tuple[str, ...]; sub_refresh: int
     autopilot: bool; autopilot_interval: int; autopilot_batch: int; autopilot_max_age: int
     curator: bool; curator_interval: int; curator_batch: int; curator_rounds: int; curator_required: int
@@ -123,8 +142,18 @@ def load_settings() -> Settings:
         pool_size=max(24, _int("POOL_SIZE", 720)), pool_target=max(8, _int("POOL_TARGET", 40)),
         clean_ip_sources=clean, clean_ip_files=_list("CLEAN_IP_FILES", DEFAULT_CLEAN_FILES), clean_domains=_list("CLEAN_DOMAINS", DEFAULT_CLEAN_DOMAINS),
         source_ttl=max(300, _int("SOURCE_TTL", 1800)), source_retry=max(60, _int("SOURCE_RETRY", 180)), seed_limit=max(50, _int("SEED_LIMIT", 800)), max_fails=max(1, _int("MAX_FAILS", 3)),
-        proxy_ip=proxy_ip, proxy_seeds=_list("PROXY_IP", DEFAULT_PROXY_SEEDS), proxy_sources=_list("PROXY_IP_SOURCES", DEFAULT_PROXY_SOURCES), proxy_ports=_ports("PROXY_PORTS", (443,), TLS_PORTS), proxy_scan_interval=max(300, _int("PROXY_SCAN_INTERVAL", 1200)), proxy_scan_limit=max(32, _int("PROXY_SCAN_LIMIT", 500)), proxy_pool_size=max(8, _int("PROXY_POOL_SIZE", 80)), proxy_per_panel=max(2, _int("PROXY_PER_PANEL", 6)),
+        proxy_ip=proxy_ip, proxy_seeds=_list("PROXY_IP", DEFAULT_PROXY_SEEDS), proxy_sources=_list("PROXY_IP_SOURCES", DEFAULT_PROXY_SOURCES), proxy_ports=_ports("PROXY_PORTS", (443,), TLS_PORTS), proxy_scan_interval=max(300, _int("PROXY_SCAN_INTERVAL", 1200)), proxy_scan_limit=max(32, _int("PROXY_SCAN_LIMIT", 500)), proxy_pool_size=max(8, _int("PROXY_POOL_SIZE", 80)),
+        # Six, not four. The relay chain used to be a quiet fallback; it is now
+        # the path every AI destination takes, so one dead relay must not take a
+        # quarter of the pinning space with it.
+        proxy_per_panel=max(2, _int("PROXY_PER_PANEL", 6)),
         relay_strikes=max(2, _int("RELAY_STRIKES", 3)),
+        # AI routing. AI_PROXY_IP is the hard guarantee of a steady exit address:
+        # set it to a literal IP and every AI destination leaves through that one
+        # host. Left blank, the worker pins deterministically from the ordinary
+        # relay chain, which is stable for as long as the chosen relay lives.
+        ai_route=_bool("AI_ROUTE", True), ai_proxy_ip=_list("AI_PROXY_IP"),
+        ai_domains=_list("AI_DOMAINS", DEFAULT_AI_DOMAINS), ai_relays=max(1, min(4, _int("AI_RELAYS", 2))),
         dns_server=_str("DNS_SERVER", "8.8.8.8"), fallback_host=_str("FALLBACK_HOST", "www.wikipedia.org"), health_attempts=max(2, _int("HEALTH_ATTEMPTS", 8)), sub_sources=_list("SUB_SOURCES", clean), sub_refresh=max(60, _int("SUB_REFRESH", 180)),
         autopilot=_bool("AUTOPILOT", True), autopilot_interval=max(120, _int("AUTOPILOT_INTERVAL", 600)), autopilot_batch=max(1, _int("AUTOPILOT_BATCH", 8)), autopilot_max_age=max(600, _int("AUTOPILOT_MAX_AGE", 10800)),
         # The curator rechecks stored addresses on the client's own path and
