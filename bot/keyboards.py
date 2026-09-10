@@ -9,6 +9,8 @@ from . import apps as catalogue
 from .config import settings
 from .i18n import t
 from .operators import OPERATORS
+from .platforms import ORDER as PLATFORM_ORDER
+from .platforms import label_key, normalise_platform, should_include_amnezia_keys
 
 CF_SIGNUP_URL = "https://dash.cloudflare.com/sign-up"
 CF_TOKEN_URL = (
@@ -21,6 +23,11 @@ CF_TOKEN_URL = (
 )
 
 AMNEZIA_PLAY_URL = "https://play.google.com/store/apps/details?id=org.amnezia.vpn"
+AMNEZIA_WIN_URL = "https://github.com/amnezia-vpn/amnezia-client/releases/latest"
+# The official WireGuard app. This is the one an iPhone config is built for, and
+# sending an iPhone user to Google Play was its own small bug.
+WIREGUARD_IOS_URL = "https://apps.apple.com/app/wireguard/id1441195209"
+STREISAND_IOS_URL = "https://apps.apple.com/app/streisand/id6450534064"
 
 BULLET = "\u2022"
 TICKET_MARKS = {"open": "\U0001f7e0", "answered": "\u2705", "closed": "\U0001f512"}
@@ -35,19 +42,46 @@ def _u(text: str, url: str) -> InlineKeyboardButton:
 
 
 def glass_button(text: str, callback: str) -> InlineKeyboardButton:
-    """A wide glass-effect button (simplified, just a normal button with wider padding)."""
+    """A full-width button. Telegram gives us one row per button and that is the
+    only "glass" affordance the API has, so a glass button is simply a button
+    that owns its row."""
     return _b(text, callback)
 
 
-def platform_picker(lang: str) -> InlineKeyboardMarkup:
-    """Platform (OS) picker for WARP exports: iOS, Android, Windows."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [glass_button("\U0001f34f iOS", "wg:platform:ios")],
-            [glass_button("\U0001f916 Android", "wg:platform:android")],
-            [glass_button("\U0001fa9f Windows", "wg:platform:windows")],
-        ]
-    )
+# ---------------------------------------------------------------- devices
+
+
+def device_picker(lang: str, flow: str = "", back: str = "nav:warp") -> InlineKeyboardMarkup:
+    """Which phone is this for. The first step of every WARP flow.
+
+    ``flow`` is carried through in the callback data so the answer survives
+    without any FSM state: empty means "go on to build a config", and
+    ``f:<kind>`` means "render that export for the platform I just picked".
+    Depending on state here is what used to make the picker a dead end - a
+    navigation in between cleared it and the next tap did nothing at all.
+    """
+    tail = f":{flow}" if flow else ""
+    rows = [
+        [glass_button(t(lang, label_key(name)), f"wg:dev:{name}{tail}")]
+        for name in PLATFORM_ORDER
+    ]
+    rows.append(back_row(lang, back))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def platform_picker(lang: str, flow: str = "") -> InlineKeyboardMarkup:
+    """Older name for ``device_picker``, kept so nothing breaks mid-deploy."""
+    return device_picker(lang, flow)
+
+
+def _client_link(lang: str, platform: str) -> InlineKeyboardButton:
+    """The store link that matches the file we just handed over."""
+    name = normalise_platform(platform)
+    if name in {"ios", "macos"}:
+        return _u(t(lang, "btn.wireguard_ios"), WIREGUARD_IOS_URL)
+    if name == "windows":
+        return _u(t(lang, "btn.amnezia"), AMNEZIA_WIN_URL)
+    return _u(t(lang, "btn.amnezia"), AMNEZIA_PLAY_URL)
 
 
 def ticket_mark(status: object) -> str:
@@ -90,6 +124,7 @@ def panel_menu(lang: str) -> InlineKeyboardMarkup:
             [_b(t(lang, "btn.qr"), "panel:qr"), _b(t(lang, "btn.sub"), "panel:sub")],
             [_b(t(lang, "btn.clash"), "panel:clash"), _b(t(lang, "btn.singbox"), "panel:singbox")],
             [_b(t(lang, "btn.single"), "panel:single"), _b(t(lang, "btn.ping"), "panel:ping")],
+            [_b(t(lang, "btn.ai"), "panel:ai")],
             [_b(t(lang, "btn.apply"), "panel:apply")],
             [_b(t(lang, "btn.rescan"), "panel:rescan")],
             [_b(t(lang, "btn.rebuild"), "panel:rebuild")],
@@ -133,7 +168,7 @@ def simple_back(lang: str, target: str = "nav:menu") -> InlineKeyboardMarkup:
 
 
 def apps_platforms(lang: str) -> InlineKeyboardMarkup:
-    """Device picker. Two per row so the labels stay readable."""
+    """Device picker for the app catalogue. Two per row so labels stay readable."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
@@ -158,7 +193,10 @@ def apps_list(lang: str, platform: str, tag: str = "") -> InlineKeyboardMarkup:
         rows.append([_u(catalogue.label(item), item["url"])])
 
     others = [code for code in catalogue.PLATFORMS if code != platform]
-    switch = [_b(t(lang, f"btn.apps_{code}"), f"apps:{code}:{tag}" if tag else f"apps:{code}") for code in others]
+    switch = [
+        _b(t(lang, f"btn.apps_{code}"), f"apps:{code}:{tag}" if tag else f"apps:{code}")
+        for code in others
+    ]
     for index in range(0, len(switch), 2):
         rows.append(switch[index : index + 2])
 
@@ -170,15 +208,43 @@ def apps_list(lang: str, platform: str, tag: str = "") -> InlineKeyboardMarkup:
 # ------------------------------------------------------------------- warp
 
 
-def _warp_export_rows(lang: str) -> list[list[InlineKeyboardButton]]:
-    return [
-        [_b(t(lang, "btn.warp_awg"), "wg:file:awg"), _b(t(lang, "btn.warp_awg2"), "wg:file:awg2")],
-        [_b(t(lang, "btn.warp_link"), "wg:link"), _b(t(lang, "btn.warp_plain"), "wg:file:plain")],
+def _warp_export_rows(lang: str, platform: str = "") -> list[list[InlineKeyboardButton]]:
+    """The export buttons.
+
+    With a known platform the file is rendered straight away (``wg:exp``). Without
+    one the device is asked first (``wg:file``), because rendering AmneziaWG for
+    somebody who turns out to hold an iPhone is the original bug.
+
+    The AmneziaWG buttons are hidden entirely on a platform whose client rejects
+    them: offering a button that cannot produce a working file is worse than not
+    offering it.
+    """
+    name = normalise_platform(platform) if platform else ""
+    if name:
+        def target(kind: str) -> str:
+            return f"wg:exp:{name}:{kind}"
+    else:
+        def target(kind: str) -> str:
+            return f"wg:file:{kind}"
+
+    rows: list[list[InlineKeyboardButton]] = []
+    if not name or should_include_amnezia_keys(name):
+        rows.append(
+            [
+                _b(t(lang, "btn.warp_awg"), target("awg")),
+                _b(t(lang, "btn.warp_awg2"), target("awg2")),
+            ]
+        )
+    rows.append(
+        [_b(t(lang, "btn.warp_link"), "wg:link"), _b(t(lang, "btn.warp_plain"), target("plain"))]
+    )
+    rows.append(
         [
-            _b(t(lang, "btn.warp_singbox"), "wg:file:singbox"),
-            _b(t(lang, "btn.warp_clash"), "wg:file:clash"),
-        ],
-    ]
+            _b(t(lang, "btn.warp_singbox"), target("singbox")),
+            _b(t(lang, "btn.warp_clash"), target("clash")),
+        ]
+    )
+    return rows
 
 
 def _warp_identity_rows(lang: str) -> list[list[InlineKeyboardButton]]:
@@ -193,49 +259,73 @@ def _warp_identity_rows(lang: str) -> list[list[InlineKeyboardButton]]:
 
 
 def warp_menu(lang: str, has_identity: bool = False) -> InlineKeyboardMarkup:
-    """The WARP home screen."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_b(t(lang, "btn.warp_build"), "wg:build")],
-            [
-                _b(t(lang, "btn.warp_eps"), "wg:eps"),
-                _b(t(lang, "btn.warp_rescan"), "wg:rescan"),
-            ],
-            [
-                _b(t(lang, "btn.warp_why"), "wg:why"),
-                _b(t(lang, "btn.warp_apps"), "wg:apps"),
-            ],
-            back_row(lang),
-        ]
-    )
+    """The WARP home screen.
 
-
-def warp_network(lang: str) -> InlineKeyboardMarkup:
-    """The two glass buttons: Irancell takes IPv6, everyone else takes IPv4."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [_b(t(lang, "btn.wg_irancell"), "wg:net:mtn")],
-            [_b(t(lang, "btn.wg_other"), "wg:net:other")],
-            back_row(lang, "nav:warp"),
-        ]
-    )
-
-
-def warp_delivered(lang: str, family: str) -> InlineKeyboardMarkup:
-    """Attached under a delivered config: next endpoint, the app, the exports."""
+    ``has_identity`` used to be accepted and then ignored, which is why a user who
+    had already built an identity was staring at a screen with no way to download
+    anything. The exports and the identity actions now appear when they apply.
+    """
     rows: list[list[InlineKeyboardButton]] = [
-        [_b(t(lang, "btn.wg_next_ep"), f"wg:net:next:{family}")],
-        [_u(t(lang, "btn.amnezia"), AMNEZIA_PLAY_URL)],
+        [_b(t(lang, "btn.warp_build"), "wg:net")],
+        [
+            _b(t(lang, "btn.warp_eps"), "wg:eps"),
+            _b(t(lang, "btn.warp_rescan"), "wg:rescan"),
+        ],
     ]
-    rows += _warp_export_rows(lang)
-    rows += _warp_identity_rows(lang)
-    rows.append([_b(t(lang, "btn.wg_pick_again"), "wg:net")])
+    if has_identity:
+        rows += _warp_export_rows(lang)
+        rows += _warp_identity_rows(lang)
+    rows.append(
+        [
+            _b(t(lang, "btn.warp_why"), "wg:why"),
+            _b(t(lang, "btn.warp_apps"), "wg:apps"),
+        ]
+    )
+    rows.append(back_row(lang))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def warp_network(lang: str, platform: str = "") -> InlineKeyboardMarkup:
+    """The two operator buttons: Irancell takes IPv6, everyone else takes IPv4.
+
+    The device picked a moment ago rides along in the callback data so the config
+    is rendered for the right client without any state to lose.
+    """
+    tail = f":{normalise_platform(platform)}" if platform else ""
+    rows = [
+        [glass_button(t(lang, "btn.wg_irancell"), f"wg:net:mtn{tail}")],
+        [glass_button(t(lang, "btn.wg_other"), f"wg:net:other{tail}")],
+    ]
+    if platform:
+        rows.append([_b(t(lang, "btn.wg_change_device"), "wg:net")])
     rows.append(back_row(lang, "nav:warp"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
-def warp_exports(lang: str, has_identity: bool = True) -> InlineKeyboardMarkup:
-    rows = _warp_export_rows(lang)
+def warp_delivered(lang: str, family: str, platform: str = "") -> InlineKeyboardMarkup:
+    """Attached under a delivered config: next endpoint, the client, the exports."""
+    name = normalise_platform(platform) if platform else ""
+    tail = f":{name}" if name else ""
+    rows: list[list[InlineKeyboardButton]] = [
+        [_b(t(lang, "btn.wg_next_ep"), f"wg:net:next:{family}{tail}")],
+        [_client_link(lang, name or "android")],
+    ]
+    if name in {"ios", "macos"}:
+        # Clean WireGuard has no obfuscation, so the one client that can carry an
+        # obfuscated WARP link on iOS is worth a button of its own.
+        rows.append([_u(t(lang, "btn.streisand_ios"), STREISAND_IOS_URL)])
+    rows += _warp_export_rows(lang, name)
+    rows += _warp_identity_rows(lang)
+    rows.append([_b(t(lang, "btn.wg_change_device"), "wg:net")])
+    rows.append([_b(t(lang, "btn.wg_pick_again"), f"wg:dev:{name or 'android'}")])
+    rows.append(back_row(lang, "nav:warp"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def warp_exports(
+    lang: str, has_identity: bool = True, platform: str = ""
+) -> InlineKeyboardMarkup:
+    rows = _warp_export_rows(lang, platform)
     if has_identity:
         rows += _warp_identity_rows(lang)
     rows.append([_b(t(lang, "btn.warp_apps"), "wg:apps")])
@@ -299,9 +389,7 @@ def pool_manual(lang: str, v4: int = 0, v6: int = 0) -> InlineKeyboardMarkup:
 
 def pool_manual_cancel(lang: str) -> InlineKeyboardMarkup:
     """Shown while the bot is waiting for a pasted list."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[[_b(t(lang, "btn.cancel"), "pool:manual")]]
-    )
+    return InlineKeyboardMarkup(inline_keyboard=[[_b(t(lang, "btn.cancel"), "pool:manual")]])
 
 
 def pool_manual_confirm(lang: str, family: str) -> InlineKeyboardMarkup:
@@ -368,7 +456,9 @@ def support_list(
         else ("btn.tickets_open", "sup:list:open")
     )
     rows.append([_b(t(lang, toggle[0]), toggle[1])])
-    rows.append([_b(t(lang, "support.toggle_on" if enabled else "support.toggle_off"), "sup:toggle")])
+    rows.append(
+        [_b(t(lang, "support.toggle_on" if enabled else "support.toggle_off"), "sup:toggle")]
+    )
     rows.append(back_row(lang, "adm:menu"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -401,7 +491,10 @@ def admin_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_b(t(lang, "btn.stats"), "adm:stats"), _b(t(lang, "btn.users"), "adm:users")],
-            [_b(t(lang, "btn.broadcast"), "adm:broadcast"), _b(t(lang, "btn.channels"), "adm:channels")],
+            [
+                _b(t(lang, "btn.broadcast"), "adm:broadcast"),
+                _b(t(lang, "btn.channels"), "adm:channels"),
+            ],
             [_b(t(lang, "btn.engine"), "adm:engine"), _b(t(lang, "btn.options"), "adm:options")],
             [_b(t(lang, "btn.pool"), "pool:home")],
             [_b(t(lang, "btn.panels"), "adm:panels"), _b(t(lang, "btn.logs"), "adm:logs")],
