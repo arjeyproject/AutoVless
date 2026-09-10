@@ -5,6 +5,7 @@ from __future__ import annotations
 from typing import Any
 
 from .locales.admin import ADMIN
+from .locales.ai import AI
 from .locales.apps import APPS
 from .locales.curator import CURATOR
 from .locales.device import DEVICE
@@ -24,7 +25,7 @@ RULE = "\u2501" * 14
 # same reason: the hand entry screens own their wording. DEVICE is merged last of
 # the WARP family because the device picker owns anything it names - including
 # ``warp.select_platform``, which had no entry anywhere and was rendering its own
-# key as the screen body. Proton comes at the very end.
+# key as the screen body. AI and Proton come at the end.
 CATALOG: dict[str, dict[str, str]] = {
     "fa": {
         **FA,
@@ -36,6 +37,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **WARPPOOL["fa"],
         **WARPMANUAL["fa"],
         **DEVICE["fa"],
+        **AI["fa"],
         **PROTON_STRINGS.get("fa", {}),
     },
     "en": {
@@ -48,6 +50,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **WARPPOOL["en"],
         **WARPMANUAL["en"],
         **DEVICE["en"],
+        **AI["en"],
         **PROTON_STRINGS.get("en", {}),
     },
 }
