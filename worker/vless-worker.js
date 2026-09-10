@@ -23,14 +23,34 @@
  * port they were verified on, and unmeasured entries are dealt across the
  * group's remaining ports, so a user always has a second and third way in.
  *
+ * AI destinations get their own outbound path, and it is worth explaining
+ * because "everything works except ChatGPT" was the single most common report.
+ * A Worker cannot open a socket to a Cloudflare owned address. chatgpt.com,
+ * openai.com, claude.ai and perplexity.ai are all Cloudflare-fronted, so the
+ * direct attempt cannot succeed - it can only burn the connect timeout, which on
+ * a Worker is frequently the entire request budget. Those hosts therefore go
+ * relay-first.
+ *
+ * And the relay is pinned rather than picked. When every request left through a
+ * different Cloudflare datacentre, these sites logged the user out constantly
+ * and threw "unusual activity" checks. stickyOrder() rotates the relay list by a
+ * hash of the destination hostname, so one host always exits through one relay
+ * and the site sees a steady address. AI_PROXY_IP pins a dedicated relay when an
+ * operator wants a hard guarantee.
+ *
  * HTTP responses carry permissive CORS headers so the Telegram Mini App, which
- * is served from a different origin, can read /health, /probe and /endpoints.
- * Nothing here is secret: the path already contains the account UUID, and
- * without that UUID every request lands on the landing page.
+ * is served from a different origin, can read /health, /probe, /ai and
+ * /endpoints. Nothing here is secret: the path already contains the account
+ * UUID, and without that UUID every request lands on the landing page.
  *
  * Bindings (plain text vars, all optional except UUID):
  *   UUID           the single account id allowed on this worker
  *   PROXY_IP       comma separated relay list, e.g. "1.2.3.4:443,proxy.example.com"
+ *   AI_PROXY_IP    relays reserved for AI destinations. Falls back to PROXY_IP.
+ *                  Prefer a literal IP here: a hostname whose DNS rotates gives
+ *                  away the steady exit address this whole path is for.
+ *   AI_DOMAINS     extra AI hostnames to route this way, comma separated
+ *   AI_ROUTE       "false" turns the whole behaviour off
  *   SUB_HOST       hostname used inside generated configs (defaults to request host)
  *   BRAND          label used in config remarks
  *   WS_PATH        websocket path used inside generated configs
@@ -59,6 +79,58 @@ const WS_OPEN = 1;
 const CONNECT_TIMEOUT_MS = 8000;
 
 /**
+ * Destinations that need the relay path.
+ *
+ * Two different reasons land on the same list. Some of these are
+ * Cloudflare-fronted, so a Worker literally cannot reach them directly. The rest
+ * are reachable but score a Cloudflare datacentre egress as suspicious, which
+ * shows up as constant re-logins rather than an outright failure. Both are fixed
+ * by exiting through one steady relay.
+ *
+ * Matching is by suffix, so "openai.com" also covers "api.openai.com", and
+ * "oaistatic.com" is listed separately because it is a different apex.
+ */
+const DEFAULT_AI_DOMAINS = [
+  "openai.com",
+  "chatgpt.com",
+  "oaistatic.com",
+  "oaiusercontent.com",
+  "sora.com",
+  "gemini.google.com",
+  "bard.google.com",
+  "aistudio.google.com",
+  "makersuite.google.com",
+  "generativelanguage.googleapis.com",
+  "ai.google.dev",
+  "labs.google",
+  "notebooklm.google.com",
+  "anthropic.com",
+  "claude.ai",
+  "claudeusercontent.com",
+  "perplexity.ai",
+  "pplx.ai",
+  "x.ai",
+  "grok.com",
+  "copilot.microsoft.com",
+  "githubcopilot.com",
+  "midjourney.com",
+  "huggingface.co",
+  "runwayml.com",
+  "suno.com",
+  "elevenlabs.io",
+  "cursor.com",
+  "poe.com",
+  "character.ai",
+  "mistral.ai",
+  "cohere.com",
+  "together.ai",
+  "groq.com",
+  "deepseek.com",
+  "qwen.ai",
+  "kimi.com"
+];
+
+/**
  * Client bytes are kept until the destination proves it can talk, so a failover
  * can replay them instead of handing the next relay a half-eaten stream. The cap
  * keeps a big upload from parking megabytes in memory; past it, replay is simply
@@ -71,7 +143,7 @@ const MAX_REPLAY_BYTES = 512 * 1024;
 // fails and tells you nothing about the tunnel.
 const PROBE_TARGETS = [
   { hostname: "www.wikipedia.org", port: 80, host: "www.wikipedia.org" },
-  { hostname: "example.com", port: 80, host: "example.com" },
+  { hostname: "example.com", port: 80, host: "example.com" }
 ];
 
 const ENCODER = new TextEncoder();
@@ -95,7 +167,7 @@ export default {
     } catch (err) {
       return textResponse("bad request", 400);
     }
-  },
+  }
 };
 
 /* ------------------------------------------------------------------ config */
@@ -105,6 +177,8 @@ function readConfig(env, request) {
   const uuid = String(env.UUID || "").trim().toLowerCase();
   const override = url.searchParams.get("proxyip") || pathProxy(url.pathname);
   const proxies = splitList(override || env.PROXY_IP || env.PROXYIP || "");
+  const aiOverride = url.searchParams.get("aiproxy") || "";
+  const aiProxies = splitList(aiOverride || env.AI_PROXY_IP || "");
   const tlsPorts = intList(env.TLS_PORTS, SERVE_TLS_PORTS);
   const httpPorts = intList(env.HTTP_PORTS, SERVE_HTTP_PORTS);
 
@@ -112,6 +186,9 @@ function readConfig(env, request) {
     uuid,
     uuidBytes: uuidToBytes(uuid),
     proxies,
+    aiProxies,
+    aiDomains: aiDomainList(env.AI_DOMAINS),
+    aiRoute: String(env.AI_ROUTE || "true").toLowerCase() !== "false",
     dns: String(env.DNS_SERVER || "8.8.8.8").trim(),
     dnsPort: toInt(env.DNS_PORT, 53),
     brand: String(env.BRAND || "AutoVless").trim() || "AutoVless",
@@ -127,7 +204,7 @@ function readConfig(env, request) {
     httpCount: toInt(env.HTTP_COUNT, 2),
     fallback: String(env.FALLBACK_HOST || "www.wikipedia.org").trim(),
     build: String(env.BUILD_ID || "1"),
-    live: url.searchParams.get("fresh") !== "0",
+    live: url.searchParams.get("fresh") !== "0"
   };
 }
 
@@ -141,6 +218,12 @@ function splitList(raw) {
     .split(/[\s,;\n]+/)
     .map((item) => item.trim())
     .filter(Boolean);
+}
+
+/** The built-in AI list plus anything the operator added. Deduplicated. */
+function aiDomainList(raw) {
+  const extra = splitList(raw).map((item) => item.toLowerCase().replace(/^\.+/, ""));
+  return Array.from(new Set([...DEFAULT_AI_DOMAINS, ...extra]));
 }
 
 function intList(raw, fallback) {
@@ -187,7 +270,7 @@ function handleTunnel(request, cfg) {
     write: null,
     header: null,
     headerSent: false,
-    done: false,
+    done: false
   };
 
   const early = request.headers.get("sec-websocket-protocol") || "";
@@ -203,7 +286,7 @@ function handleTunnel(request, cfg) {
         },
         abort() {
           shutdown(state);
-        },
+        }
       })
     )
     .catch(() => shutdown(state));
@@ -245,7 +328,7 @@ function wsReadable(ws, earlyHeader) {
     cancel() {
       cancelled = true;
       closeWs(ws);
-    },
+    }
   });
 }
 
@@ -311,7 +394,7 @@ function readVlessHeader(raw, expected) {
   if (bytes.length < cursor + 4) return { partial: true };
 
   const command = bytes[cursor++];
-  if (command !== 1 && command !== 2) return { error: `unsupported command ${command}` };
+  if (command !== 1 && command !== 2) return { error: "unsupported command " + command };
 
   const port = (bytes[cursor] << 8) | bytes[cursor + 1];
   cursor += 2;
@@ -338,10 +421,10 @@ function readVlessHeader(raw, expected) {
       parts.push(((bytes[cursor + i * 2] << 8) | bytes[cursor + i * 2 + 1]).toString(16));
     }
     address = parts.join(":");
-    hostname = `[${address}]`;
+    hostname = "[" + address + "]";
     cursor += 16;
   } else {
-    return { error: `bad address type ${type}` };
+    return { error: "bad address type " + type };
   }
 
   if (!address) return { error: "empty address" };
@@ -351,19 +434,90 @@ function readVlessHeader(raw, expected) {
     port,
     address,
     hostname,
-    payload: bytes.slice(cursor),
+    payload: bytes.slice(cursor)
   };
 }
 
 /* --------------------------------------------------------------- outbounds */
 
-function buildAttempts(cfg, head) {
-  const list = [{ hostname: head.hostname, port: head.port, relay: false }];
-  for (const raw of cfg.proxies) {
-    const target = splitHostPort(raw, head.port);
-    if (target.hostname) list.push({ ...target, relay: true });
+/** Suffix match against the AI list. Case and trailing dots do not matter. */
+function isAiHost(cfg, address) {
+  if (!cfg.aiRoute) return false;
+  const host = String(address || "")
+    .toLowerCase()
+    .replace(/\.+$/, "");
+  if (!host || !host.includes(".")) return false;
+  for (const domain of cfg.aiDomains) {
+    if (host === domain || host.endsWith("." + domain)) return true;
   }
-  return list;
+  return false;
+}
+
+/** FNV-1a. Small, stable, and it does not need to be a good hash. */
+function hashOf(text) {
+  let hash = 0x811c9dc5;
+  const value = String(text || "");
+  for (let i = 0; i < value.length; i++) {
+    hash ^= value.charCodeAt(i);
+    hash = Math.imul(hash, 0x01000193) >>> 0;
+  }
+  return hash >>> 0;
+}
+
+/**
+ * Rotate a list so a given seed always lands on the same head.
+ *
+ * This is the whole "static IP" mechanism. Picking the fastest relay per request
+ * would move the exit address around, and an AI site reading a different IP every
+ * few seconds treats that as account abuse: it logs the user out and starts
+ * asking for verification. Pinning by destination hostname keeps one site on one
+ * exit for as long as that relay lives, while still spreading different sites
+ * across the whole relay chain.
+ */
+function stickyOrder(list, seed) {
+  if (list.length < 2) return list.slice();
+  const offset = hashOf(seed) % list.length;
+  return list.slice(offset).concat(list.slice(0, offset));
+}
+
+function relayTargets(raw, port) {
+  const out = [];
+  for (const item of raw) {
+    const target = splitHostPort(item, port);
+    if (target.hostname) out.push({ ...target, relay: true, source: item });
+  }
+  return out;
+}
+
+/**
+ * The ordered list of places to try for this destination.
+ *
+ * Normal traffic goes direct first, then falls back through the relays. AI
+ * traffic is inverted, because the direct attempt to a Cloudflare-fronted host
+ * cannot succeed from inside a Worker: leaving it first only spends the connect
+ * timeout, and on a Worker that is frequently the entire request budget. Direct
+ * stays on the end rather than being dropped, so a host on the list that turns
+ * out not to be Cloudflare-fronted still works when every relay is down.
+ */
+function buildAttempts(cfg, head) {
+  const direct = { hostname: head.hostname, port: head.port, relay: false, source: "direct" };
+  const relays = relayTargets(cfg.proxies, head.port);
+
+  if (!isAiHost(cfg, head.address)) return [direct, ...relays];
+
+  const pool = cfg.aiProxies.length ? cfg.aiProxies : cfg.proxies;
+  const pinned = stickyOrder(relayTargets(pool, head.port), head.address);
+  if (!pinned.length) return [direct, ...relays];
+
+  const seen = new Set();
+  const out = [];
+  for (const item of [...pinned, ...relays, direct]) {
+    const key = item.hostname + ":" + item.port;
+    if (seen.has(key)) continue;
+    seen.add(key);
+    out.push(item);
+  }
+  return out;
 }
 
 function splitHostPort(raw, defaultPort) {
@@ -395,7 +549,7 @@ function openTcp(state, head) {
     writer: null,
     replay: [head.payload],
     bytes: head.payload.byteLength,
-    replayable: true,
+    replayable: true
   };
 
   const attempt = async (index) => {
@@ -514,7 +668,7 @@ async function pumpRemote(state, socket) {
             state.headerSent = true;
             state.ws.send(concat(VLESS_RESPONSE, bytes));
           }
-        },
+        }
       })
     );
   } catch (err) {
@@ -585,7 +739,7 @@ function normaliseList(raw) {
       port: Number(item.port),
       latency: Number(item.latency || 0),
       colo: item.colo || "CF",
-      kind: item.kind || "ip",
+      kind: item.kind || "ip"
     });
   }
   return out;
@@ -598,11 +752,15 @@ function normaliseList(raw) {
  */
 async function fetchSources(cfg) {
   const found = [];
+  const LIMIT = 120;
   for (const url of cfg.sources.slice(0, 4)) {
+    // The cap used to break the inner loop only, so the remaining lists were
+    // still fetched and their rows immediately thrown away.
+    if (found.length >= LIMIT) break;
     try {
       const response = await fetch(url, {
         cf: { cacheTtl: cfg.refresh, cacheEverything: true },
-        headers: { "user-agent": `${cfg.brand}/1.1` },
+        headers: { "user-agent": cfg.brand + "/1.2" }
       });
       if (!response.ok) continue;
       const body = await response.text();
@@ -615,9 +773,9 @@ async function fetchSources(cfg) {
           port: hit[2] ? Number(hit[2]) : 0,
           colo: label ? label[1].trim().slice(0, 8).toUpperCase() : "LIVE",
           latency: 0,
-          kind: "live",
+          kind: "live"
         });
-        if (found.length >= 120) break;
+        if (found.length >= LIMIT) break;
       }
     } catch (err) {
       /* a dead list is not worth failing a subscription over */
@@ -647,14 +805,14 @@ async function liveEndpoints(cfg) {
 
   const groups = [
     { key: "tls", ports: cfg.tlsPorts, count: cfg.tlsCount },
-    { key: "http", ports: cfg.httpPorts, count: cfg.httpCount },
+    { key: "http", ports: cfg.httpPorts, count: cfg.httpCount }
   ];
 
   const out = [];
   const seen = new Set();
   const take = (bag, item) => {
     if (!item || !item.ip) return;
-    const key = `${item.ip}:${item.port}`;
+    const key = item.ip + ":" + item.port;
     if (seen.has(key)) return;
     seen.add(key);
     bag.push(item);
@@ -681,7 +839,7 @@ async function liveEndpoints(cfg) {
       port:
         item.port && groupOf(item.port, cfg) === group.key
           ? item.port
-          : ports[index % ports.length],
+          : ports[index % ports.length]
     }));
 
     // Reserve one slot for a self-healing hostname and one for a live address
@@ -728,14 +886,21 @@ async function handleHttp(request, cfg) {
       sources: cfg.sources.length,
       refresh: cfg.refresh,
       proxies: cfg.proxies.length,
+      ai_route: cfg.aiRoute,
+      ai_proxies: cfg.aiProxies.length,
+      ai_domains: cfg.aiDomains.length,
       tls_ports: cfg.tlsPorts,
       http_ports: cfg.httpPorts,
-      colo: request.cf && request.cf.colo ? request.cf.colo : null,
+      colo: request.cf && request.cf.colo ? request.cf.colo : null
     });
   }
 
   if (kind === "probe") {
     return jsonResponse(await probe(cfg));
+  }
+
+  if (kind === "ai") {
+    return jsonResponse(await aiReport(cfg));
   }
 
   const endpoints = await liveEndpoints(cfg);
@@ -746,7 +911,7 @@ async function handleHttp(request, cfg) {
 
   if (kind === "clash") {
     return new Response(buildClash(cfg, endpoints), {
-      headers: { "content-type": "text/yaml; charset=utf-8", ...corsHeaders() },
+      headers: { "content-type": "text/yaml; charset=utf-8", ...corsHeaders() }
     });
   }
 
@@ -758,7 +923,7 @@ async function handleHttp(request, cfg) {
 
   if (kind === "raw") {
     return new Response(links, {
-      headers: { "content-type": "text/plain; charset=utf-8", ...corsHeaders() },
+      headers: { "content-type": "text/plain; charset=utf-8", ...corsHeaders() }
     });
   }
 
@@ -768,19 +933,24 @@ async function handleHttp(request, cfg) {
       "profile-update-interval": "6",
       "profile-title": cfg.brand,
       "cache-control": "no-store",
-      ...corsHeaders(),
-    },
+      ...corsHeaders()
+    }
   });
 }
 
 function landing(cfg) {
-  const body = `<!doctype html><html lang="en"><head><meta charset="utf-8">` +
-    `<meta name="viewport" content="width=device-width,initial-scale=1">` +
-    `<title>${cfg.brand}</title></head><body style="font-family:system-ui;padding:3rem;">` +
-    `<h1>${cfg.brand}</h1><p>Nothing to see here.</p></body></html>`;
+  const body =
+    '<!doctype html><html lang="en"><head><meta charset="utf-8">' +
+    '<meta name="viewport" content="width=device-width,initial-scale=1">' +
+    "<title>" +
+    cfg.brand +
+    '</title></head><body style="font-family:system-ui;padding:3rem;">' +
+    "<h1>" +
+    cfg.brand +
+    "</h1><p>Nothing to see here.</p></body></html>";
   return new Response(body, {
     status: 200,
-    headers: { "content-type": "text/html; charset=utf-8" },
+    headers: { "content-type": "text/html; charset=utf-8" }
   });
 }
 
@@ -807,7 +977,40 @@ async function probe(cfg) {
     ok: Boolean(direct.ok),
     direct,
     relays,
+    usable_relays: relays.filter((item) => item.ok).length
+  };
+}
+
+/**
+ * What the AI path looks like right now, and which relay each well known host is
+ * pinned to. This is what the bot's AI screen reads, and it is also the fastest
+ * way for an operator to tell whether "ChatGPT does not open" is a relay problem
+ * or something else entirely.
+ */
+async function aiReport(cfg) {
+  const pool = cfg.aiProxies.length ? cfg.aiProxies : cfg.proxies;
+  const relays = [];
+  for (const raw of pool.slice(0, 4)) {
+    const target = splitHostPort(raw, 443);
+    const result = await tcpProbe(target.hostname, target.port, "");
+    relays.push({ target: raw, ...result });
+  }
+
+  const samples = ["chatgpt.com", "gemini.google.com", "claude.ai"];
+  const pinning = {};
+  for (const host of samples) {
+    const order = stickyOrder(relayTargets(pool, 443), host);
+    pinning[host] = order.length ? order[0].source : null;
+  }
+
+  return {
+    ok: relays.some((item) => item.ok),
+    enabled: cfg.aiRoute,
+    dedicated: cfg.aiProxies.length > 0,
+    relays,
     usable_relays: relays.filter((item) => item.ok).length,
+    domains: cfg.aiDomains.length,
+    pinning
   };
 }
 
@@ -822,8 +1025,9 @@ async function tcpProbe(hostname, port, readBackHost) {
       const writer = socket.writable.getWriter();
       await writer.write(
         ENCODER.encode(
-          `GET / HTTP/1.1\r\nHost: ${readBackHost}\r\nUser-Agent: AutoVless\r\n` +
-            "Accept: */*\r\nConnection: close\r\n\r\n"
+          "GET / HTTP/1.1\r\nHost: " +
+            readBackHost +
+            "\r\nUser-Agent: AutoVless\r\nAccept: */*\r\nConnection: close\r\n\r\n"
         )
       );
       writer.releaseLock();
@@ -847,7 +1051,7 @@ async function tcpProbe(hostname, port, readBackHost) {
 function withTimeout(promise, ms) {
   return Promise.race([
     promise,
-    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms)),
+    new Promise((_, reject) => setTimeout(() => reject(new Error("timeout")), ms))
   ]);
 }
 
@@ -858,10 +1062,26 @@ function remark(cfg, endpoint, index) {
   let badge = secure ? "\u26a1" : "\ud83d\udfe1";
   if (endpoint.kind === "domain") badge = "\ud83c\udf00";
   if (endpoint.kind === "live") badge = "\ud83d\udd04";
-  const ping = endpoint.latency ? `${Math.round(Number(endpoint.latency))}ms` : "auto";
-  const tail = secure ? "" : ` | \ud83d\udd0c${endpoint.port}`;
-  const lock = secure && Number(endpoint.port) !== 443 ? ` | \ud83d\udd12${endpoint.port}` : "";
-  return `@${cfg.brand} | ${badge} VLESS | \ud83c\udf0d GLOBAL | ${ping} | ${endpoint.colo || "CF"}${lock}${tail} | #${index}`;
+  const ping = endpoint.latency ? Math.round(Number(endpoint.latency)) + "ms" : "auto";
+  const tail = secure ? "" : " | \ud83d\udd0c" + endpoint.port;
+  const lock = secure && Number(endpoint.port) !== 443 ? " | \ud83d\udd12" + endpoint.port : "";
+  const ai = cfg.aiRoute ? " | \ud83e\udde0AI" : "";
+  return (
+    "@" +
+    cfg.brand +
+    " | " +
+    badge +
+    " VLESS | \ud83c\udf0d GLOBAL" +
+    ai +
+    " | " +
+    ping +
+    " | " +
+    (endpoint.colo || "CF") +
+    lock +
+    tail +
+    " | #" +
+    index
+  );
 }
 
 function buildLinks(cfg, endpoints) {
@@ -873,7 +1093,7 @@ function buildLinks(cfg, endpoints) {
       security: secure ? "tls" : "none",
       type: "ws",
       host: cfg.host,
-      path: cfg.wsPath,
+      path: cfg.wsPath
     });
     if (secure) {
       params.set("sni", cfg.host);
@@ -881,7 +1101,18 @@ function buildLinks(cfg, endpoints) {
       params.set("alpn", "http/1.1");
     }
     const label = encodeURIComponent(remark(cfg, endpoint, position + 1));
-    links.push(`vless://${cfg.uuid}@${endpoint.ip}:${endpoint.port}?${params.toString()}#${label}`);
+    links.push(
+      "vless://" +
+        cfg.uuid +
+        "@" +
+        endpoint.ip +
+        ":" +
+        endpoint.port +
+        "?" +
+        params.toString() +
+        "#" +
+        label
+    );
   });
   return links;
 }
@@ -893,31 +1124,31 @@ function buildClash(cfg, endpoints) {
   endpoints.forEach((endpoint, position) => {
     const secure = isTls(endpoint.port, cfg);
     const name = remark(cfg, endpoint, position + 1).replace(/"/g, "'");
-    names.push(`      - "${name}"`);
+    names.push('      - "' + name + '"');
     const lines = [
-      `  - name: "${name}"`,
+      '  - name: "' + name + '"',
       "    type: vless",
-      `    server: ${endpoint.ip}`,
-      `    port: ${endpoint.port}`,
-      `    uuid: ${cfg.uuid}`,
+      "    server: " + endpoint.ip,
+      "    port: " + endpoint.port,
+      "    uuid: " + cfg.uuid,
       "    udp: true",
-      `    tls: ${secure ? "true" : "false"}`,
+      "    tls: " + (secure ? "true" : "false")
     ];
     if (secure) {
-      lines.push(`    servername: ${cfg.host}`, "    client-fingerprint: chrome");
+      lines.push("    servername: " + cfg.host, "    client-fingerprint: chrome");
     }
     lines.push(
       "    network: ws",
       "    ws-opts:",
-      `      path: "${cfg.wsPath}"`,
+      '      path: "' + cfg.wsPath + '"',
       "      headers:",
-      `        Host: ${cfg.host}`
+      "        Host: " + cfg.host
     );
     proxies.push(lines.join("\n"));
   });
 
   return [
-    `# ${cfg.brand} - built on your own Cloudflare account`,
+    "# " + cfg.brand + " - built on your own Cloudflare account",
     "mixed-port: 7890",
     "allow-lan: false",
     "mode: rule",
@@ -925,7 +1156,7 @@ function buildClash(cfg, endpoints) {
     "proxies:",
     proxies.join("\n"),
     "proxy-groups:",
-    `  - name: "${cfg.brand}"`,
+    '  - name: "' + cfg.brand + '"',
     "    type: url-test",
     "    url: http://cp.cloudflare.com/generate_204",
     "    interval: 300",
@@ -933,8 +1164,8 @@ function buildClash(cfg, endpoints) {
     "    proxies:",
     names.join("\n"),
     "rules:",
-    `  - MATCH,${cfg.brand}`,
-    "",
+    "  - MATCH," + cfg.brand,
+    ""
   ].join("\n");
 }
 
@@ -952,14 +1183,14 @@ function buildSingbox(cfg, endpoints) {
         type: "ws",
         path: cfg.wsPath,
         headers: { Host: cfg.host },
-        early_data_header_name: "Sec-WebSocket-Protocol",
-      },
+        early_data_header_name: "Sec-WebSocket-Protocol"
+      }
     };
     if (secure) {
       item.tls = {
         enabled: true,
         server_name: cfg.host,
-        utls: { enabled: true, fingerprint: "chrome" },
+        utls: { enabled: true, fingerprint: "chrome" }
       };
     }
     return item;
@@ -978,20 +1209,20 @@ function corsHeaders() {
     "access-control-allow-origin": "*",
     "access-control-allow-methods": "GET, HEAD, OPTIONS",
     "access-control-allow-headers": "content-type",
-    "access-control-max-age": "86400",
+    "access-control-max-age": "86400"
   };
 }
 
 function textResponse(body, status) {
   return new Response(body, {
     status: status || 200,
-    headers: { "content-type": "text/plain; charset=utf-8", ...corsHeaders() },
+    headers: { "content-type": "text/plain; charset=utf-8", ...corsHeaders() }
   });
 }
 
 function jsonResponse(payload, status) {
   return new Response(JSON.stringify(payload, null, 2), {
     status: status || 200,
-    headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders() },
+    headers: { "content-type": "application/json; charset=utf-8", ...corsHeaders() }
   });
 }
