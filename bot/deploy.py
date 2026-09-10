@@ -17,11 +17,19 @@ list, so a user is never handed a config that cannot ping.
 
 ``refresh`` does steps 3 to 6 only. It keeps the script name and the panel uuid,
 so the subscription link never changes while the addresses under it do.
+
+One binding here is deliberately *not* chosen for speed. ``AI_PROXY_IP`` is the
+relay every AI destination exits through, and the entire point of it is that the
+address stops moving: a Cloudflare datacentre that changes on every refresh is
+what makes ChatGPT and Gemini log a user out and start demanding verification. So
+``_ai_relays`` pins by name and by panel uuid rather than by latency. Ordinary
+traffic keeps the fastest-first chain, where a reshuffle costs nothing.
 """
 
 from __future__ import annotations
 
 import asyncio
+import hashlib
 import json
 import logging
 import time
@@ -75,6 +83,7 @@ class Panel:
     uuid: str
     endpoints: list[dict] = field(default_factory=list)
     relays: list[str] = field(default_factory=list)
+    ai_relays: list[str] = field(default_factory=list)
     build_ms: int = 0
     healthy: bool = False
     probe: dict = field(default_factory=dict)
@@ -147,12 +156,41 @@ async def _select_relays() -> list[str]:
     return relays[: settings.proxy_per_panel + 2]
 
 
+def _ai_relays(relays: list[str], panel_uuid: str) -> list[str]:
+    """Which relays AI destinations exit through, chosen to *stay the same*.
+
+    An explicit ``AI_PROXY_IP`` wins outright: an operator who has a static
+    address wants that address and nothing else.
+
+    Otherwise the pick is derived from the relay list - but from a copy sorted by
+    name, not the latency ordering ``_select_relays`` produced. That distinction
+    is the whole point. Latency ordering changes on every refresh, so pinning to
+    the head of it would hand the user a different exit IP every time the
+    autopilot ran, which is precisely the behaviour these sites read as account
+    abuse. Sorting by name means the same relay set always yields the same pin,
+    and the panel uuid spreads different users across different relays so one
+    address does not carry everybody.
+    """
+    if settings.ai_proxy_ip:
+        return list(settings.ai_proxy_ip)
+    if not relays:
+        return []
+    stable = sorted(set(relays))
+    seed = f"{settings.secret_key}:{panel_uuid}".encode("utf-8")
+    offset = hashlib.sha256(seed).digest()[0] % len(stable)
+    ordered = stable[offset:] + stable[:offset]
+    return ordered[: max(1, settings.ai_relays)]
+
+
 def _bindings(uuid: str, host: str, endpoints: list[dict], relays: list[str]) -> dict[str, str]:
     """Plain text vars handed to the worker. Shared by build and refresh so the
     two paths can never drift apart."""
     return {
         "UUID": uuid,
         "PROXY_IP": ",".join(relays),
+        "AI_ROUTE": "true" if settings.ai_route else "false",
+        "AI_PROXY_IP": ",".join(_ai_relays(relays, uuid)),
+        "AI_DOMAINS": ",".join(settings.ai_domains),
         "SUB_HOST": host,
         "BRAND": settings.brand,
         "WS_PATH": vless.WS_PATH,
@@ -202,13 +240,15 @@ async def _accept(host: str, endpoints: list[dict]) -> tuple[list[dict], list[di
             await scanner.demote(str(endpoint["ip"]), port)
             dead.append(endpoint)
             continue
-        keep.append({
-            **endpoint,
-            "latency": result["latency"],
-            "jitter": result["jitter"],
-            "colo": result["colo"],
-            "verified": True,
-        })
+        keep.append(
+            {
+                **endpoint,
+                "latency": result["latency"],
+                "jitter": result["jitter"],
+                "colo": result["colo"],
+                "verified": True,
+            }
+        )
 
     return keep, dead
 
@@ -235,9 +275,13 @@ async def _ship(host: str, endpoints: list[dict]) -> tuple[list[dict], list[dict
 
         candidates: list[dict] = []
         if missing_tls:
-            candidates += await vless.spare_endpoints(scanner, settings.tls_ports, missing_tls * 3, seen)
+            candidates += await vless.spare_endpoints(
+                scanner, settings.tls_ports, missing_tls * 3, seen
+            )
         if missing_http:
-            candidates += await vless.spare_endpoints(scanner, settings.http_ports, missing_http * 3, seen)
+            candidates += await vless.spare_endpoints(
+                scanner, settings.http_ports, missing_http * 3, seen
+            )
         if not candidates:
             if attempt == 0:
                 await scanner.scan_once()
@@ -405,13 +449,15 @@ async def build(
         except CloudflareError as error:
             log.warning("could not re-upload the healed endpoint list: %s", error.message)
 
+    ai_relays = _ai_relays(relays, panel_uuid)
     build_ms = int((time.perf_counter() - started) * 1000)
     log.info(
-        "panel built host=%s endpoints=%s rejected=%s relays=%s healthy=%s in %sms",
+        "panel built host=%s endpoints=%s rejected=%s relays=%s ai=%s healthy=%s in %sms",
         host,
         len(endpoints),
         len(rejected),
         len(relays),
+        ",".join(ai_relays) or "none",
         healthy,
         build_ms,
     )
@@ -423,6 +469,7 @@ async def build(
         uuid=panel_uuid,
         endpoints=endpoints,
         relays=relays,
+        ai_relays=ai_relays,
         build_ms=build_ms,
         healthy=healthy,
         probe=report,
@@ -436,6 +483,10 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     Same account, same script, same uuid, same subscription URL: only the
     endpoint list and the relay chain change. This is what lets clean IPs be
     applied to every live config without anyone pressing rebuild.
+
+    The AI pin is derived from the uuid, which does not change here, so a refresh
+    keeps the same exit address for AI traffic even as the ordinary chain is
+    reshuffled by latency underneath it.
     """
     token = panel.get("token")
     if not token:
@@ -479,6 +530,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
         uuid=panel_uuid,
         endpoints=endpoints,
         relays=relays,
+        ai_relays=_ai_relays(relays, panel_uuid),
         build_ms=int((time.perf_counter() - started) * 1000),
         healthy=healthy,
         probe=report,
