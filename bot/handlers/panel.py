@@ -1,4 +1,4 @@
-"""Panel management: exports, QR, live ping, apply, rescan, rebuild, delete."""
+"""Panel management: exports, QR, live ping, AI routing, apply, rescan, rebuild."""
 
 from __future__ import annotations
 
@@ -6,6 +6,7 @@ import asyncio
 import io
 import logging
 
+import httpx
 import qrcode
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
@@ -141,12 +142,69 @@ async def on_ping(call: CallbackQuery, lang: str) -> None:
     )
 
 
+# --------------------------------------------------------------------- #
+# AI routing
+# --------------------------------------------------------------------- #
+
+
+@router.callback_query(F.data == "panel:ai")
+async def on_ai(call: CallbackQuery, lang: str) -> None:
+    """Is the AI path actually working, and which relay is each site pinned to?
+
+    "ChatGPT does not open" has three different causes and they need three
+    different answers: the worker is still on an old bundle with no AI routing in
+    it, every relay in the chain is dead, or the routing is fine and the problem
+    is somewhere else. The worker reports all of that at ``/ai``; this screen just
+    prints it.
+    """
+    panel = await _require_panel(call, lang)
+    if panel is None:
+        return
+    await call.answer()
+
+    url = f"https://{panel['host']}/{panel['uuid']}/ai"
+    report: dict = {}
+    try:
+        async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+            response = await client.get(url)
+            if response.status_code == 200:
+                report = response.json() or {}
+    except Exception as error:  # noqa: BLE001
+        log.info("could not read the ai report for %s: %s", panel["host"], error)
+
+    if not report:
+        # A panel on the previous bundle answers 404 here, and that is the useful
+        # answer rather than an error: press apply and the worker is re-uploaded.
+        await edit(call, t(lang, "panel.ai_unknown"), keyboards.panel_menu(lang))
+        return
+
+    relays = report.get("relays") or []
+    pinning = report.get("pinning") or {}
+    body = t(
+        lang,
+        "panel.ai_screen",
+        relays=num(len(panel.get("relays") or []), lang),
+        ai=num(len(relays), lang),
+        domains=num(int(report.get("domains") or 0), lang),
+        usable=num(int(report.get("usable_relays") or 0), lang),
+    )
+
+    lines = []
+    for host, relay in pinning.items():
+        lines.append(f"\u2022 <code>{esc(host)}</code> \u2192 <code>{esc(relay or '-')}</code>")
+    if lines:
+        body += "\n\n" + "\n".join(lines)
+
+    await edit(call, body, keyboards.panel_menu(lang))
+
+
 @router.callback_query(F.data == "panel:apply")
 async def on_apply(call: CallbackQuery, lang: str) -> None:
     """Push the current best clean IPs onto this panel, keeping the same link.
 
     This is the same operation the autopilot runs in the background, exposed as a
-    button for people who do not want to wait for the next cycle.
+    button for people who do not want to wait for the next cycle. It also
+    re-uploads the worker bundle, which is how a panel picks up a new build.
     """
     panel = await _require_panel(call, lang)
     if panel is None:
