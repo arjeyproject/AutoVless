@@ -1,11 +1,23 @@
-"""The operator picker, and the admin controls for the two endpoint pools.
+"""The device and operator pickers, and the admin controls for both pools.
 
 Two audiences, one file, because they are two ends of the same pipe.
 
-**Users** press build and are asked one question: which operator. Irancell gets an
-IPv6 endpoint because that is the path MTN leaves alone; everyone else gets IPv4.
-Nothing is guessed from the phone number or the language, because a wrong guess
-here is a config that cannot connect and a user who blames the bot.
+**Users** press build and are asked exactly two questions.
+
+*Which device.* This is not a nicety. An AmneziaWG config carries ``Jc``,
+``Jmin``, ``Jmax``, ``S1``-``S4`` and ``H1``-``H4`` inside ``[Interface]``, and
+the official WireGuard app on iOS is a strict parser: it meets a key it does not
+recognise, decides the file is not a WireGuard config, and refuses all of it with
+no usable error. Every config the bot handed out was AmneziaWG, so every iPhone
+user got "the protocol does not run" and blamed the endpoint. iPhone and macOS now
+get clean standard WireGuard; Android and Windows keep the full junk train. The
+answer travels in the callback data rather than FSM state, because a navigation in
+between used to clear the state and the next tap did nothing at all.
+
+*Which operator.* Irancell gets an IPv6 endpoint because that is the path MTN
+leaves alone; everyone else gets IPv4. Nothing is guessed from the phone number or
+the language: a wrong guess here is a config that cannot connect and a user who
+blames the bot.
 
 **Admins** get a pool screen with four verbs. *Refresh* goes hunting for new
 endpoints in the background. *Full check* re-pings everything already stored,
@@ -36,9 +48,9 @@ either no route for that family on this host, a probing key Cloudflare does not
 answer, or genuine filtering, and those three need three completely different
 fixes. ``report.note`` carries the diagnosis and this module prints it.
 
-This router is registered ahead of ``handlers.warp`` so ``wg:net`` lands here.
-No handler in this module ever awaits a scan: every sweep runs as a background
-task and edits the message that started it.
+This router is registered ahead of ``handlers.warp`` so ``wg:net`` and the device
+picker land here. No handler in this module ever awaits a scan: every sweep runs
+as a background task and edits the message that started it.
 """
 
 from __future__ import annotations
@@ -56,7 +68,8 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from .. import db, keyboards, operators, warpconf, warpep, warpmanual, warpstore
 from .. import warp as warpcore
 from ..config import settings
-from ..i18n import num, t
+from ..i18n import device_label, num, t
+from ..platforms import default_platform, normalise_platform
 from ..utils import ago, edit, esc, ping_label
 from ..warpep import V4, V6
 from ..warppool import AuditReport, RefreshReport, warp_pool
@@ -157,36 +170,68 @@ def _guard(is_admin: bool) -> bool:
 
 
 # --------------------------------------------------------------------- #
-# user flow: pick an operator, get a config
+# user flow: which device, then which operator, then a config
 # --------------------------------------------------------------------- #
 
 
+async def show_device(event: CallbackQuery | Message, lang: str) -> None:
+    """Step one of every WARP flow: which phone is this for.
+
+    Asked rather than guessed, because the answer changes what is *inside* the
+    file and getting it wrong means the file will not load at all.
+    """
+    await edit(event, t(lang, "wg.pick_device"), keyboards.device_picker(lang))
+
+
+async def show_network(event: CallbackQuery | Message, lang: str, platform: str) -> None:
+    """Step two: which operator. Shows how full each pool is, so nobody flies blind."""
+    v4 = await warpstore.counts(V4)
+    v6 = await warpstore.counts(V6)
+    body = t(
+        lang,
+        "wg.pick_net",
+        v4=num(v4["healthy"], lang),
+        v6=num(v6["healthy"], lang),
+        target=num(TUNE.pool_target, lang),
+    )
+    body += "\n\n" + t(lang, "wg.device_picked", device=device_label(platform, lang))
+    await edit(event, body, keyboards.warp_network(lang, platform))
+
+
 @router.callback_query(F.data == "wg:net")
-async def on_pick_network(call: CallbackQuery, lang: str) -> None:
-    """The two glass buttons. Shows how full each pool is, so nobody flies blind."""
+async def on_pick_device(call: CallbackQuery, lang: str) -> None:
     if not await db.get_flag("warp_enabled"):
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
+    await show_device(call, lang)
+    await call.answer()
 
-    v4 = await warpstore.counts(V4)
-    v6 = await warpstore.counts(V6)
-    await edit(
-        call,
-        t(
-            lang,
-            "wg.pick_net",
-            v4=num(v4["healthy"], lang),
-            v6=num(v6["healthy"], lang),
-            target=num(TUNE.pool_target, lang),
-        ),
-        keyboards.warp_network(lang),
-    )
+
+# ``:f:`` in the tail means the device picker was opened by an export button, and
+# ``handlers.warp`` owns that. Excluding it here matters because this router is
+# registered first and would otherwise swallow the export flow.
+@router.callback_query(F.data.startswith("wg:dev:") & ~F.data.contains(":f:"))
+async def on_device_chosen(call: CallbackQuery, lang: str) -> None:
+    if not await db.get_flag("warp_enabled"):
+        await call.answer(t(lang, "warp.off"), show_alert=True)
+        return
+    platform = normalise_platform((call.data or "").split(":")[2:3] and (call.data or "").split(":")[2])
+    await show_network(call, lang, platform)
     await call.answer()
 
 
 @router.callback_query(F.data.startswith("wg:net:"))
 async def on_network_chosen(call: CallbackQuery, lang: str) -> None:
-    """Build and deliver a config on an endpoint of the right family."""
+    """Build and deliver a config on an endpoint of the right family.
+
+    Callback shapes, and why the platform is optional: keyboards already sitting
+    in somebody's chat history predate the device picker, so a tail without a
+    platform is honoured and falls back to Android rather than raising.
+
+      wg:net:mtn[:platform]
+      wg:net:other[:platform]
+      wg:net:next:<family>[:platform]
+    """
     if not await db.get_flag("warp_enabled"):
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
@@ -196,14 +241,16 @@ async def on_network_chosen(call: CallbackQuery, lang: str) -> None:
     if rotate:
         family = warpep.normalise_family(tail[1] if len(tail) > 1 else V4)
         operator = "mtn" if family == V6 else "other"
+        platform = normalise_platform(tail[2] if len(tail) > 2 else default_platform())
     else:
         choice = CHOICES.get(tail[0] if tail else "other", CHOICES["other"])
         family = choice["family"]
         operator = choice["operator"]
+        platform = normalise_platform(tail[1] if len(tail) > 1 else default_platform())
 
     await call.answer()
     notice = await call.message.answer(t(lang, "wg.making", family=_family_label(family, lang)))
-    await _deliver(call, notice, lang, family, operator, rotate)
+    await _deliver(call, notice, lang, family, operator, rotate, platform)
 
 
 async def _deliver(
@@ -213,6 +260,7 @@ async def _deliver(
     family: str,
     operator: str,
     rotate: bool,
+    platform: str,
 ) -> None:
     """Identity, endpoints, config, instructions. In that order, or not at all."""
     record = await db.get_warp_user(call.from_user.id)
@@ -240,42 +288,93 @@ async def _deliver(
         key = "wg.pool_no_route" if not warpep.reachable(family) else "wg.pool_cold"
         await notice.edit_text(
             t(lang, key, family=_family_label(family, lang)),
-            reply_markup=keyboards.warp_network(lang),
+            reply_markup=keyboards.warp_network(lang, platform),
         )
         return
 
     await db.save_warp_user(call.from_user.id, identity, endpoints)
-    await db.log_event("warp_build", call.from_user.id, f"{operator}/{family}")
+    await db.log_event("warp_build", call.from_user.id, f"{operator}/{family}/{platform}")
 
+    # Everything from here is rendering and sending. It used to be unguarded, and
+    # a single missing function in the renderer meant the user watched a notice
+    # that never turned into a file. If this breaks again it says so on screen.
+    try:
+        await _send_config(call, notice, lang, family, operator, platform, identity, endpoints)
+    except asyncio.CancelledError:
+        raise
+    except Exception as error:  # noqa: BLE001
+        log.exception("could not render or deliver the warp config")
+        try:
+            await notice.edit_text(
+                t(lang, "wg.render_failed", reason=esc(str(error)[:180])),
+                reply_markup=keyboards.warp_network(lang, platform),
+            )
+        except TelegramBadRequest:
+            log.info("could not report the delivery failure")
+
+
+async def _send_config(
+    call: CallbackQuery,
+    notice: Message,
+    lang: str,
+    family: str,
+    operator: str,
+    platform: str,
+    identity: dict,
+    endpoints: list[dict],
+) -> None:
+    """Render for this exact platform, send the file, then the instructions."""
+    clean = warpconf.is_clean_for(platform)
     profile = warpcore.obfuscation(identity.get("private_key", ""))
-    body = warpconf.amnezia_conf(identity, endpoints, profile)
-    head = endpoints[0]
+    body = warpconf.conf_for(identity, endpoints, platform=platform, profile=profile)
+    device = device_label(platform, lang)
 
+    # The endpoint actually written into the file, which is not always the first
+    # row: iOS prefers IPv4 when the pool holds both.
+    head_label = warpconf.label(endpoints, 0, platform)
+    ordered = warpconf.order_for(endpoints, platform)
+    head = ordered[0] if ordered else {}
+
+    caption_key = "wg.caption_clean" if clean else "wg.caption"
     # The file first, then the instructions. A Telegram caption caps out around a
     # thousand characters and the how-to does not fit inside one.
     await call.message.answer_document(
-        BufferedInputFile(body.encode("utf-8"), filename=warpconf.filename(family, "awg")),
-        caption=t(lang, "wg.caption", family=_family_label(family, lang)),
+        BufferedInputFile(
+            body.encode("utf-8"),
+            filename=warpconf.filename(family, "plain" if clean else "awg", platform),
+        ),
+        caption=t(
+            lang,
+            caption_key,
+            family=_family_label(family, lang),
+            device=device,
+        ),
     )
-    try:
-        await notice.edit_text(
-            t(
-                lang,
-                "wg.sent",
-                operator=esc(operators.label(operator, lang) or operator),
-                family=_family_label(family, lang),
-                endpoint=esc(warpconf.label(endpoints)),
-                ping=ping_label(head.get("latency"), lang),
-                health=_out_of(head.get("health"), lang),
-                spares=num(max(0, len(endpoints) - 1), lang),
-                jc=num(profile["jc"], lang),
-                jmin=num(profile["jmin"], lang),
-                jmax=num(profile["jmax"], lang),
-                mtu=num(settings.warp_mtu, lang),
-                app=_app_link(),
-            ),
-            reply_markup=keyboards.warp_delivered(lang, family),
+
+    common = {
+        "operator": esc(operators.label(operator, lang) or operator),
+        "family": _family_label(family, lang),
+        "endpoint": esc(head_label),
+        "ping": ping_label(head.get("latency"), lang),
+        "health": _out_of(head.get("health"), lang),
+        "spares": num(max(0, len(endpoints) - 1), lang),
+        "mtu": num(settings.warp_mtu, lang),
+    }
+    if clean:
+        text = t(lang, "wg.sent_clean", device=device, **common)
+    else:
+        text = t(
+            lang,
+            "wg.sent",
+            jc=num(profile["jc"], lang),
+            jmin=num(profile["jmin"], lang),
+            jmax=num(profile["jmax"], lang),
+            app=_app_link(),
+            **common,
         )
+
+    try:
+        await notice.edit_text(text, reply_markup=keyboards.warp_delivered(lang, family, platform))
     except TelegramBadRequest as error:
         log.info("could not update the delivery notice: %s", error)
 
@@ -471,9 +570,7 @@ async def on_pool_refresh(
 
 
 @router.callback_query(F.data.startswith("pool:add:"))
-async def on_manual_ask(
-    call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool
-) -> None:
+async def on_manual_ask(call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool) -> None:
     """Ask for a pasted list for exactly one family."""
     if not _guard(is_admin):
         await call.answer(t(lang, "admin.denied"), show_alert=True)
@@ -506,9 +603,7 @@ async def on_manual_ask(
 
 
 @router.message(PoolFlow.manual, F.text)
-async def on_manual_text(
-    message: Message, state: FSMContext, lang: str, is_admin: bool
-) -> None:
+async def on_manual_text(message: Message, state: FSMContext, lang: str, is_admin: bool) -> None:
     """Take the paste, answer immediately, prove the endpoints in the background."""
     if not _guard(is_admin):
         return
@@ -537,7 +632,10 @@ async def on_manual_text(
 
 def _entry_line(entry: warpmanual.Entry, lang: str) -> str:
     mark = VERDICT_MARKS.get(entry.verdict, "\u2022")
-    line = f"{mark} <code>{esc(entry.label)}</code> \u00b7 {t(lang, f'pool.manual_v_{entry.verdict}')}"
+    line = (
+        f"{mark} <code>{esc(entry.label)}</code> \u00b7 "
+        f"{t(lang, f'pool.manual_v_{entry.verdict}')}"
+    )
     if entry.verdict in {"stored", "weak"}:
         line += (
             f" \u00b7 {ping_label(entry.latency, lang)} \u00b7 "
@@ -599,9 +697,7 @@ async def _run_manual(notice: Message, lang: str, family: str, body: str) -> Non
     try:
         await notice.edit_text(
             text,
-            reply_markup=keyboards.pool_manual(
-                lang, counts[V4]["total"], counts[V6]["total"]
-            ),
+            reply_markup=keyboards.pool_manual(lang, counts[V4]["total"], counts[V6]["total"]),
         )
     except TelegramBadRequest as error:
         log.info("could not update the manual import notice: %s", error)
@@ -683,9 +779,7 @@ async def _run_manual_check(notice: Message, lang: str) -> None:
     try:
         await notice.edit_text(
             text,
-            reply_markup=keyboards.pool_manual(
-                lang, counts[V4]["total"], counts[V6]["total"]
-            ),
+            reply_markup=keyboards.pool_manual(lang, counts[V4]["total"], counts[V6]["total"]),
         )
     except TelegramBadRequest as error:
         log.info("could not update the manual check notice: %s", error)
@@ -741,9 +835,9 @@ def _audit_text(report: AuditReport, lang: str) -> str:
     if report.status == "busy":
         return t(lang, "pool.audit_busy")
     if report.status == "failed":
-        return t(
-            lang, "pool.audit_failed", reason=esc(report.reason or "-")
-        ) + _note_line(report.note, lang)
+        return t(lang, "pool.audit_failed", reason=esc(report.reason or "-")) + _note_line(
+            report.note, lang
+        )
 
     v4 = report.families.get(V4, {})
     v6 = report.families.get(V6, {})
