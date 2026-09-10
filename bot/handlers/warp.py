@@ -1,10 +1,23 @@
-"""WARP / WireGuard: automatic identity, healthy endpoints, every export format.
+"""WARP / WireGuard exports: every format, rendered for the client that asked.
 
 The engine in ``warpscan`` maintains a pool of endpoints that answered a real
-handshake more than once, scored on latency, jitter and loss. This module hands a
-user their own WARP identity, mounts the healthiest endpoints on it and renders
-the config in whatever shape their client understands. Why the obfuscation
-defaults look the way they do is explained at the top of ``bot/warp.py``.
+handshake more than once, scored on latency, jitter and loss. The build and
+delivery flow lives in ``handlers.pool``; this module owns the export buttons,
+the endpoint list, the rescan, the licence and the identity.
+
+Two bugs used to live in here and both produced the same symptom, which is a user
+tapping a button and nothing happening at all.
+
+The first: the platform picker asked which OS and then ignored the answer. Every
+branch rendered AmneziaWG, so an iPhone user who correctly tapped iOS still got a
+file carrying ``Jc`` in ``[Interface]``, which the official WireGuard app refuses
+wholesale. ``warpconf`` now decides the shape from the platform.
+
+The second: the picker's handler was gated on ``WarpFlow.platform``. Any
+navigation between opening the picker and tapping it cleared the state, the
+callback matched no handler, and the tap was swallowed in silence. The export kind
+and the platform ride in the callback data now, so the flow is stateless and
+cannot rot.
 
 Nothing here waits on a scan. The rescan button answers straight away and the
 sweep reports back into the same message when it finishes.
@@ -24,15 +37,15 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from .. import db, keyboards, warpstore
+from .. import db, keyboards, warpconf, warpstore
 from .. import warp as warpcore
 from ..config import settings
-from ..i18n import num, t
-from ..platforms import get_platform, should_include_amnezia_keys
-from ..warpconf import bracket_ipv6_endpoint, render_amneziawg_warp_config
+from ..i18n import device_label, num, t
+from ..platforms import normalise_platform, should_include_amnezia_keys
 from ..utils import ago, chunked, edit, esc, ping_label
 from ..warpscan import ScanReport, warp_scanner
 from ..warptune import TUNE
+from .pool import show_device
 
 log = logging.getLogger("autovless.handlers.warp")
 router = Router(name="warp")
@@ -43,10 +56,20 @@ _last_rescan: dict[int, float] = {}
 # Live scan jobs. Held so the event loop cannot garbage collect them mid-sweep.
 _scan_jobs: set[asyncio.Task] = set()
 
+# Every export the buttons can ask for, and what the caption should say about it.
+EXPORTS: dict[str, str] = {
+    "awg": "warp.caption_awg",
+    "awg2": "warp.caption_awg2",
+    "plain": "warp.caption_plain",
+    "singbox": "warp.caption_singbox",
+    "clash": "warp.caption_clash",
+}
+
 
 class WarpFlow(StatesGroup):
+    # ``platform`` is deliberately gone: gating the picker on FSM state is what
+    # made it a dead end. Only the licence prompt genuinely needs state.
     license = State()
-    platform = State()
 
 
 # --------------------------------------------------------------- helpers
@@ -54,10 +77,6 @@ class WarpFlow(StatesGroup):
 
 def _profile(identity: dict) -> dict:
     return warpcore.obfuscation(identity.get("private_key", ""))
-
-
-def _filename(suffix: str) -> str:
-    return f"{settings.brand}-warp{suffix}"
 
 
 def _loss_note(row: dict, lang: str) -> str:
@@ -79,7 +98,7 @@ async def show_menu(event: CallbackQuery | Message, lang: str) -> None:
             lang,
             "warp.status_ready",
             account=esc(record["identity"].get("account_type", "free")),
-            endpoint=esc(warpcore.endpoint_label(endpoints)),
+            endpoint=esc(warpconf.label(endpoints)),
             count=num(len(endpoints), lang),
             updated=ago(record.get("updated_at"), lang),
         )
@@ -95,6 +114,8 @@ async def show_menu(event: CallbackQuery | Message, lang: str) -> None:
         state=t(lang, "admin.on" if stats["scanning"] else "admin.off"),
         status=status,
     )
+    # The flag is honoured now. It used to be passed and dropped, which is why a
+    # user with an identity saw a screen with no way to download anything.
     await edit(event, text, keyboards.warp_menu(lang, record is not None))
 
 
@@ -121,44 +142,20 @@ async def on_warp_command(message: Message, state: FSMContext, lang: str) -> Non
 
 
 @router.callback_query(F.data == "wg:build")
-async def on_build(call: CallbackQuery, lang: str) -> None:
+async def on_build(call: CallbackQuery, state: FSMContext, lang: str) -> None:
+    """Legacy callback, kept for keyboards still sitting in chat history.
+
+    It used to provision an identity, save it, and stop. No file was ever sent and
+    the screen it returned to had no export button on it, so "build" genuinely
+    produced nothing a user could install. It now opens the device picker and the
+    pool flow takes it from there, which is the path that renders and delivers.
+    """
+    await state.clear()
     if not await db.get_flag("warp_enabled"):
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
-
+    await show_device(call, lang)
     await call.answer()
-    notice = await call.message.answer(t(lang, "warp.building"))
-
-    try:
-        identity = await warpcore.provision()
-    except warpcore.WarpError as error:
-        log.warning("warp provisioning failed: %s", error)
-        await notice.edit_text(t(lang, "warp.failed", reason=esc(error)))
-        return
-
-    endpoints = await warp_scanner.pick()
-    await db.save_warp_user(call.from_user.id, identity, endpoints)
-    await db.log_event("warp_build", call.from_user.id, identity.get("account_type", "free"))
-
-    profile = _profile(identity)
-    best = endpoints[0]["latency"] if endpoints else None
-    await notice.edit_text(
-        t(
-            lang,
-            "warp.ready",
-            account=esc(identity.get("account_type", "free")),
-            endpoint=esc(warpcore.endpoint_label(endpoints)),
-            ping=ping_label(best, lang),
-            count=num(max(0, len(endpoints) - 1), lang),
-            jc=num(profile["jc"], lang),
-            jmin=num(profile["jmin"], lang),
-            jmax=num(profile["jmax"], lang),
-            mtu=num(settings.warp_mtu, lang),
-        ),
-        reply_markup=keyboards.warp_menu(lang),
-    )
-    if not any(row.get("stable") for row in endpoints):
-        await call.message.answer(t(lang, "warp.no_endpoint"))
 
 
 @router.callback_query(F.data == "wg:rebuild")
@@ -181,10 +178,10 @@ async def on_rebuild(call: CallbackQuery, lang: str) -> None:
         t(
             lang,
             key,
-            endpoint=esc(warpcore.endpoint_label(endpoints)),
+            endpoint=esc(warpconf.label(endpoints)),
             ping=ping_label(best, lang),
         ),
-        reply_markup=keyboards.warp_menu(lang),
+        reply_markup=keyboards.warp_menu(lang, True),
     )
 
 
@@ -192,65 +189,105 @@ async def on_rebuild(call: CallbackQuery, lang: str) -> None:
 
 
 @router.callback_query(F.data.startswith("wg:file:"))
-async def on_file(call: CallbackQuery, state: FSMContext, lang: str) -> None:
-    """Intercept file export: ask for platform first."""
+async def on_file(call: CallbackQuery, lang: str) -> None:
+    """Intercept a file export and ask which device it is for.
+
+    The kind travels in the picker's own callback data. Stashing it in FSM state
+    is what used to break this: a navigation cleared the state, the follow-up tap
+    matched nothing, and the user got no file and no error.
+    """
     record = await db.get_warp_user(call.from_user.id)
     if record is None:
         await call.answer(t(lang, "warp.none"), show_alert=True)
         return
 
     kind = (call.data or "").rsplit(":", 1)[-1]
-    await state.update_data(export_kind=kind)
-    await state.set_state(WarpFlow.platform)
+    if kind not in EXPORTS:
+        kind = "awg"
 
     await edit(
         call,
         t(lang, "warp.select_platform"),
-        keyboards.platform_picker(lang),
+        keyboards.device_picker(lang, f"f:{kind}"),
     )
     await call.answer()
 
 
-@router.callback_query(F.data.startswith("wg:platform:"), WarpFlow.platform)
-async def on_platform_picked(call: CallbackQuery, state: FSMContext, lang: str) -> None:
-    """User picked a platform, now render and deliver."""
+@router.callback_query(F.data.startswith("wg:dev:") & F.data.contains(":f:"))
+async def on_export_device(call: CallbackQuery, lang: str) -> None:
+    """``wg:dev:<platform>:f:<kind>`` - the device picker answered for an export."""
+    parts = (call.data or "").split(":")
+    platform = normalise_platform(parts[2] if len(parts) > 2 else "")
+    kind = parts[4] if len(parts) > 4 else "awg"
+    await _deliver_export(call, lang, platform, kind)
+
+
+@router.callback_query(F.data.startswith("wg:exp:"))
+async def on_export_direct(call: CallbackQuery, lang: str) -> None:
+    """``wg:exp:<platform>:<kind>`` - the device is already known, no need to ask."""
+    parts = (call.data or "").split(":")
+    platform = normalise_platform(parts[2] if len(parts) > 2 else "")
+    kind = parts[3] if len(parts) > 3 else "awg"
+    await _deliver_export(call, lang, platform, kind)
+
+
+async def _deliver_export(
+    call: CallbackQuery, lang: str, platform: str, kind: str
+) -> None:
+    """Render one export for one platform and send it.
+
+    The rendering is guarded on purpose. A missing renderer used to raise here and
+    the user simply never received anything; now the failure has a message.
+    """
     record = await db.get_warp_user(call.from_user.id)
     if record is None:
         await call.answer(t(lang, "warp.none"), show_alert=True)
-        await state.clear()
         return
 
-    data = await state.get_data()
-    export_kind = data.get("export_kind", "awg")
-    platform = (call.data or "").rsplit(":", 1)[-1]  # ios, android, windows
+    if kind not in EXPORTS:
+        kind = "awg"
+    # Asking for AmneziaWG on a platform whose client rejects it can only produce
+    # a file that will not load, so the request is downgraded and said out loud
+    # rather than honoured into a dead end.
+    downgraded = kind in {"awg", "awg2"} and not should_include_amnezia_keys(platform)
+    if downgraded:
+        kind = "plain"
 
     identity = record["identity"]
     endpoints = record.get("endpoints") or []
     profile = _profile(identity)
-    await call.answer()
-    await state.clear()
 
-    # Render via warpconf (respects platform, IPv6 bracketing, clean iOS)
-    if export_kind == "plain":
-        body = warpcore.wireguard_conf(identity, endpoints)
-        name, caption = _filename(".conf"), "warp.caption_plain"
-    elif export_kind == "awg2":
-        body = warpcore.amnezia_conf(identity, endpoints, profile, signature=True)
-        name, caption = _filename("-amneziawg-v2.conf"), "warp.caption_awg2"
-    elif export_kind == "singbox":
-        body = warpcore.singbox_json(identity, endpoints)
-        name, caption = _filename("-singbox.json"), "warp.caption_singbox"
-    elif export_kind == "clash":
-        body = warpcore.clash_yaml(identity, endpoints)
-        name, caption = _filename("-clash.yaml"), "warp.caption_clash"
-    else:  # awg
-        body = warpcore.amnezia_conf(identity, endpoints, profile)
-        name, caption = _filename("-amneziawg.conf"), "warp.caption_awg"
+    await call.answer()
+
+    try:
+        if kind == "singbox":
+            body = warpcore.singbox_json(identity, endpoints)
+        elif kind == "clash":
+            body = warpcore.clash_yaml(identity, endpoints)
+        else:
+            body = warpconf.conf_for(
+                identity, endpoints, platform=platform, kind=kind, profile=profile
+            )
+    except Exception as error:  # noqa: BLE001
+        log.exception("could not render the %s export for %s", kind, platform)
+        await call.message.answer(
+            t(lang, "wg.render_failed", reason=esc(str(error)[:180])),
+            reply_markup=keyboards.warp_menu(lang, True),
+        )
+        return
+
+    caption = t(lang, EXPORTS[kind])
+    if downgraded:
+        caption = t(lang, "wg.caption_clean", family="", device=device_label(platform, lang))
+        caption = f"{caption}\n\n{t(lang, 'wg.ios_dpi_hint')}"
 
     await call.message.answer_document(
-        BufferedInputFile(body.encode("utf-8"), filename=name),
-        caption=t(lang, caption),
-        reply_markup=keyboards.warp_menu(lang),
+        BufferedInputFile(
+            body.encode("utf-8"),
+            filename=warpconf.filename("", kind, platform),
+        ),
+        caption=caption,
+        reply_markup=keyboards.warp_exports(lang, True, platform),
     )
 
 
@@ -268,7 +305,7 @@ async def on_links(call: CallbackQuery, lang: str) -> None:
     for index, part in enumerate(parts):
         await call.message.answer(
             part,
-            reply_markup=keyboards.warp_menu(lang) if index == len(parts) - 1 else None,
+            reply_markup=keyboards.warp_menu(lang, True) if index == len(parts) - 1 else None,
             disable_web_page_preview=True,
         )
 
@@ -282,7 +319,8 @@ async def on_apps(call: CallbackQuery, lang: str) -> None:
 
 @router.callback_query(F.data == "wg:why")
 async def on_why(call: CallbackQuery, lang: str) -> None:
-    await edit(call, t(lang, "warp.dpi_note"), keyboards.simple_back(lang, "nav:warp"))
+    body = t(lang, "warp.dpi_note") + "\n\n" + t(lang, "wg.ios_dpi_hint")
+    await edit(call, body, keyboards.simple_back(lang, "nav:warp"))
     await call.answer()
 
 
@@ -302,7 +340,7 @@ async def on_endpoints(call: CallbackQuery, lang: str) -> None:
     lines = []
     for row in rows:
         mark = "\u2705" if row.get("stable") and not row.get("fails") else "\u26aa\ufe0f"
-        address = f"{row['ip']}:{row['port']}"
+        address = warpconf.host_port(row["ip"], row["port"])
         lines.append(
             f"{mark} <code>{esc(address)}</code> \u00b7 {ping_label(row['latency'], lang)}"
             f"{_loss_note(row, lang)}"
@@ -405,7 +443,7 @@ async def on_license_input(message: Message, state: FSMContext, lang: str) -> No
     await db.log_event("warp_license", message.from_user.id, identity.get("account_type", ""))
     await message.answer(
         t(lang, "warp.license_ok", account=esc(identity.get("account_type", "warp_plus"))),
-        reply_markup=keyboards.warp_menu(lang),
+        reply_markup=keyboards.warp_menu(lang, True),
     )
 
 
