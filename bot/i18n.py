@@ -13,6 +13,7 @@ from .locales.en import EN
 from .locales.fa import FA
 from .locales.proton import PROTON_STRINGS
 from .locales.support import SUPPORT
+from .locales.turbo import TURBO
 from .locales.warp import WARP
 from .locales.warpmanual import WARPMANUAL
 from .locales.warppool import WARPPOOL
@@ -25,7 +26,8 @@ RULE = "\u2501" * 14
 # same reason: the hand entry screens own their wording. DEVICE is merged last of
 # the WARP family because the device picker owns anything it names - including
 # ``warp.select_platform``, which had no entry anywhere and was rendering its own
-# key as the screen body. AI and Proton come at the end.
+# key as the screen body. AI and Proton follow. TURBO is last, so the trojan and
+# fragment screens own their copy outright.
 CATALOG: dict[str, dict[str, str]] = {
     "fa": {
         **FA,
@@ -39,6 +41,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **DEVICE["fa"],
         **AI["fa"],
         **PROTON_STRINGS.get("fa", {}),
+        **TURBO["fa"],
     },
     "en": {
         **EN,
@@ -52,6 +55,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **DEVICE["en"],
         **AI["en"],
         **PROTON_STRINGS.get("en", {}),
+        **TURBO["en"],
     },
 }
 
