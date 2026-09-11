@@ -1,4 +1,19 @@
-"""Panel management: exports, QR, live ping, AI routing, apply, rescan, rebuild."""
+"""Panel management: exports, QR, fragment, trojan, live ping, AI routing, apply.
+
+Two buttons here are new and both exist because of the same complaint.
+
+*Fragment* answers "the config connects on wifi and dies on mobile data". That is
+almost never the endpoint: it is DPI matching the TLS ClientHello on the way out.
+Fragmentation is configured on the client's dialer, so it cannot ride inside a
+``vless://`` link - it needs a real Xray config. One tap renders every config the
+user holds into exactly that, fragmented, with a least-ping balancer on top.
+
+*Trojan* answers "VLESS stopped working on my network". Same worker, same
+endpoints, same account: a completely different handshake on the wire. The bot
+builds those links itself from the panel it already knows about, so nothing here
+depends on the worker having been re-uploaded first - though it does have to be
+running a bundle that speaks trojan, which every apply and rebuild takes care of.
+"""
 
 from __future__ import annotations
 
@@ -12,7 +27,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery
 
-from .. import db, deploy, keyboards, screens, vless
+from .. import db, deploy, fragment, keyboards, screens, trojan, vless
 from ..autopilot import autopilot
 from ..config import settings
 from ..i18n import num, t
@@ -24,6 +39,15 @@ log = logging.getLogger("autovless.panel")
 router = Router(name="panel")
 
 _applying: set[int] = set()
+
+# Background jobs, held so the event loop cannot collect them mid-scan.
+_jobs: set[asyncio.Task] = set()
+
+
+def _spawn(coro, name: str) -> None:
+    task = asyncio.create_task(coro, name=name)
+    _jobs.add(task)
+    task.add_done_callback(_jobs.discard)
 
 
 async def _require_panel(call: CallbackQuery, lang: str) -> dict | None:
@@ -48,6 +72,9 @@ async def on_sub(call: CallbackQuery, lang: str) -> None:
         clash=esc(vless.sub_url(uuid, host, "clash")),
         singbox=esc(vless.sub_url(uuid, host, "singbox")),
     )
+    # The mixed subscription is the one worth knowing about: one link, both
+    # protocols, and the client keeps whichever one answers.
+    text += "\n\n" + t(lang, "sub_mixed", mix=esc(vless.sub_url(uuid, host, "mix")))
     await edit(call, text, keyboards.simple_back(lang, "nav:panel"))
     await call.answer()
 
@@ -88,6 +115,90 @@ async def on_single(call: CallbackQuery, lang: str) -> None:
             disable_web_page_preview=True,
         )
     await call.answer()
+
+
+# --------------------------------------------------------------------- #
+# trojan
+# --------------------------------------------------------------------- #
+
+
+@router.callback_query(F.data == "panel:trojan")
+async def on_trojan(call: CallbackQuery, lang: str) -> None:
+    """Real Trojan links against the user's own worker.
+
+    TLS endpoints only, and that is not a limitation being papered over: on a
+    plain port there is no TLS record for the handshake to hide inside, so the
+    password would cross the wire in the clear and the client would refuse the
+    config anyway. A short pool means fewer links, never broken ones.
+    """
+    panel = await _require_panel(call, lang)
+    if panel is None:
+        return
+
+    endpoints = panel["endpoints"]
+    links = trojan.build_links(panel["uuid"], panel["host"], endpoints)
+    if not links:
+        await edit(call, t(lang, "trojan_none"), keyboards.panel_menu(lang))
+        await call.answer()
+        return
+
+    await call.answer()
+    body = t(
+        lang,
+        "trojan_configs",
+        count=num(len(links), lang),
+        sub=esc(trojan.sub_url(panel["uuid"], panel["host"])),
+        password=esc(trojan.password_for(panel["uuid"])),
+    )
+    body += "\n\n" + "\n\n".join(
+        f"<b>#{num(index, lang)}</b>\n<code>{esc(link)}</code>"
+        for index, link in enumerate(links, start=1)
+    )
+
+    parts = chunked(body)
+    for position, part in enumerate(parts):
+        last = position == len(parts) - 1
+        await call.message.answer(
+            part,
+            reply_markup=keyboards.panel_menu(lang) if last else None,
+            disable_web_page_preview=True,
+        )
+    await db.log_event("trojan", call.from_user.id, f"links={len(links)}")
+
+
+# --------------------------------------------------------------------- #
+# fragment
+# --------------------------------------------------------------------- #
+
+
+@router.callback_query(F.data == "panel:fragment")
+async def on_fragment(call: CallbackQuery, lang: str) -> None:
+    """Every config this user owns, in one fragmented Xray config."""
+    panel = await _require_panel(call, lang)
+    if panel is None:
+        return
+
+    endpoints = panel["endpoints"]
+    if not endpoints:
+        await edit(call, t(lang, "fragment_none"), keyboards.panel_menu(lang))
+        await call.answer()
+        return
+
+    await call.answer()
+    body = fragment.xray_config(panel["uuid"], panel["host"], endpoints)
+    total = len(fragment.outbounds(panel["uuid"], panel["host"], endpoints))
+    await call.message.answer_document(
+        BufferedInputFile(body.encode("utf-8"), filename=fragment.filename()),
+        caption=t(
+            lang,
+            "fragment_ready",
+            count=num(total, lang),
+            length=fragment.TLS_FRAGMENT["length"],
+            interval=fragment.TLS_FRAGMENT["interval"],
+        ),
+        reply_markup=keyboards.panel_menu(lang),
+    )
+    await db.log_event("fragment", call.from_user.id, f"outbounds={total}")
 
 
 @router.callback_query(F.data.in_({"panel:clash", "panel:singbox"}))
@@ -204,7 +315,8 @@ async def on_apply(call: CallbackQuery, lang: str) -> None:
 
     This is the same operation the autopilot runs in the background, exposed as a
     button for people who do not want to wait for the next cycle. It also
-    re-uploads the worker bundle, which is how a panel picks up a new build.
+    re-uploads the worker bundle, which is how a panel picks up a new build -
+    including the one that taught it to speak trojan.
     """
     panel = await _require_panel(call, lang)
     if panel is None:
@@ -254,12 +366,23 @@ async def on_apply(call: CallbackQuery, lang: str) -> None:
     await db.log_event("apply", tg_id, f"endpoints={len(endpoints)} healthy={result['healthy']}")
 
 
-@router.callback_query(F.data == "panel:rescan")
-async def on_rescan(call: CallbackQuery, lang: str) -> None:
-    await call.answer(t(lang, "scan_started"))
+async def _run_rescan(call: CallbackQuery, lang: str) -> None:
     await scanner.scan_once(batch=max(320, settings.scan_batch // 3))
     text, markup = await screens.network_status(lang)
     await edit(call, text, markup)
+
+
+@router.callback_query(F.data == "panel:rescan")
+async def on_rescan(call: CallbackQuery, lang: str) -> None:
+    """Answers instantly, sweeps beside the handler.
+
+    A sweep of a few hundred addresses takes longer than Telegram's callback
+    window, so awaiting it here meant the tap either spun with no feedback or came
+    back as an expired query. The scan now runs as its own job and edits the
+    screen when it lands, which is what the WARP and pool screens already do.
+    """
+    await call.answer(t(lang, "scan_started"))
+    _spawn(_run_rescan(call, lang), f"panel-rescan-{call.from_user.id}")
 
 
 @router.callback_query(F.data == "panel:rebuild")
