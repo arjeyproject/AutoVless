@@ -1,178 +1,128 @@
-# AutoVless Update Guide: iOS Support & ProtonVPN
+# Running and updating the bot
 
-## Summary of Changes
+Everything here assumes the repo is cloned on the server and the bot runs under
+systemd. If you use Docker instead, jump to the bottom.
 
-This update fixes three critical issues:
+## The one step people forget
 
-1. **iPhone support**: iOS WireGuard was broken because configs included AmneziaWG-only keys that the official app rejects. Now iOS gets clean, standard WireGuard configs.
-2. **Irancell IPv6 bug**: All 6 export buttons had unbracketed IPv6 endpoints like `2001:db8::1:51820` (ambiguous colon). Now all IPv6 endpoints are properly bracketed: `[2001:db8::1]:51820`.
-3. **ProtonVPN free configs**: New feature adds real ProtonVPN free tier support (no paid accounts needed). Configs are generated via ProtonVPN API, not hand-written.
+Updating the bot does **not** update anybody's worker. A panel that is already
+live keeps running the bundle it was uploaded with, so a new protocol - Trojan,
+for instance - stays silent until that bundle is replaced. That happens when a
+panel is re-uploaded:
 
-## New Files
+- the user presses **apply clean IPs** or **rebuild panel**, or
+- the autopilot reaches that panel on its next cycle, or
+- an admin presses **apply on every panel** in the scan engine screen.
 
-```
-bot/platforms.py        Per-OS config profiles (iOS/Android/Windows)
-bot/protonvpn.py        ProtonVPN API client + X25519 key derivation
-bot/warpconf.py         Unified config renderer for all OS/family combos
-bot/handlers/proton.py  Three-screen Proton flow: location → OS → delivery
-bot/locales/proton.py   Persian + English strings for Proton UI
-docs/UPDATE.md          This file
-```
+So after an update: restart the bot, then press *apply on every panel* once.
 
-## Modified Files
-
-```
-bot/handlers/pool.py      Added OS selector after operator pick
-bot/handlers/warp.py      Updated all 6 export buttons to use warpconf
-bot/keyboards.py          Added glass buttons, country grid, OS picker
-bot/i18n.py               Registered Proton locale
-bot/handlers/__init__.py   Registered Proton router
-```
-
-## Deployment Steps
-
-### 1. Pull the feature branch
+## First install
 
 ```bash
-cd /path/to/AutoVless
-git fetch origin feature/ios-proton-platforms
-git checkout feature/ios-proton-platforms
+git clone https://github.com/arjeyproject/AutoVless.git /opt/autovless
+cd /opt/autovless
+bash install.sh          # venv, requirements, .env, systemd unit
+nano .env                # BOT_TOKEN and ADMIN_IDS at minimum
+sudo systemctl enable --now autovless
 ```
 
-### 2. Install new dependencies (if any)
-
-The code adds:
-- `nacl` (PyNaCl): For X25519 key derivation
-
-Install it:
+## Update to the newest version
 
 ```bash
-pip install pynacl
+cd /opt/autovless
+sudo systemctl stop autovless
+
+# keep the database out of it
+cp -a data/autovless.db "data/autovless.db.$(date +%F-%H%M).bak"
+
+git fetch --all
+git reset --hard origin/main          # local edits are discarded, on purpose
+source .venv/bin/activate
+pip install -r requirements.txt --upgrade
+
+# syntax gate. If this prints a failure, do not restart yet.
+bash scripts/syntax-check.sh
+
+sudo systemctl start autovless
+sudo systemctl status autovless --no-pager
 ```
 
-Verify `aiohttp` and `pyrogram` are already present in `requirements.txt`.
-
-### 3. Test locally
-
-Create a test script `/tmp/test_platforms.py`:
-
-```python
-import sys
-sys.path.insert(0, '/path/to/AutoVless')
-
-from bot.platforms import get_platform, list_platforms
-from bot.warpconf import render_amneziawg_warp_config, bracket_ipv6_endpoint
-
-# Test platform profiles
-for prof in list_platforms():
-    print(f"{prof.name}: {prof.description}")
-    print(f"  MTU: {prof.mtu}")
-    print(f"  Supports AmneziaWG: {prof.supports_amneziawg}")
-    print()
-
-# Test IPv6 endpoint bracketing (fix for Irancell)
-test_endpoint = "2604:cb80::1:51820"
-bucketed = bracket_ipv6_endpoint(test_endpoint)
-print(f"Original: {test_endpoint}")
-print(f"Bracketed: {bucketed}")
-assert bucketed == "[2604:cb80::1]:51820", f"Expected bracketed, got {bucketed}"
-print("✓ IPv6 bracketing works")
-
-# Test config rendering
-android_config = render_amneziawg_warp_config(
-    interface_privkey="sPmFz9eS5bY7WZ8N7/8X7N/w/Yq+X8YQ/aR+X8===",
-    interface_addr4="10.2.0.2/32",
-    interface_addr6="2a07:b944::2:2/128",
-    peer_pubkey="1fGFZtHU8r8qwdnron9E80NdvLw5WcUdhPgh7phzQnA=",
-    peer_endpoint="195.242.214.66:51820",
-    platform="android",
-    Jc=3,
-    Jmin=1,
-    Jmax=3,
-    S1=0,
-    S2=0,
-    S3=0,
-    S4=0,
-    H1=1,
-    H2=2,
-    H3=3,
-    H4=4,
-)
-print("\nAndroid WARP config (excerpt):")
-print(android_config[:200] + "...")
-assert "Jc = 3" in android_config
-print("✓ Android AmneziaWG keys included")
-
-ios_config = render_amneziawg_warp_config(
-    interface_privkey="sPmFz9eS5bY7WZ8N7/8X7N/w/Yq+X8YQ/aR+X8===",
-    interface_addr4="10.2.0.2/32",
-    interface_addr6="2a07:b944::2:2/128",
-    peer_pubkey="1fGFZtHU8r8qwdnron9E80NdvLw5WcUdhPgh7phzQnA=",
-    peer_endpoint="195.242.214.66:51820",
-    platform="ios",
-)
-print("\niOS WireGuard config (excerpt):")
-print(ios_config[:200] + "...")
-assert "Jc" not in ios_config
-print("✓ iOS gets clean WireGuard (no AmneziaWG keys)")
-
-print("\n✅ All tests passed!")
-```
-
-Run it:
+Then watch it come up:
 
 ```bash
-python /tmp/test_platforms.py
+journalctl -u autovless -f -n 100
 ```
 
-### 4. Deploy to production
+A healthy start logs the scanner, the curator and the autopilot booting, and
+nothing at `ERROR`.
 
-Once testing is complete:
+## Push the new worker to every panel
+
+As an admin in the bot: **my panel -> apply clean IPs** for your own panel, or
+**admin panel -> scan engine -> apply on every panel** for all of them. Either
+way the subscription links never change; only what sits behind them does.
+
+To confirm a panel is on the new bundle, open:
+
+```
+https://<your-host>.workers.dev/<uuid>/health
+```
+
+and look for `"protocols": ["vless", "trojan"]`. A panel still on the old bundle
+omits that field entirely, which is the fastest way to tell them apart.
+
+## Verify Trojan actually works
 
 ```bash
-# Merge the feature branch
-git checkout main
-git merge feature/ios-proton-platforms
+# the trojan-only subscription, base64
+curl -s https://<host>/<uuid>/trojan | base64 -d | head
 
-# Push to production
-git push origin main
+# both protocols in one subscription
+curl -s https://<host>/<uuid>/mix | base64 -d | head
 
-# Restart the bot on your VPS
-sudo systemctl restart autovless  # or your bot service name
+# can the worker open outbound sockets at all
+curl -s https://<host>/<uuid>/probe
 ```
 
-## Verification Checklist
+The Trojan password is the panel UUID, and the **Trojan configs** button prints
+it next to the links. Trojan is offered on TLS ports only: on a plain port there
+is no TLS record for the handshake to hide inside, so the password would cross
+the wire in the clear and clients refuse it.
 
-- [ ] Pool operators (MTProto, etc.) now ask for OS before generating config
-- [ ] WARP export buttons no longer crash (warpconf handles all OS combos)
-- [ ] iPhone users can now import WARP configs into WireGuard app
-- [ ] IPv6 endpoints are always bracketed: `[2604:cb80::1]:51820`
-- [ ] New ProtonVPN button works: location picker → OS picker → config delivery
-- [ ] iOS ProtonVPN configs have no Jc/S1/H1 keys
-- [ ] Android/Windows ProtonVPN configs include all AmneziaWG keys
-- [ ] Irancell users can connect with the new bracketed IPv6 endpoints
+To turn Trojan off for a panel, bind `TROJAN=false` on the worker; to use a
+password that is not the UUID, bind `TROJAN_PASSWORD`.
 
-## Rollback (if needed)
-
-If something breaks:
+## Roll back
 
 ```bash
-git revert HEAD  # Revert the last commit
-git push origin main
-sudo systemctl restart autovless
+cd /opt/autovless
+git log --oneline -n 10
+sudo systemctl stop autovless
+git reset --hard <commit>
+sudo systemctl start autovless
 ```
 
-Or revert to the commit before the merge:
+The worker rolls back the same way it rolled forward: reset the code, then press
+apply so the older bundle is re-uploaded.
+
+## Docker
 
 ```bash
-git checkout <commit-hash-before-merge>
-git push origin main -f
-sudo systemctl restart autovless
+cd /opt/autovless
+git pull
+docker compose build --pull
+docker compose up -d
+docker compose logs -f --tail 100
 ```
 
-## Questions?
+## Quick health checklist
 
-Check the code comments in:
-- `bot/platforms.py`: Why iOS doesn't support AmneziaWG
-- `bot/warpconf.py`: IPv6 bracketing fix
-- `bot/protonvpn.py`: X25519 key derivation from Ed25519 seed
+```bash
+systemctl is-active autovless                                  # active
+journalctl -u autovless --since '10 min ago' | grep -i error   # empty
+ls -l data/autovless.db                                        # exists, recent
+```
+
+In the bot, **live network status** should show a verified pool above zero and a
+best ping under a second. If the pool is empty, press *scan IPs now* and give it
+a minute; if it stays empty, the box's own network is the suspect, not the bot.
