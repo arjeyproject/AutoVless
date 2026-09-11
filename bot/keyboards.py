@@ -119,16 +119,27 @@ def token_menu(lang: str) -> InlineKeyboardMarkup:
 
 
 def panel_menu(lang: str) -> InlineKeyboardMarkup:
+    """The turbo panel.
+
+    Fragment owns a full row of its own because it is the one button that fixes
+    the most common complaint on Iranian mobile networks: the config connects on
+    wifi and dies on the handshake behind DPI. Trojan sits next to the single
+    configs, since both are "give me links I can paste somewhere else".
+
+    The screen used to be eleven stacked rows and read like a settings page. It is
+    now paired down the middle: fewer taps to reach anything, and considerably
+    less to look at.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_b(t(lang, "btn.qr"), "panel:qr"), _b(t(lang, "btn.sub"), "panel:sub")],
+            [_b(t(lang, "btn.fragment"), "panel:fragment")],
+            [_b(t(lang, "btn.trojan"), "panel:trojan"), _b(t(lang, "btn.single"), "panel:single")],
             [_b(t(lang, "btn.clash"), "panel:clash"), _b(t(lang, "btn.singbox"), "panel:singbox")],
-            [_b(t(lang, "btn.single"), "panel:single"), _b(t(lang, "btn.ping"), "panel:ping")],
-            [_b(t(lang, "btn.ai"), "panel:ai")],
-            [_b(t(lang, "btn.apply"), "panel:apply")],
-            [_b(t(lang, "btn.rescan"), "panel:rescan")],
-            [_b(t(lang, "btn.rebuild"), "panel:rebuild")],
-            [_b(t(lang, "btn.apps"), "nav:apps"), _b(t(lang, "btn.delete"), "panel:delete")],
+            [_b(t(lang, "btn.ping"), "panel:ping"), _b(t(lang, "btn.ai"), "panel:ai")],
+            [_b(t(lang, "btn.apply"), "panel:apply"), _b(t(lang, "btn.rescan"), "panel:rescan")],
+            [_b(t(lang, "btn.rebuild"), "panel:rebuild"), _b(t(lang, "btn.apps"), "nav:apps")],
+            [_b(t(lang, "btn.delete"), "panel:delete")],
             back_row(lang),
         ]
     )
@@ -259,29 +270,25 @@ def _warp_identity_rows(lang: str) -> list[list[InlineKeyboardButton]]:
 
 
 def warp_menu(lang: str, has_identity: bool = False) -> InlineKeyboardMarkup:
-    """The WARP home screen.
+    """The WARP home screen: one button, and it is the one everybody presses.
 
-    ``has_identity`` used to be accepted and then ignored, which is why a user who
-    had already built an identity was staring at a screen with no way to download
-    anything. The exports and the identity actions now appear when they apply.
+    This screen used to carry sixteen buttons - two AmneziaWG variants, plain
+    WireGuard, a v2rayNG link, Clash, sing-box, an endpoint list, two kinds of
+    scan, a licence field, a delete, an explainer - and the whole lot was a
+    decision tree the user had to solve before getting anything. Every one of
+    those was a question the bot can answer better itself, because the correct
+    export follows from the platform and the correct endpoint follows from the
+    operator, and both of those are asked next anyway.
+
+    So: build. The flow behind it is auto WARP build, then platform, then
+    operator, and the exports appear under the delivered config, where they are a
+    follow up rather than a quiz. ``has_identity`` is still accepted so every
+    existing caller keeps working.
     """
     rows: list[list[InlineKeyboardButton]] = [
-        [_b(t(lang, "btn.warp_build"), "wg:net")],
-        [
-            _b(t(lang, "btn.warp_eps"), "wg:eps"),
-            _b(t(lang, "btn.warp_rescan"), "wg:rescan"),
-        ],
+        [glass_button(t(lang, "btn.warp_build"), "wg:net")],
+        back_row(lang),
     ]
-    if has_identity:
-        rows += _warp_export_rows(lang)
-        rows += _warp_identity_rows(lang)
-    rows.append(
-        [
-            _b(t(lang, "btn.warp_why"), "wg:why"),
-            _b(t(lang, "btn.warp_apps"), "wg:apps"),
-        ]
-    )
-    rows.append(back_row(lang))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -524,11 +531,14 @@ def admin_options(lang: str, values: dict[str, bool]) -> InlineKeyboardMarkup:
 
 
 def admin_engine(lang: str) -> InlineKeyboardMarkup:
+    """The scan controls, plus the WARP endpoint screens the user side no longer
+    shows. They were taken off the user's WARP home on purpose, but an admin still
+    needs to be able to look at the pool and force a sweep."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_b(t(lang, "btn.scan_now"), "adm:scan")],
             [_b(t(lang, "btn.sync_now"), "adm:sync")],
-            [_b(t(lang, "btn.warp_rescan"), "wg:rescan")],
+            [_b(t(lang, "btn.warp_rescan"), "wg:rescan"), _b(t(lang, "btn.warp_eps"), "wg:eps")],
             [_b(t(lang, "btn.pool"), "pool:home")],
             back_row(lang, "adm:menu"),
         ]
