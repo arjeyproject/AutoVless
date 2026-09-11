@@ -107,17 +107,42 @@ async def tcp_latency(host: str, port: int, timeout: float = 2.0) -> Optional[fl
 
 
 def chunked(text: str, size: int = 3500) -> list[str]:
-    """Split long text on line boundaries so Telegram never rejects it."""
+    """Split long text so Telegram never rejects it.
+
+    Two failures used to come out of here, and both looked to the user like a
+    button that did nothing at all:
+
+      * a single line longer than the budget was appended whole, and Telegram
+        refuses anything over 4096 characters. One very long config link was
+        enough to lose an entire message.
+      * reaching the budget with an empty buffer appended an empty string, and an
+        empty message is rejected too.
+
+    Lines are still the preferred split, because breaking mid-link would hand
+    somebody half a config they cannot use.
+    """
     if len(text) <= size:
         return [text]
+
     parts: list[str] = []
     current = ""
+
     for line in text.splitlines(keepends=True):
+        while len(line) > size:
+            if current:
+                parts.append(current)
+                current = ""
+            parts.append(line[:size])
+            line = line[size:]
+        if not line:
+            continue
         if len(current) + len(line) > size:
-            parts.append(current)
+            if current:
+                parts.append(current)
             current = line
         else:
             current += line
+
     if current:
         parts.append(current)
     return parts
