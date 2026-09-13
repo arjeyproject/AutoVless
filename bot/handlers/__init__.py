@@ -4,10 +4,28 @@ from __future__ import annotations
 
 from aiogram import Dispatcher
 
-from . import admin, apps, build, extras, panel, pool, support, user, warp, webapp
+from . import (
+    admin,
+    adminx,
+    apps,
+    build,
+    extras,
+    growth,
+    panel,
+    pool,
+    support,
+    user,
+    warp,
+    webapp,
+)
 
 
 def register(dispatcher: Dispatcher) -> None:
+    # ``adminx`` and ``growth`` go first because they claim specific callbacks that
+    # the older, broader routers would otherwise swallow: ``admin`` owns every
+    # ``adm:`` callback and ``user`` owns the ``nav:`` ones.
+    dispatcher.include_router(adminx.router)
+    dispatcher.include_router(growth.router)
     dispatcher.include_router(admin.router)
     dispatcher.include_router(build.router)
     dispatcher.include_router(panel.router)

@@ -10,13 +10,17 @@ from aiogram import BaseMiddleware, Bot
 from aiogram.enums import ChatMemberStatus
 from aiogram.types import CallbackQuery, Message, TelegramObject, Update, User
 
-from . import db, keyboards
+from . import db, keyboards, referral
 from .config import settings
 from .i18n import normalise, t
 
 log = logging.getLogger("autovless.middleware")
 
 ALLOWED_WHILE_LOCKED = {"join:check", "nav:lang"}
+# The invite lock has to leave a way to *earn* the unlock, so the invite card,
+# the recheck button and the language switch always pass.
+ALLOWED_WHILE_UNPAID = {"ref:check", "nav:invite", "nav:lang", "join:check"}
+UNPAID_COMMANDS = ("/start", "/invite", "/cancel")
 MEMBER_STATES = {
     ChatMemberStatus.CREATOR,
     ChatMemberStatus.ADMINISTRATOR,
@@ -116,6 +120,50 @@ class ChannelLockMiddleware(BaseMiddleware):
         return None
 
 
+class ReferralLockMiddleware(BaseMiddleware):
+    """The invite quota. Everything is closed until the user has brought N people.
+
+    ``/start`` is deliberately never blocked: the link the user is being asked to
+    share *is* a ``/start`` link, so blocking it would make the quota impossible
+    to fill and would silently swallow every invite that arrived.
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        if not isinstance(event, Update):
+            return await handler(event, data)
+
+        actor = _actor(event)
+        if actor is None or data.get("is_admin"):
+            return await handler(event, data)
+
+        if not await referral.enabled():
+            return await handler(event, data)
+
+        callback = event.callback_query
+        if callback is not None and (callback.data or "") in ALLOWED_WHILE_UNPAID:
+            return await handler(event, data)
+
+        message = event.message
+        if message is not None:
+            text = (message.text or "").strip().lower()
+            if text.startswith(UNPAID_COMMANDS):
+                return await handler(event, data)
+
+        if await referral.unlocked(actor.id):
+            return await handler(event, data)
+
+        lang = data.get("lang", settings.default_lang)
+        bot: Bot = data["bot"]
+        body, markup = await referral.gate_text(bot, actor.id, lang)
+        await _reply(event, body, markup)
+        return None
+
+
 async def missing_channels(bot: Bot, tg_id: int, channels: list[dict]) -> list[dict]:
     """Channels the user has not joined. Unreachable channels are skipped."""
     missing: list[dict] = []
@@ -176,3 +224,4 @@ def register(dispatcher: Any) -> None:
     dispatcher.update.outer_middleware(ContextMiddleware())
     dispatcher.update.outer_middleware(ThrottleMiddleware())
     dispatcher.update.outer_middleware(ChannelLockMiddleware())
+    dispatcher.update.outer_middleware(ReferralLockMiddleware())

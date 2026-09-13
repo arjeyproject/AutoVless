@@ -1,15 +1,39 @@
-"""Screen composition shared by several handlers."""
+"""Screen composition shared by several handlers.
+
+``main_menu`` grows two rows here rather than in ``keyboards.py``: the free
+config screen and the invite card are optional features an admin can switch off,
+and the mini app only exists when ``WEBAPP_URL`` is set, so the rows are decided
+where the state is already being read.
+"""
 
 from __future__ import annotations
 
 from typing import Optional
 
-from . import db, keyboards, operators
+from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
+
+from . import db, keyboards, operators, store
 from .autopilot import autopilot
 from .config import settings
 from .i18n import num, t
 from .scanner import proxy_scanner, scanner
 from .utils import ago, esc, ping_label
+
+
+def _button(label: str, data: str) -> InlineKeyboardButton:
+    return InlineKeyboardButton(text=label, callback_data=data)
+
+
+async def _extra_rows(lang: str) -> list[list[InlineKeyboardButton]]:
+    rows: list[list[InlineKeyboardButton]] = []
+    pair: list[InlineKeyboardButton] = []
+    if await store.flag("free_enabled", True):
+        pair.append(_button(t(lang, "btn.free"), "nav:free"))
+    pair.append(_button(t(lang, "btn.invite"), "nav:invite"))
+    rows.append(pair)
+    if settings.webapp_url.strip() and await store.flag("miniapp_enabled", True):
+        rows.append([_button(t(lang, "btn.miniapp"), "nav:miniapp")])
+    return rows
 
 
 async def main_menu(name: str, lang: str, is_admin: bool) -> tuple[str, object]:
@@ -29,7 +53,14 @@ async def main_menu(name: str, lang: str, is_admin: bool) -> tuple[str, object]:
         relays=num(relays["verified"], lang),
         pilot=t(lang, "admin.on" if pilot["enabled"] else "admin.off"),
     )
-    return text, keyboards.main_menu(lang, is_admin)
+
+    markup = keyboards.main_menu(lang, is_admin)
+    rows = list(markup.inline_keyboard)
+    # Above the language row and the admin button, below everything else.
+    insert_at = max(0, len(rows) - (2 if is_admin else 1))
+    for extra in reversed(await _extra_rows(lang)):
+        rows.insert(insert_at, extra)
+    return text, InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 async def network_status(lang: str) -> tuple[str, object]:
