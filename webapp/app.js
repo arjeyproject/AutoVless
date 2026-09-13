@@ -7,16 +7,25 @@
  *
  * The app is normally served by that same server, which keeps it same-origin. If
  * it is hosted somewhere else (GitHub Pages, for instance) set window.AUTOVLESS_API
- * or pass ?api=https://host to point it back.
+ * or pass ?api=https://host to point it back. Hosting it on Pages without that
+ * pointer is a dead end, and the app now says so instead of spinning.
  */
 (function () {
   "use strict";
 
   var tg = window.Telegram && window.Telegram.WebApp ? window.Telegram.WebApp : null;
   var params = new URLSearchParams(location.search);
-  var API =
-    (params.get("api") || window.AUTOVLESS_API || location.origin).replace(/\/+$/, "");
+  var API_OVERRIDE = (params.get("api") || window.AUTOVLESS_API || "").replace(/\/+$/, "");
+  var API = API_OVERRIDE || location.origin.replace(/\/+$/, "");
   var INIT = tg ? tg.initData || "" : "";
+
+  /* A static host can serve this page but never its API. Catch that here rather
+   * than letting every request time out one by one. */
+  var STATIC_HOST = /(^|\.)github\.io$|(^|\.)pages\.dev$|(^|\.)netlify\.app$|(^|\.)vercel\.app$/i
+    .test(location.hostname);
+  var API_MISSING = STATIC_HOST && !API_OVERRIDE;
+
+  var REQUEST_TIMEOUT = 15000;
 
   var state = { lang: "fa", theme: "dark", data: null, fmt: "sub", proto: "vless",
                 platform: "ios", family: "v4", warp: null, free: null };
@@ -66,7 +75,15 @@
       noPanel: "هنوز پنلی نداری", locked: "برای استفاده باید دوستانت را دعوت کنی",
       quota: "سهمیه‌ی رایگانت تمام شده", none: "چیزی پیدا نشد",
       steps: ["بررسی توکن", "زیر‌دامنه", "انتخاب آی‌پی تمیز", "آپلود ورکر", "تست سلامت"],
-      confirmDelete: "پنل و ورکرش حذف شود؟"
+      confirmDelete: "پنل و ورکرش حذف شود؟",
+      "err.timeout": "سرور در ۱۵ ثانیه جواب نداد",
+      "err.network": "وصل شدن به API ممکن نشد",
+      "err.title": "اتصال به سرور برقرار نشد",
+      "err.tried": "آدرسی که امتحان شد",
+      "err.hint": "مطمئن شو ربات بالاست، API روی HTTPS سرو می‌شود و WEBAPP_URL درست است.",
+      "err.noapiTitle": "آدرس API تنظیم نشده",
+      "err.noapiText": "این صفحه روی یک هاست استاتیک است و API آن‌جا وجود ندارد. آدرس را با پارامتر api باز کن، مثل ?api=https://app.example.com — یا کل مینی‌اپ را از همان دامنه‌ی ربات سرو کن.",
+      retry: "تلاش دوباره"
     },
     en: {
       tagline: "your own tunnel",
@@ -111,7 +128,15 @@
       noPanel: "No panel yet", locked: "Invite your friends to unlock",
       quota: "Your free quota is used up", none: "Nothing found",
       steps: ["Verify token", "Subdomain", "Pick clean IPs", "Upload worker", "Health check"],
-      confirmDelete: "Delete the panel and its worker?"
+      confirmDelete: "Delete the panel and its worker?",
+      "err.timeout": "The server did not answer within 15s",
+      "err.network": "Could not reach the API",
+      "err.title": "No connection to the server",
+      "err.tried": "Address tried",
+      "err.hint": "Check that the bot is running, that the API is served over HTTPS and that WEBAPP_URL is right.",
+      "err.noapiTitle": "API address is not set",
+      "err.noapiText": "This page sits on a static host, which has no API on it. Open it with the api parameter, e.g. ?api=https://app.example.com — or serve the whole mini app from the bot's own domain.",
+      retry: "Retry"
     }
   };
 
@@ -132,7 +157,18 @@
     toast._t = setTimeout(function () { el.classList.remove("show"); }, 2600);
   }
 
-  function busy(on) { $("#veil").hidden = !on; }
+  /* The overlay is never allowed to outlive the request that raised it: a stuck
+   * socket used to freeze the whole app behind a spinner with no way back. */
+  function busy(on) {
+    $("#veil").hidden = !on;
+    clearTimeout(busy._t);
+    if (on) {
+      busy._t = setTimeout(function () {
+        $("#veil").hidden = true;
+        toast(T("err.timeout"));
+      }, REQUEST_TIMEOUT + 5000);
+    }
+  }
 
   function haptic(kind) {
     try { tg.HapticFeedback.impactOccurred(kind || "light"); } catch (e) { /* not everywhere */ }
@@ -161,11 +197,29 @@
   }
 
   async function call(path, body, method) {
-    var response = await fetch(API + path, {
-      method: method || "POST",
-      headers: { "content-type": "application/json", "x-init-data": INIT },
-      body: method === "GET" ? undefined : JSON.stringify(body || {})
-    });
+    if (API_MISSING) throw new Error("noapi");
+
+    var controller = typeof AbortController === "function" ? new AbortController() : null;
+    var timer = controller
+      ? setTimeout(function () { controller.abort(); }, REQUEST_TIMEOUT)
+      : null;
+
+    var response;
+    try {
+      response = await fetch(API + path, {
+        method: method || "POST",
+        headers: { "content-type": "application/json", "x-init-data": INIT },
+        body: method === "GET" ? undefined : JSON.stringify(body || {}),
+        signal: controller ? controller.signal : undefined
+      });
+    } catch (error) {
+      /* fetch only rejects on a transport problem or our own abort, and it does
+       * so with a message no user can act on. Translate both. */
+      throw new Error(controller && controller.signal.aborted ? "timeout" : "network");
+    } finally {
+      if (timer) clearTimeout(timer);
+    }
+
     var payload = null;
     try { payload = await response.json(); } catch (e) { payload = null; }
     if (!response.ok || !payload || payload.ok === false) {
@@ -173,6 +227,45 @@
       throw new Error(reason);
     }
     return payload;
+  }
+
+  function explain(message) {
+    if (message === "noapi") return T("err.noapiTitle");
+    if (message === "timeout") return T("err.timeout");
+    if (message === "network") return T("err.network");
+    return T("failed") + message;
+  }
+
+  /* A failure to load state is fatal: the app has nothing to show. Say why, on
+   * screen, and keep it there. A toast that fades after two seconds is not an
+   * error message. */
+  function fatal(message) {
+    busy(false);
+    var noApi = message === "noapi";
+    var card = $("#fatal");
+    if (!card) {
+      card = document.createElement("div");
+      card.className = "card glass";
+      card.id = "fatal";
+      card.innerHTML =
+        '<h2 id="fatalTitle"></h2><p class="muted" id="fatalText"></p>' +
+        '<div class="kv"><span id="fatalTriedLabel"></span><code id="fatalApi"></code></div>' +
+        '<button class="btn primary block" id="fatalRetry"></button>';
+      var home = $('.view[data-view="home"]');
+      home.insertBefore(card, home.firstChild);
+      $("#fatalRetry").addEventListener("click", function () {
+        card.remove();
+        load();
+      });
+    }
+    $("#fatalTitle").textContent = noApi ? T("err.noapiTitle") : T("err.title");
+    $("#fatalText").textContent = noApi ? T("err.noapiText") : explain(message) + " · " + T("err.hint");
+    $("#fatalTriedLabel").textContent = T("err.tried");
+    $("#fatalApi").textContent = API + "/api/state";
+    $("#fatalRetry").textContent = T("retry");
+    $("#fatalRetry").hidden = noApi;
+    $("#heroState").textContent = "offline";
+    go("home");
   }
 
   /* --------------------------------------------------------------- theme */
@@ -322,6 +415,8 @@
   async function load() {
     try {
       var data = await call("/api/state", {});
+      var existing = $("#fatal");
+      if (existing) existing.remove();
       applyLang(data.user.lang);
       applyTheme(data.user.theme || "auto");
       render(data);
@@ -330,8 +425,7 @@
         go("more");
       }
     } catch (error) {
-      toast(T("failed") + error.message);
-      $("#heroState").textContent = "offline";
+      fatal(error.message);
     }
   }
 
@@ -375,7 +469,7 @@
       await load();
       go("panel");
     } catch (error) {
-      toast(T("failed") + error.message);
+      toast(explain(error.message));
     } finally {
       busy(false);
     }
@@ -406,7 +500,7 @@
         btn.className = "btn tiny";
         btn.textContent = data.flags[key] ? "ON" : "OFF";
         btn.onclick = async function () {
-          try { await call("/api/admin/flag", { key: key }); loadAdmin(); } catch (e) { toast(e.message); }
+          try { await call("/api/admin/flag", { key: key }); loadAdmin(); } catch (e) { toast(explain(e.message)); }
         };
         row.appendChild(label); row.appendChild(btn);
         flags.appendChild(row);
@@ -434,20 +528,20 @@
         toggle.textContent = server.active ? "ON" : "OFF";
         toggle.onclick = async function () {
           try { await call("/api/admin/free", { action: "toggle", id: server.id }); loadAdmin(); }
-          catch (e) { toast(e.message); }
+          catch (e) { toast(explain(e.message)); }
         };
         var kill = document.createElement("button");
         kill.className = "btn tiny danger";
         kill.textContent = "🗑";
         kill.onclick = async function () {
           try { await call("/api/admin/free", { action: "delete", id: server.id }); loadAdmin(); }
-          catch (e) { toast(e.message); }
+          catch (e) { toast(explain(e.message)); }
         };
         row.appendChild(code); row.appendChild(toggle); row.appendChild(kill);
         free.appendChild(row);
       });
     } catch (error) {
-      toast(T("failed") + error.message);
+      toast(explain(error.message));
     }
   }
 
@@ -504,7 +598,7 @@
         await call("/api/panel/apply", {});
         toast(T("done"));
         await load();
-      } catch (error) { toast(T("failed") + error.message); } finally { busy(false); }
+      } catch (error) { toast(explain(error.message)); } finally { busy(false); }
     });
 
     $("#pingBtn").addEventListener("click", async function () {
@@ -520,7 +614,7 @@
             (row.latency ? "ok" : "bad") + "'>" + (row.latency ? Math.round(row.latency) + "ms" : "✕") + "</b>";
           box.appendChild(item);
         });
-      } catch (error) { toast(T("failed") + error.message); } finally { busy(false); }
+      } catch (error) { toast(explain(error.message)); } finally { busy(false); }
     });
 
     $("#fragBtn").addEventListener("click", async function () {
@@ -528,14 +622,14 @@
       try {
         var data = await call("/api/panel/export", { format: "fragment" });
         download(data.filename, data.body);
-      } catch (error) { toast(T("failed") + error.message); } finally { busy(false); }
+      } catch (error) { toast(explain(error.message)); } finally { busy(false); }
     });
 
     $("#deleteBtn").addEventListener("click", function () {
       var run = async function () {
         busy(true);
         try { await call("/api/panel/delete", {}); toast(T("done")); await load(); }
-        catch (error) { toast(T("failed") + error.message); } finally { busy(false); }
+        catch (error) { toast(explain(error.message)); } finally { busy(false); }
       };
       if (tg && tg.showConfirm) tg.showConfirm(T("confirmDelete"), function (ok) { if (ok) run(); });
       else if (confirm(T("confirmDelete"))) run();
@@ -564,7 +658,7 @@
         $("#wgMode").textContent = data.clean ? "WireGuard" : "AmneziaWG";
         $("#wgConf").textContent = data.conf || "";
         haptic("medium");
-      } catch (error) { toast(T("failed") + error.message); } finally { busy(false); }
+      } catch (error) { toast(explain(error.message)); } finally { busy(false); }
     });
 
     $("#wgDownload").addEventListener("click", function () {
@@ -608,7 +702,7 @@
         haptic("medium");
       } catch (error) {
         $("#freeMeta").textContent = "";
-        toast(error.message === "quota" ? T("quota") : T("failed") + error.message);
+        toast(error.message === "quota" ? T("quota") : explain(error.message));
       } finally { busy(false); }
     });
 
@@ -623,7 +717,7 @@
       try {
         await call("/api/admin/referral", { required: Number($("#refRequired").value || 0) });
         toast(T("done"));
-      } catch (error) { toast(T("failed") + error.message); }
+      } catch (error) { toast(explain(error.message)); }
     });
     $("#freeAdd").addEventListener("click", async function () {
       try {
@@ -631,23 +725,23 @@
         $("#freeServer").value = "";
         toast(T("done"));
         loadAdmin();
-      } catch (error) { toast(T("failed") + error.message); }
+      } catch (error) { toast(explain(error.message)); }
     });
     $("#freePanelBtn").addEventListener("click", async function () {
       try { await call("/api/admin/free", { action: "panel" }); toast(T("done")); loadAdmin(); }
-      catch (error) { toast(T("failed") + error.message); }
+      catch (error) { toast(explain(error.message)); }
     });
     $("#freeCheck").addEventListener("click", async function () {
       busy(true);
       try {
         var data = await call("/api/admin/free", { action: "check" });
         toast(data.healthy + " / " + data.total);
-      } catch (error) { toast(T("failed") + error.message); } finally { busy(false); }
+      } catch (error) { toast(explain(error.message)); } finally { busy(false); }
     });
     $("#geoBtn").addEventListener("click", async function () {
       busy(true);
       try { await call("/api/admin/ai", { action: "geo" }); toast(T("done")); loadAdmin(); }
-      catch (error) { toast(T("failed") + error.message); } finally { busy(false); }
+      catch (error) { toast(explain(error.message)); } finally { busy(false); }
     });
 
     window.addEventListener("resize", function () { positionDrop(true); });
@@ -669,11 +763,14 @@
     if (tg.onEvent) tg.onEvent("themeChanged", function () { if (state.theme === "auto") applyTheme("auto"); });
   }
   bind();
+  busy(false);
   applyLang((tg && tg.initDataUnsafe && tg.initDataUnsafe.user && tg.initDataUnsafe.user.language_code === "en") ? "en" : "fa");
   applyTheme("auto");
   setTimeout(function () { positionDrop(true); }, 60);
   if (!INIT) {
     toast(state.lang === "fa" ? "این صفحه را از داخل تلگرام باز کن" : "Open this page from inside Telegram");
+  } else if (API_MISSING) {
+    fatal("noapi");
   } else {
     load();
   }
