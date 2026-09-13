@@ -161,9 +161,17 @@ cloudflared tunnel --url http://localhost:8088
 
 اگر می‌خواهی فایل‌های استاتیک روی Pages باشند و فقط API روی سرور:
 
-1. در ریپو: Settings → Pages → Branch `main` → پوشه‌ی `/webapp`
-2. API باید HTTPS باشد (گام ۲ را انجام بده)
-3. آدرس مینی‌اپ را با پارامتر API بده:
+1. در ریپو: **Settings → Pages → Build and deployment → Source: `GitHub Actions`**
+
+   حالت `Deploy from a branch` را انتخاب نکن: گیت‌هاب در آن حالت فقط ریشه‌ی برنچ (`/`) و
+   پوشه‌ی `/docs` را قبول می‌کند، پس پوشه‌ی `webapp` اصلاً در لیست نمی‌آید. ورکفلوی
+   `.github/workflows/pages.yml` خودش محتوای `webapp/` را به عنوان artifact دیپلوی می‌کند.
+2. تب **Actions** → ورکفلوی «Deploy Telegram Mini App to GitHub Pages» → **Run workflow**
+
+   (ورکفلو خودبه‌خود فقط وقتی اجرا می‌شود که چیزی داخل `webapp/` عوض شود، پس بار اول
+   دستی اجرایش کن.)
+3. API باید HTTPS باشد (گام ۲ را انجام بده)
+4. آدرس مینی‌اپ را با پارامتر API بده و همین آدرس را در BotFather و `WEBAPP_URL` بگذار:
    `https://<user>.github.io/AutoVless/?api=https://api.example.com`
 
 CORS از سمت API باز است. با این حال حالت «همه از یک دامنه» ساده‌تر و سریع‌تر است.
@@ -178,6 +186,8 @@ CORS از سمت API باز است. با این حال حالت «همه از ی
 | `mini app api` در لاگ نیست | `API_ENABLED=0` یا پورت اشغال است | مقدار را ۱ کن، پورت را عوض کن |
 | دکمه‌ی مینی‌اپ در ربات نیست | `WEBAPP_URL` خالی است | پرش کن و ری‌استارت |
 | QR نمی‌آید | `qrcode` نصب نیست | `pip install -r requirements.txt` |
+| ورکفلوی Pages در مرحله‌ی «Setup Pages» با `Get Pages site failed` یا `Not Found` می‌افتد | Pages در ریپو روشن نیست یا روی `Deploy from a branch` مانده | Settings → Pages → Source را `GitHub Actions` کن و ورکفلو را دوباره اجرا کن |
+| آدرس `github.io` ارور ۴۰۴ می‌دهد | هیچ دیپلوی موفقی ثبت نشده | Actions → Run workflow، بعد Settings → Pages آدرس نهایی را نشان می‌دهد |
 
 ---
 
@@ -201,3 +211,8 @@ BotFather. The bot serves both the static app and `/api` from one origin, which 
 what keeps a Telegram mini app (HTTPS only) able to call its own backend. Auth is
 Telegram's signed `initData`, verified on every request; there is no token in the
 page. `/app` inside the bot opens the same app.
+
+Hosting the static files on GitHub Pages instead: set Settings → Pages → Source to
+`GitHub Actions` (the branch source cannot serve a `webapp` folder), run the
+"Deploy Telegram Mini App to GitHub Pages" workflow once by hand, and open the app
+as `https://<user>.github.io/AutoVless/?api=https://api.example.com`.
