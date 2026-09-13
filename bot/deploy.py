@@ -21,15 +21,16 @@ so the subscription link never changes while the addresses under it do.
 One binding here is deliberately *not* chosen for speed. ``AI_PROXY_IP`` is the
 relay every AI destination exits through, and the entire point of it is that the
 address stops moving: a Cloudflare datacentre that changes on every refresh is
-what makes ChatGPT and Gemini log a user out and start demanding verification. So
-``_ai_relays`` pins by name and by panel uuid rather than by latency. Ordinary
-traffic keeps the fastest-first chain, where a reshuffle costs nothing.
+what makes ChatGPT and Gemini log a user out and start demanding verification.
+That choice now lives in ``bot.aipin``, which pins one geolocated relay per panel
+and stores it, so the exit address survives a pool reshuffle instead of following
+it. Ordinary traffic keeps the fastest-first chain, where a reshuffle costs
+nothing.
 """
 
 from __future__ import annotations
 
 import asyncio
-import hashlib
 import json
 import logging
 import time
@@ -38,7 +39,7 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 
-from . import db, proxies, vless
+from . import aipin, db, proxies, vless
 from .cloudflare import CloudflareClient, CloudflareError, script_name
 from .config import settings
 from .probe import measure
@@ -84,6 +85,7 @@ class Panel:
     endpoints: list[dict] = field(default_factory=list)
     relays: list[str] = field(default_factory=list)
     ai_relays: list[str] = field(default_factory=list)
+    ai_country: str = ""
     build_ms: int = 0
     healthy: bool = False
     probe: dict = field(default_factory=dict)
@@ -156,41 +158,22 @@ async def _select_relays() -> list[str]:
     return relays[: settings.proxy_per_panel + 2]
 
 
-def _ai_relays(relays: list[str], panel_uuid: str) -> list[str]:
-    """Which relays AI destinations exit through, chosen to *stay the same*.
-
-    An explicit ``AI_PROXY_IP`` wins outright: an operator who has a static
-    address wants that address and nothing else.
-
-    Otherwise the pick is derived from the relay list - but from a copy sorted by
-    name, not the latency ordering ``_select_relays`` produced. That distinction
-    is the whole point. Latency ordering changes on every refresh, so pinning to
-    the head of it would hand the user a different exit IP every time the
-    autopilot ran, which is precisely the behaviour these sites read as account
-    abuse. Sorting by name means the same relay set always yields the same pin,
-    and the panel uuid spreads different users across different relays so one
-    address does not carry everybody.
-    """
-    if settings.ai_proxy_ip:
-        return list(settings.ai_proxy_ip)
-    if not relays:
-        return []
-    stable = sorted(set(relays))
-    seed = f"{settings.secret_key}:{panel_uuid}".encode("utf-8")
-    offset = hashlib.sha256(seed).digest()[0] % len(stable)
-    ordered = stable[offset:] + stable[:offset]
-    return ordered[: max(1, settings.ai_relays)]
-
-
-def _bindings(uuid: str, host: str, endpoints: list[dict], relays: list[str]) -> dict[str, str]:
+def _bindings(
+    uuid: str,
+    host: str,
+    endpoints: list[dict],
+    relays: list[str],
+    ai_relays: Optional[list[str]] = None,
+) -> dict[str, str]:
     """Plain text vars handed to the worker. Shared by build and refresh so the
     two paths can never drift apart."""
     return {
         "UUID": uuid,
         "PROXY_IP": ",".join(relays),
         "AI_ROUTE": "true" if settings.ai_route else "false",
-        "AI_PROXY_IP": ",".join(_ai_relays(relays, uuid)),
-        "AI_DOMAINS": ",".join(settings.ai_domains),
+        # One relay, on purpose. See bot/aipin.py.
+        "AI_PROXY_IP": ",".join(ai_relays or []),
+        "AI_DOMAINS": ",".join(aipin.ai_domains()),
         "SUB_HOST": host,
         "BRAND": settings.brand,
         "WS_PATH": vless.WS_PATH,
@@ -372,6 +355,19 @@ async def _remember_reference(host: str) -> None:
         log.debug("could not record verification host")
 
 
+async def _record_pin(uuid: str, relays: list[str], country: str) -> None:
+    """Keep the panel row in step with the pin, for the admin screens."""
+    if not relays:
+        return
+    try:
+        await db.execute(
+            "UPDATE panels SET ai_relay = ?, ai_country = ? WHERE uuid = ?",
+            (relays[0], country, uuid),
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("could not record the ai pin on the panel row", exc_info=True)
+
+
 # --------------------------------------------------------------------- #
 # build
 # --------------------------------------------------------------------- #
@@ -415,13 +411,14 @@ async def build(
             script = reuse.get("script_name") or script_name()
             panel_uuid = reuse.get("uuid") or vless.new_uuid()
             host = f"{script}.{subdomain}.workers.dev"
+            ai_relays, ai_country = await aipin.choose(relays, panel_uuid)
 
             await _announce(progress, 3)
             await cf.upload_script(
                 account_id,
                 script,
                 code,
-                _bindings(panel_uuid, host, endpoints, relays),
+                _bindings(panel_uuid, host, endpoints, relays, ai_relays),
             )
             await cf.enable_workers_dev(account_id, script)
     except CloudflareError as error:
@@ -444,20 +441,21 @@ async def build(
                     account_id,
                     script,
                     code,
-                    _bindings(panel_uuid, host, endpoints, relays),
+                    _bindings(panel_uuid, host, endpoints, relays, ai_relays),
                 )
         except CloudflareError as error:
             log.warning("could not re-upload the healed endpoint list: %s", error.message)
 
-    ai_relays = _ai_relays(relays, panel_uuid)
+    await _record_pin(panel_uuid, ai_relays, ai_country)
     build_ms = int((time.perf_counter() - started) * 1000)
     log.info(
-        "panel built host=%s endpoints=%s rejected=%s relays=%s ai=%s healthy=%s in %sms",
+        "panel built host=%s endpoints=%s rejected=%s relays=%s ai=%s(%s) healthy=%s in %sms",
         host,
         len(endpoints),
         len(rejected),
         len(relays),
         ",".join(ai_relays) or "none",
+        ai_country or "??",
         healthy,
         build_ms,
     )
@@ -470,6 +468,7 @@ async def build(
         endpoints=endpoints,
         relays=relays,
         ai_relays=ai_relays,
+        ai_country=ai_country,
         build_ms=build_ms,
         healthy=healthy,
         probe=report,
@@ -484,9 +483,9 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     endpoint list and the relay chain change. This is what lets clean IPs be
     applied to every live config without anyone pressing rebuild.
 
-    The AI pin is derived from the uuid, which does not change here, so a refresh
-    keeps the same exit address for AI traffic even as the ordinary chain is
-    reshuffled by latency underneath it.
+    The AI pin is stored per uuid, and the uuid does not change here, so a
+    refresh keeps the same exit address for AI traffic even as the ordinary chain
+    is reshuffled by latency underneath it.
     """
     token = panel.get("token")
     if not token:
@@ -498,6 +497,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     relays = await _select_relays()
     host = str(panel["host"])
     panel_uuid = str(panel["uuid"])
+    ai_relays, ai_country = await aipin.choose(relays, panel_uuid)
 
     # The panel is already live, so acceptance can run before the upload here:
     # the addresses are tested against the hostname that is serving right now.
@@ -511,7 +511,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
                 str(panel["account_id"]),
                 str(panel["script_name"]),
                 code,
-                _bindings(panel_uuid, host, endpoints, relays),
+                _bindings(panel_uuid, host, endpoints, relays, ai_relays),
             )
             await cf.enable_workers_dev(str(panel["account_id"]), str(panel["script_name"]))
     except CloudflareError as error:
@@ -522,6 +522,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
         await _demote_dead_relays(report)
     if healthy:
         await _remember_reference(host)
+    await _record_pin(panel_uuid, ai_relays, ai_country)
 
     return Panel(
         account_id=str(panel["account_id"]),
@@ -530,7 +531,8 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
         uuid=panel_uuid,
         endpoints=endpoints,
         relays=relays,
-        ai_relays=_ai_relays(relays, panel_uuid),
+        ai_relays=ai_relays,
+        ai_country=ai_country,
         build_ms=int((time.perf_counter() - started) * 1000),
         healthy=healthy,
         probe=report,
