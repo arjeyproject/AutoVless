@@ -1,9 +1,7 @@
 """Screen composition shared by several handlers.
 
-``main_menu`` grows two rows here rather than in ``keyboards.py``: the free
-config screen and the invite card are optional features an admin can switch off,
-and the mini app only exists when ``WEBAPP_URL`` is set, so the rows are decided
-where the state is already being read.
+``main_menu`` grows one row here rather than in ``keyboards.py``: the free
+config screen and the invite card are optional features an admin can switch off.
 """
 
 from __future__ import annotations
@@ -31,8 +29,6 @@ async def _extra_rows(lang: str) -> list[list[InlineKeyboardButton]]:
         pair.append(_button(t(lang, "btn.free"), "nav:free"))
     pair.append(_button(t(lang, "btn.invite"), "nav:invite"))
     rows.append(pair)
-    if settings.webapp_url.strip() and await store.flag("miniapp_enabled", True):
-        rows.append([_button(t(lang, "btn.miniapp"), "nav:miniapp")])
     return rows
 
 
@@ -71,7 +67,7 @@ async def network_status(lang: str) -> tuple[str, object]:
         "SELECT colo, COUNT(*) AS hits FROM clean_ips WHERE colo IS NOT NULL "
         "GROUP BY colo ORDER BY hits DESC LIMIT 6"
     )
-    colos = " \u00b7 ".join(f"{esc(row['colo'])} ({num(row['hits'], lang)})" for row in rows) or "-"
+    colos = " · ".join(f"{esc(row['colo'])} ({num(row['hits'], lang)})" for row in rows) or "-"
     text = t(
         lang,
         "network_status",
@@ -81,7 +77,7 @@ async def network_status(lang: str) -> tuple[str, object]:
         best=ping_label(stats["best"], lang),
         domains=num(stats["domains"], lang),
         relays=num(relays["verified"], lang),
-        ports=" \u00b7 ".join(num(p, lang) for p in stats["ports"]),
+        ports=" · ".join(num(p, lang) for p in stats["ports"]),
         updated=ago(stats["updated_at"], lang),
         state=t(lang, "admin.on" if stats["scanning"] else "admin.off"),
         pilot=t(lang, "admin.on" if pilot["enabled"] else "admin.off"),
