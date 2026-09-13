@@ -5,7 +5,9 @@
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
 <meta name="theme-color" content="#0b0f1a">
 <title>AutoVless</title>
-<link rel="stylesheet" href="app.css">
+<!-- Telegram's webview caches these across launches. Bump ?v= on every change
+     to webapp/app.css or webapp/app.js, or the client keeps the old copy. -->
+<link rel="stylesheet" href="app.css?v=2">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -221,6 +223,6 @@
 <div class="toast" id="toast"></div>
 <div class="veil" id="veil" hidden><div class="spinner"></div></div>
 
-<script src="app.js"></script>
+<script src="app.js?v=2"></script>
 </body>
 </html>
