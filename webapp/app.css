@@ -37,6 +37,15 @@ html[data-theme="light"] {
 
 * { box-sizing: border-box; -webkit-tap-highlight-color: transparent; }
 
+/* Every panel in this file is hidden by toggling the `hidden` attribute from
+   JavaScript, and several of them also carry a display of their own further
+   down (.veil is grid, .copybox is flex). The browser's [hidden]{display:none}
+   lives in the UA stylesheet, which any author rule outranks, so those panels
+   could be told to hide and simply would not - the loading veil in particular
+   went up before the first request and stayed up forever, which is the endless
+   spinner. Restore the attribute's meaning once, here, above every one of them. */
+[hidden] { display: none !important; }
+
 body {
   margin: 0;
   font-family: var(--font);
