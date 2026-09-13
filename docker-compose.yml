@@ -27,6 +27,10 @@ services:
       DATA_DIR: /app/data
     volumes:
       - ./data:/app/data
+      # The mini app is baked into the image by the Dockerfile, so it works
+      # without this. Uncomment to edit webapp/ on the host and see the change
+      # after a plain restart, with no rebuild - handy while styling the app.
+      # - ./webapp:/app/webapp:ro
     logging:
       driver: json-file
       options:

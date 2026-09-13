@@ -29,6 +29,11 @@ COPY worker ./worker
 # CLEAN_IP_FILES defaults to endpoints/clean-ips.txt, so that directory has to
 # exist inside the image or the seed list silently comes back empty.
 COPY endpoints ./endpoints
+# The mini app is served by the bot itself, from WEBAPP_DIR (BASE_DIR/webapp).
+# Without this the directory does not exist in the container, api.build_app()
+# skips the static routes entirely, and the domain answers /api while returning
+# 404 for the page - visible as "webapp": false in /api/health.
+COPY webapp ./webapp
 
 RUN useradd --create-home --uid 10001 autovless \
  && mkdir -p /app/data \
