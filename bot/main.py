@@ -1,4 +1,4 @@
-"""Entrypoint: wire the dispatcher, start the engines, poll Telegram."""
+"""Entrypoint: wire the dispatcher, start the engines, serve the mini app, poll."""
 
 from __future__ import annotations
 
@@ -12,7 +12,8 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
-from . import db, handlers, middlewares
+from . import db, handlers, middlewares, referral, store
+from .api import api_server
 from .autopilot import autopilot
 from .config import settings
 from .curator import curator
@@ -25,6 +26,8 @@ log = logging.getLogger("autovless")
 COMMANDS = [
     BotCommand(command="start", description="Start / \u0634\u0631\u0648\u0639"),
     BotCommand(command="menu", description="Main menu / \u0645\u0646\u0648\u06cc \u0627\u0635\u0644\u06cc"),
+    BotCommand(command="app", description="Mini App / \u0645\u06cc\u0646\u06cc\u200c\u0627\u067e"),
+    BotCommand(command="invite", description="Invite friends / \u062f\u0639\u0648\u062a \u062f\u0648\u0633\u062a\u0627\u0646"),
     BotCommand(command="apps", description="Apps / \u0628\u0631\u0646\u0627\u0645\u0647\u200c\u0647\u0627"),
     BotCommand(command="warp", description="WARP / \u0648\u0627\u0631\u067e"),
     BotCommand(command="cancel", description="Cancel / \u0644\u063a\u0648"),
@@ -71,6 +74,7 @@ async def notify_admins(bot: Bot) -> None:
     pools = await warp_pool.status()
     pilot = await autopilot.stats()
     keeper = await curator.stats()
+    free = await store.free_stats()
     message = (
         f"\u2705 <b>{settings.brand}</b> is up.\n"
         f"\U0001f4e1 clean ip pool: <b>{pool['total']}</b> (verified {pool['verified']}, "
@@ -86,6 +90,10 @@ async def notify_admins(bot: Bot) -> None:
         f"(every {pilot['interval']}s)\n"
         f"\U0001f9f9 curator: <b>{'on' if keeper['enabled'] else 'off'}</b> "
         f"(every {keeper['interval']}s, {keeper['target']} fresh per port)\n"
+        f"\U0001f388 free servers: <b>{free['servers']}</b> (healthy {free['healthy']})\n"
+        f"\U0001f510 invite lock: <b>{'on' if await store.flag('referral_lock') else 'off'}</b> "
+        f"({await store.get_int('referral_required', 3)} per user)\n"
+        f"\U0001f680 mini app: <b>{settings.webapp_url or 'not set'}</b>\n"
         f"\U0001f50c ports: <b>{', '.join(str(p) for p in scanner.ports)}</b>"
     )
     for admin_id in settings.admin_ids:
@@ -101,6 +109,9 @@ async def run() -> None:
 
     await db.init()
     await seed_options()
+    # Tables added after 1.0 patch themselves in here, before any handler can
+    # read one that does not exist yet.
+    await store.ensure()
 
     bot = Bot(
         token=settings.bot_token,
@@ -118,6 +129,10 @@ async def run() -> None:
     await warp_pool.start()
     await autopilot.start()
     await curator.start()
+    # The invite link is built from the bot's own username, and the API has no Bot
+    # handle of its own, so it is resolved once here.
+    await referral.bot_username(bot)
+    await api_server.start()
 
     try:
         await bot.set_my_commands(COMMANDS)
@@ -125,6 +140,7 @@ async def run() -> None:
         log.info("%s is polling", settings.brand)
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
     finally:
+        await api_server.stop()
         await curator.stop()
         await autopilot.stop()
         await warp_pool.stop()
