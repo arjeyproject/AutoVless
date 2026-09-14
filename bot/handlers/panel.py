@@ -13,6 +13,16 @@ endpoints, same account: a completely different handshake on the wire. The bot
 builds those links itself from the panel it already knows about, so nothing here
 depends on the worker having been re-uploaded first - though it does have to be
 running a bundle that speaks trojan, which every apply and rebuild takes care of.
+
+Which subscription URL these screens hand out
+---------------------------------------------
+The gateway one, whenever there is one. A panel's own subscription lives on
+``<script>.<subdomain>.workers.dev``, and that hostname does not resolve in Iran -
+so a user could hold a working config and still watch their client fetch nothing,
+which is indistinguishable from a broken config and was reported as one for
+months. ``bot.subgw`` serves the identical list from the operator's own domain, so
+that is what goes on screen; the worker's own URL is kept underneath as the
+fallback for an operator who has not set ``PUBLIC_URL`` yet.
 """
 
 from __future__ import annotations
@@ -27,7 +37,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery
 
-from .. import db, deploy, fragment, keyboards, screens, trojan, vless
+from .. import db, deploy, fragment, keyboards, profiles, screens, subgw, trojan, vless
 from ..autopilot import autopilot
 from ..config import settings
 from ..i18n import num, t
@@ -59,22 +69,62 @@ async def _require_panel(call: CallbackQuery, lang: str) -> dict | None:
     return panel
 
 
+def _sub_links(tg_id: int, panel: dict) -> dict[str, str]:
+    """Every subscription URL for this panel, gateway first.
+
+    Written as one lookup so no screen can accidentally show a mix of the two
+    origins - which would be the most confusing possible outcome for a user
+    comparing two links that are supposed to be the same list.
+    """
+    uuid, host = str(panel["uuid"]), str(panel["host"])
+    direct = {
+        "sub": vless.sub_url(uuid, host),
+        "raw": vless.sub_url(uuid, host, "raw"),
+        "mix": vless.sub_url(uuid, host, "mix"),
+        "trojan": trojan.sub_url(uuid, host),
+        "clash": vless.sub_url(uuid, host, "clash"),
+        "singbox": vless.sub_url(uuid, host, "singbox"),
+    }
+    if not subgw.enabled():
+        return direct
+    return {**direct, **subgw.links(tg_id, uuid)}
+
+
+def _gateway_note(lang: str) -> str:
+    """Said in the open, because a changed link deserves a reason."""
+    if not subgw.enabled():
+        return ""
+    if lang == "en":
+        return (
+            "\n\n\u2139\ufe0f These links are served from our own domain. "
+            "workers.dev does not resolve on most Iranian networks, so a client "
+            "could never fetch the subscription from it. The configs inside are "
+            "unchanged."
+        )
+    return (
+        "\n\n\u2139\ufe0f این لینک‌ها از دامنه‌ی خودمان سرو می‌شوند. آدرس "
+        "workers.dev روی بیشتر شبکه‌های ایران رزولوو نمی‌شود و کلاینت هیچ‌وقت "
+        "نمی‌توانست ساب را از آن بگیرد. کانفیگ‌های داخلش همان‌هایی هستند که بودند."
+    )
+
+
 @router.callback_query(F.data == "panel:sub")
 async def on_sub(call: CallbackQuery, lang: str) -> None:
     panel = await _require_panel(call, lang)
     if panel is None:
         return
-    host, uuid = panel["host"], panel["uuid"]
+    links = _sub_links(call.from_user.id, panel)
     text = t(
         lang,
         "sub_links",
-        sub=esc(vless.sub_url(uuid, host)),
-        clash=esc(vless.sub_url(uuid, host, "clash")),
-        singbox=esc(vless.sub_url(uuid, host, "singbox")),
+        sub=esc(links["sub"]),
+        clash=esc(links["clash"]),
+        singbox=esc(links["singbox"]),
     )
-    # The mixed subscription is the one worth knowing about: one link, both
-    # protocols, and the client keeps whichever one answers.
-    text += "\n\n" + t(lang, "sub_mixed", mix=esc(vless.sub_url(uuid, host, "mix")))
+    # The mixed subscription is the one worth knowing about: one link, every
+    # protocol, and the client keeps whichever one answers.
+    text += "\n\n" + t(lang, "sub_mixed", mix=esc(links["mix"]))
+    text += _gateway_note(lang)
     await edit(call, text, keyboards.simple_back(lang, "nav:panel"))
     await call.answer()
 
@@ -84,7 +134,7 @@ async def on_qr(call: CallbackQuery, lang: str) -> None:
     panel = await _require_panel(call, lang)
     if panel is None:
         return
-    url = vless.sub_url(panel["uuid"], panel["host"])
+    url = _sub_links(call.from_user.id, panel)["sub"]
     image = qrcode.make(url, box_size=8, border=2)
     buffer = io.BytesIO()
     image.save(buffer, format="PNG")
@@ -147,7 +197,7 @@ async def on_trojan(call: CallbackQuery, lang: str) -> None:
         lang,
         "trojan_configs",
         count=num(len(links), lang),
-        sub=esc(trojan.sub_url(panel["uuid"], panel["host"])),
+        sub=esc(_sub_links(call.from_user.id, panel)["trojan"]),
         password=esc(trojan.password_for(panel["uuid"])),
     )
     body += "\n\n" + "\n\n".join(
@@ -203,16 +253,23 @@ async def on_fragment(call: CallbackQuery, lang: str) -> None:
 
 @router.callback_query(F.data.in_({"panel:clash", "panel:singbox"}))
 async def on_export(call: CallbackQuery, lang: str) -> None:
+    """Client files that carry every protocol the panel speaks, not just VLESS.
+
+    The single-protocol exports these buttons used to produce were a smaller
+    version of the same file: if the network stopped passing VLESS, the whole file
+    stopped working and the user had to come back for a different one. One file
+    with all three behind a latency test fails over on its own.
+    """
     panel = await _require_panel(call, lang)
     if panel is None:
         return
-    wants_clash = call.data == "panel:clash"
-    if wants_clash:
-        payload = vless.build_clash(panel["uuid"], panel["host"], panel["endpoints"])
-        filename = "autovless-clash.yaml"
+    uuid, host, endpoints = panel["uuid"], panel["host"], panel["endpoints"]
+    if call.data == "panel:clash":
+        payload = profiles.clash(uuid, host, endpoints)
+        filename = profiles.filename("clash")
     else:
-        payload = vless.build_singbox(panel["uuid"], panel["host"], panel["endpoints"])
-        filename = "autovless-singbox.json"
+        payload = profiles.singbox(uuid, host, endpoints)
+        filename = profiles.filename("singbox")
 
     await call.message.answer_document(
         BufferedInputFile(payload.encode("utf-8"), filename=filename),
