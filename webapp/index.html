@@ -3,11 +3,12 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover, maximum-scale=1, user-scalable=no">
-<meta name="theme-color" content="#0b0f1a">
+<meta name="theme-color" content="#080b14">
 <title>AutoVless</title>
-<!-- Telegram's webview caches these across launches. Bump ?v= on every change
-     to webapp/app.css or webapp/app.js, or the client keeps the old copy. -->
-<link rel="stylesheet" href="app.css?v=2">
+<!-- ?v=dev is a placeholder, not a version. The server rewrites it to a stamp
+     taken from each file's own mtime, so Telegram's webview cache cannot serve
+     yesterday's script against today's markup. Nothing to remember to bump. -->
+<link rel="stylesheet" href="app.css?v=dev">
 <script src="https://telegram.org/js/telegram-web-app.js"></script>
 </head>
 <body>
@@ -22,7 +23,7 @@
     </div>
   </div>
   <div class="topbar-actions">
-    <button class="chip" id="langBtn" type="button">FA</button>
+    <button class="chip" id="langBtn" type="button">EN</button>
     <button class="chip" id="themeBtn" type="button" aria-label="theme">🌙</button>
   </div>
 </header>
@@ -49,6 +50,15 @@
       <div class="card stat"><span data-i18n="stat.verified">تاییدشده</span><b id="stVerified">—</b></div>
       <div class="card stat"><span data-i18n="stat.relays">رله</span><b id="stRelays">—</b></div>
       <div class="card stat"><span data-i18n="stat.warp">وارپ</span><b id="stWarp">—</b></div>
+    </div>
+
+    <div class="card" id="protoCard">
+      <div class="row between">
+        <h3 data-i18n="proto.title">🔀 پروتکل‌های فعال</h3>
+        <span class="pill ghost" id="protoCount">—</span>
+      </div>
+      <p class="muted tiny" data-i18n="proto.text">یک آدرس، چند دست‌دادن متفاوت. شبکه‌ای که یکی را بشناسد، معمولاً بقیه را رد می‌کند.</p>
+      <div class="badges" id="protoBadges"></div>
     </div>
 
     <div class="card" id="aiCard">
@@ -88,14 +98,24 @@
       <div class="kv"><span data-i18n="panel.count">کانفیگ‌ها</span><b id="panelCount">—</b></div>
       <div class="kv"><span data-i18n="panel.synced">آخرین اعمال</span><b id="panelSynced">—</b></div>
 
+      <div class="note" id="gwNote" hidden>
+        <b data-i18n="gw.title">لینک اشتراک روی دامنه‌ی خودمان</b>
+        <span class="muted tiny" data-i18n="gw.text">آدرس workers.dev در ایران رزولوو نمی‌شود، پس لینک ساب از دامنه‌ی خودمان سرو می‌شود. کانفیگ‌ها همان‌هایی هستند که بودند.</span>
+      </div>
+
       <div class="seg" id="subFormats">
         <button class="seg-btn active" data-fmt="sub">VLESS</button>
         <button class="seg-btn" data-fmt="trojan">Trojan</button>
-        <button class="seg-btn" data-fmt="mix" data-i18n="panel.mix">هر دو</button>
+        <button class="seg-btn" data-fmt="ss" id="fmtSs" hidden>Shadowsocks</button>
+        <button class="seg-btn" data-fmt="mix" data-i18n="panel.mix">هر سه</button>
         <button class="seg-btn" data-fmt="clash">Clash</button>
         <button class="seg-btn" data-fmt="singbox">sing-box</button>
       </div>
       <div class="copybox"><code id="subLink">—</code><button class="btn tiny" data-copy="#subLink" data-i18n="copy">کپی</button></div>
+      <div class="grid two">
+        <button class="btn" id="subOpen" data-i18n="panel.openSub">🌐 باز کردن لینک</button>
+        <button class="btn" id="subQr" data-i18n="panel.showQr">🔳 کیو‌آر</button>
+      </div>
       <div class="qr" id="qrBox"><img id="qrImg" alt="QR"></div>
 
       <div class="grid two">
@@ -103,6 +123,8 @@
         <button class="btn" id="pingBtn" data-i18n="panel.ping">📶 پینگ</button>
         <button class="btn" id="rebuildBtn" data-i18n="panel.rebuild">🔄 بازسازی</button>
         <button class="btn" id="fragBtn" data-i18n="panel.fragment">🧩 فرگمنت</button>
+        <button class="btn" id="noiseBtn" data-i18n="panel.noise">🌫 فرگمنت + نویز</button>
+        <button class="btn" id="clashBtn" data-i18n="panel.clashFile">📄 فایل Clash</button>
       </div>
       <button class="btn danger block" id="deleteBtn" data-i18n="panel.delete">🗑 حذف پنل</button>
 
@@ -122,8 +144,8 @@
 
       <label class="label" data-i18n="warp.device">دستگاه</label>
       <div class="seg" id="wgPlatform">
-        <button class="seg-btn active" data-platform="ios">🍏 iOS</button>
-        <button class="seg-btn" data-platform="android">🤖 Android</button>
+        <button class="seg-btn" data-platform="ios">🍏 iOS</button>
+        <button class="seg-btn active" data-platform="android">🤖 Android</button>
         <button class="seg-btn" data-platform="windows">🪟 Windows</button>
         <button class="seg-btn" data-platform="macos">💻 macOS</button>
       </div>
@@ -139,10 +161,20 @@
       <div id="wgResult" hidden>
         <div class="kv"><span data-i18n="warp.endpoint">اندپوینت</span><code id="wgEndpoint">—</code></div>
         <div class="kv"><span data-i18n="warp.mode">حالت</span><b id="wgMode">—</b></div>
+        <div class="kv"><span data-i18n="warp.routes">مسیرها</span><code id="wgRoutes">—</code></div>
+
+        <div class="note" id="wgApple" hidden>
+          <b data-i18n="warp.appleTitle">🍏 روش درست روی آیفون و مک</b>
+          <span class="muted tiny" data-i18n="warp.appleText">اپلیکیشن رسمی WireGuard فایل دارای کلیدهای مبهم‌سازی را قبول نمی‌کند، پس این کانفیگ تمیز و استاندارد است. سریع‌ترین راه: در اپ WireGuard دکمه‌ی + را بزن، «Create from QR code» را انتخاب کن و همین کیو‌آر را اسکن کن.</span>
+        </div>
+
         <div class="grid two">
+          <button class="btn primary" id="wgQr" data-i18n="warp.qr">🔳 اسکن با WireGuard</button>
           <button class="btn" id="wgDownload" data-i18n="warp.download">⬇️ فایل .conf</button>
+          <button class="btn" id="wgCopyConf" data-i18n="warp.copyconf">📋 کپی متن کانفیگ</button>
           <button class="btn" id="wgCopyLink" data-i18n="warp.copylink">🔗 لینک wireguard</button>
         </div>
+        <div class="qr" id="wgQrBox"><img id="wgQrImg" alt="QR"></div>
         <pre class="pre" id="wgConf"></pre>
       </div>
     </div>
@@ -211,18 +243,44 @@
   </section>
 </main>
 
-<nav class="dock" id="dock">
-  <span class="drop" id="drop" aria-hidden="true"></span>
-  <button class="dock-btn active" data-tab="home"><i>🏠</i><em data-i18n="tab.home">خانه</em></button>
-  <button class="dock-btn" data-tab="panel"><i>🚀</i><em data-i18n="tab.panel">پنل</em></button>
-  <button class="dock-btn" data-tab="warp"><i>🧬</i><em data-i18n="tab.warp">وارپ</em></button>
-  <button class="dock-btn" data-tab="free"><i>🎈</i><em data-i18n="tab.free">رایگان</em></button>
-  <button class="dock-btn" data-tab="more"><i>✨</i><em data-i18n="tab.more">بیشتر</em></button>
+<!-- The dock. Icons are inline SVG rather than emoji: emoji render at a
+     different size and baseline on every platform, which is why the old bar
+     looked crooked on some phones and fine on others. The indicator is a single
+     element moved with a transform, and its geometry is measured from the live
+     buttons, so it lands correctly in both text directions. -->
+<nav class="dock" id="dock" role="tablist" aria-label="sections">
+  <span class="dock-ind" id="dockInd" aria-hidden="true"></span>
+  <button class="dock-btn active" data-tab="home" role="tab" aria-selected="true">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M3 10.5 12 3l9 7.5"/><path d="M5.5 9.5V20h13V9.5"/><path d="M9.5 20v-5.5h5V20"/></svg>
+    <em data-i18n="tab.home">خانه</em>
+  </button>
+  <button class="dock-btn" data-tab="panel" role="tab" aria-selected="false">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M13 2 4.5 13.5H11l-1 8.5 9-12h-6.5z"/></svg>
+    <em data-i18n="tab.panel">پنل</em>
+  </button>
+  <button class="dock-btn" data-tab="warp" role="tab" aria-selected="false">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><circle cx="12" cy="12" r="9"/><path d="M3 12h18"/><path d="M12 3c2.6 3 2.6 15 0 18"/><path d="M12 3c-2.6 3-2.6 15 0 18"/></svg>
+    <em data-i18n="tab.warp">وارپ</em>
+  </button>
+  <button class="dock-btn" data-tab="free" role="tab" aria-selected="false">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M20 8H4v11a2 2 0 0 0 2 2h12a2 2 0 0 0 2-2z"/><path d="M2.5 4.5h19V8h-19z"/><path d="M12 4.5V21"/><path d="M12 4.5C10.5 2 7 2 7 4.5"/><path d="M12 4.5c1.5-2.5 5-2.5 5 0"/></svg>
+    <em data-i18n="tab.free">رایگان</em>
+  </button>
+  <button class="dock-btn" data-tab="more" role="tab" aria-selected="false">
+    <svg viewBox="0 0 24 24" aria-hidden="true"><path d="M12 3l1.9 5.1L19 10l-5.1 1.9L12 17l-1.9-5.1L5 10l5.1-1.9z"/><circle cx="18.5" cy="18" r="2"/></svg>
+    <em data-i18n="tab.more">بیشتر</em>
+  </button>
 </nav>
 
 <div class="toast" id="toast"></div>
-<div class="veil" id="veil" hidden><div class="spinner"></div></div>
+<div class="veil" id="veil" hidden>
+  <div class="veil-box">
+    <div class="spinner"></div>
+    <p class="tiny muted" id="veilText" data-i18n="working">در حال انجام…</p>
+    <button class="btn tiny ghost" id="veilCancel" hidden data-i18n="veil.hide">بستن این پرده</button>
+  </div>
+</div>
 
-<script src="app.js?v=2"></script>
+<script src="app.js?v=dev"></script>
 </body>
 </html>
