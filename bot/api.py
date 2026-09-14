@@ -1,4 +1,5 @@
-"""HTTP API for the Telegram Mini App, and the server that hosts the app itself.
+"""HTTP API for the Telegram Mini App, the server that hosts the app itself, and
+the subscription gateway on the operator's own domain.
 
 Why the mini app needs a backend at all
 --------------------------------------
@@ -12,8 +13,8 @@ Trust
 Telegram signs every mini app launch. ``initData`` arrives with an HMAC computed
 under a key derived from the bot token, so verifying it proves the caller is the
 Telegram user it claims to be - no session, no password, nothing to steal. Every
-endpoint except ``/api/health`` verifies it, and the user id comes out of the
-signed payload rather than out of anything the client sent separately.
+``/api`` endpoint except ``/api/health`` verifies it, and the user id comes out of
+the signed payload rather than out of anything the client sent separately.
 
 Serving
 -------
@@ -22,6 +23,23 @@ is deliberate: a Telegram mini app must be HTTPS, and a page on HTTPS cannot cal
 an HTTP API, so one origin behind one certificate is the only arrangement that
 works without a second domain. Put any TLS terminator in front of it (the docs
 use Caddy, two lines) and point ``WEBAPP_URL`` at it.
+
+Two things here are not for the mini app, and they are the reason this file grew.
+
+``/sub/...`` is the subscription gateway. A panel lives on ``workers.dev``, which
+is DNS-poisoned in Iran, so a client could hold a perfectly good config and still
+fail to *fetch* the subscription that carries it - which looks exactly like a dead
+config and got reported as one. The gateway serves the same list from the
+operator's own domain instead. It takes a signed token rather than the launch
+signature, because a subscription URL is pasted into client apps that know
+nothing about Telegram.
+
+``/dl/...`` is file download. Telegram's in-app browser, and iOS most of all,
+refuses a Blob download built in JavaScript: the button appeared to do nothing at
+all, which is why "download config does not work" and "iPhone cannot use
+WireGuard" were the same bug wearing two hats. A real URL with a real
+``Content-Disposition`` is something every webview understands, and on iOS it is
+what puts a ``.conf`` in front of the WireGuard app's own importer.
 
 Long jobs
 ---------
@@ -34,6 +52,7 @@ the bot draws in chat.
 from __future__ import annotations
 
 import asyncio
+import base64
 import hashlib
 import hmac
 import io
@@ -44,7 +63,7 @@ import secrets
 import time
 from pathlib import Path
 from typing import Any, Awaitable, Callable, Optional
-from urllib.parse import parse_qsl
+from urllib.parse import parse_qsl, quote
 
 from aiohttp import web
 
@@ -54,9 +73,12 @@ from . import (
     deploy,
     fragment,
     freepool,
+    profiles,
     proxies,
     referral,
+    shadowsocks,
     store,
+    subgw,
     trojan,
     vless,
     warp,
@@ -78,6 +100,9 @@ API_ENABLED = (os.getenv("API_ENABLED", "1").strip().lower() not in {"0", "false
 INIT_DATA_TTL = int(os.getenv("INIT_DATA_TTL", "86400") or 86400)
 
 JOB_TTL = 900
+# A download link is short lived on purpose: it carries a private key past the
+# launch signature, so it is valid for one sitting and not for a bookmark.
+DOWNLOAD_TTL = int(os.getenv("DOWNLOAD_TTL", "3600") or 3600)
 _jobs: dict[str, dict] = {}
 _tasks: set[asyncio.Task] = set()
 
@@ -191,6 +216,78 @@ def guarded(handler: Handler, admin_only: bool = False) -> Callable:
 
 
 # --------------------------------------------------------------------- #
+# signed download tickets
+# --------------------------------------------------------------------- #
+
+
+def _ticket(tg_id: int, kind: str, platform: str = "", index: int = 0) -> str:
+    """A short lived, signed description of one file to render.
+
+    Nothing is stored: the ticket *is* the request, and the server rebuilds the
+    file from the database when it is presented. That keeps a stale link from
+    handing out a stale key.
+    """
+    payload = {
+        "u": int(tg_id),
+        "k": str(kind),
+        "p": str(platform or ""),
+        "i": int(index or 0),
+        "e": int(time.time()) + DOWNLOAD_TTL,
+    }
+    body = base64.urlsafe_b64encode(
+        json.dumps(payload, separators=(",", ":")).encode("utf-8")
+    ).decode("ascii").rstrip("=")
+    mac = hmac.new(
+        settings.secret_key.encode("utf-8"), f"dl:{body}".encode("utf-8"), hashlib.sha256
+    ).digest()
+    return f"{body}.{base64.urlsafe_b64encode(mac[:12]).decode('ascii').rstrip('=')}"
+
+
+def _read_ticket(raw: str) -> Optional[dict]:
+    body, _, signature = str(raw or "").partition(".")
+    if not body or not signature:
+        return None
+    mac = hmac.new(
+        settings.secret_key.encode("utf-8"), f"dl:{body}".encode("utf-8"), hashlib.sha256
+    ).digest()
+    if not hmac.compare_digest(base64.urlsafe_b64encode(mac[:12]).decode("ascii").rstrip("="), signature):
+        return None
+    try:
+        padded = body + "=" * (-len(body) % 4)
+        payload = json.loads(base64.urlsafe_b64decode(padded.encode("ascii")))
+    except Exception:  # noqa: BLE001
+        return None
+    if not isinstance(payload, dict) or int(payload.get("e") or 0) < int(time.time()):
+        return None
+    return payload
+
+
+def _public_origin(request: web.Request) -> str:
+    """Where a link handed to a client app should point.
+
+    ``PUBLIC_URL`` wins, because that is the domain the operator actually owns
+    and terminates TLS on. Failing that, the request's own forwarded host is used
+    - which is right behind a reverse proxy and harmless in front of one.
+    """
+    configured = subgw.origin()
+    if configured:
+        return configured
+    forwarded_proto = request.headers.get("X-Forwarded-Proto", "").split(",")[0].strip()
+    forwarded_host = request.headers.get("X-Forwarded-Host", "").split(",")[0].strip()
+    host = forwarded_host or request.host
+    scheme = forwarded_proto or request.scheme
+    return f"{scheme}://{host}".rstrip("/")
+
+
+def _download_url(request: web.Request, tg_id: int, kind: str, platform: str = "", index: int = 0) -> str:
+    return f"{_public_origin(request)}/dl/{_ticket(tg_id, kind, platform, index)}"
+
+
+def _qr_url(request: web.Request, text: str) -> str:
+    return f"{_public_origin(request)}/api/qr?text={quote(text, safe='')}"
+
+
+# --------------------------------------------------------------------- #
 # state
 # --------------------------------------------------------------------- #
 
@@ -200,7 +297,7 @@ async def _lang(tg_id: int, row: Any) -> str:
     return lang if lang in {"fa", "en"} else settings.default_lang
 
 
-async def _panel_payload(tg_id: int) -> Optional[dict]:
+async def _panel_payload(tg_id: int, request: Optional[web.Request] = None) -> Optional[dict]:
     panel = await db.get_panel(tg_id)
     if panel is None:
         return None
@@ -208,7 +305,25 @@ async def _panel_payload(tg_id: int) -> Optional[dict]:
     host = str(panel["host"])
     endpoints = list(panel.get("endpoints") or [])
     pin = await store.ai_pin(uuid)
-    return {
+
+    # Two sets of links, and the difference matters. ``direct`` is the worker's
+    # own subscription, which is the freshest thing that exists but sits on
+    # workers.dev. ``links`` is what the user is shown, and it prefers the
+    # gateway on the operator's domain precisely because that is the one their
+    # client can resolve.
+    direct = {
+        "sub": vless.sub_url(uuid, host),
+        "raw": vless.sub_url(uuid, host, "raw"),
+        "mix": vless.sub_url(uuid, host, "mix"),
+        "trojan": trojan.sub_url(uuid, host),
+        "clash": vless.sub_url(uuid, host, "clash"),
+        "singbox": vless.sub_url(uuid, host, "singbox"),
+    }
+    links = dict(direct)
+    if subgw.enabled():
+        links.update(subgw.links(tg_id, uuid))
+
+    payload = {
         "host": host,
         "uuid": uuid,
         "healthy": bool(panel.get("healthy")),
@@ -221,17 +336,21 @@ async def _panel_payload(tg_id: int) -> Optional[dict]:
         "trojanPassword": trojan.password_for(uuid),
         "aiRelay": (pin or {}).get("relay"),
         "aiCountry": (pin or {}).get("country"),
-        "links": {
-            "sub": vless.sub_url(uuid, host),
-            "raw": vless.sub_url(uuid, host, "raw"),
-            "mix": vless.sub_url(uuid, host, "mix"),
-            "trojan": trojan.sub_url(uuid, host),
-            "clash": vless.sub_url(uuid, host, "clash"),
-            "singbox": vless.sub_url(uuid, host, "singbox"),
-        },
+        "gateway": subgw.enabled(),
+        "links": links,
+        "direct": direct,
         "vless": vless.build_links(uuid, host, endpoints, settings.brand),
         "trojan": trojan.build_links(uuid, host, endpoints),
     }
+    if shadowsocks.enabled():
+        payload["ss"] = shadowsocks.build_links(uuid, host, endpoints, settings.brand)
+        payload["ssPassword"] = shadowsocks.password_for(uuid)
+    if request is not None:
+        payload["downloads"] = {
+            kind: _download_url(request, tg_id, kind)
+            for kind in ("sub", "raw", "mix", "clash", "singbox", "fragment", "noise")
+        }
+    return payload
 
 
 async def _warp_payload(tg_id: int) -> dict:
@@ -286,13 +405,25 @@ async def state_handler(request: web.Request, body: dict, user: dict) -> web.Str
                 "warp": int(warp_pool.get("stable") or 0),
                 "updatedAt": int(pool.get("updated_at") or 0),
             },
-            "panel": await _panel_payload(tg_id),
+            "panel": await _panel_payload(tg_id, request),
             "warp": await _warp_payload(tg_id),
             "free": {
                 "enabled": bool(free.get("enabled")),
                 "servers": int(free.get("servers") or 0),
                 "healthy": int(free.get("healthy") or 0),
                 "protocols": list(freepool.PROTOCOLS),
+                "sub": f"{_public_origin(request)}/sub/free/{_free_token(tg_id)}"
+                if subgw.enabled()
+                else "",
+            },
+            "protocols": {
+                "vless": True,
+                "trojan": True,
+                "shadowsocks": shadowsocks.enabled(),
+            },
+            "gateway": {
+                "enabled": subgw.enabled(),
+                "origin": subgw.origin(),
             },
             "referral": {
                 "enabled": await referral.enabled(),
@@ -434,7 +565,9 @@ async def apply_handler(request: web.Request, body: dict, user: dict) -> web.Str
     if result is None:
         return _json({"ok": False, "error": "no stored token"}, status=400)
 
-    return _json({"ok": True, "healthy": bool(result["healthy"]), "panel": await _panel_payload(tg_id)})
+    return _json(
+        {"ok": True, "healthy": bool(result["healthy"]), "panel": await _panel_payload(tg_id, request)}
+    )
 
 
 async def delete_handler(request: web.Request, body: dict, user: dict) -> web.StreamResponse:
@@ -453,29 +586,79 @@ async def delete_handler(request: web.Request, body: dict, user: dict) -> web.St
     return _json({"ok": True})
 
 
+def _render_export(panel: dict, kind: str) -> tuple[str, str]:
+    """``(body, filename)`` for one panel export, by the same code the bot uses."""
+    uuid, host = str(panel["uuid"]), str(panel["host"])
+    endpoints = list(panel.get("endpoints") or [])
+    brand = settings.brand
+    kind = (kind or "clash").strip().lower()
+
+    if kind == "clash":
+        return profiles.clash(uuid, host, endpoints, brand), profiles.filename("clash", brand)
+    if kind in {"singbox", "sing-box"}:
+        return profiles.singbox(uuid, host, endpoints, brand), profiles.filename("singbox", brand)
+    if kind == "noise":
+        return profiles.xray_noise(uuid, host, endpoints, brand), profiles.filename("noise", brand)
+    if kind == "fragment":
+        return fragment.xray_config(uuid, host, endpoints, brand), fragment.filename(brand)
+    if kind == "trojan":
+        return "\n".join(trojan.build_links(uuid, host, endpoints)), "autovless-trojan.txt"
+    if kind == "ss":
+        return (
+            "\n".join(shadowsocks.build_links(uuid, host, endpoints, brand)),
+            "autovless-shadowsocks.txt",
+        )
+    if kind == "mix":
+        rows = vless.build_links(uuid, host, endpoints, brand)
+        rows += trojan.build_links(uuid, host, endpoints)
+        if shadowsocks.enabled():
+            rows += shadowsocks.build_links(uuid, host, endpoints, brand)
+        return "\n".join(rows), "autovless-mix.txt"
+    return "\n".join(vless.build_links(uuid, host, endpoints, brand)), "autovless.txt"
+
+
 async def export_handler(request: web.Request, body: dict, user: dict) -> web.StreamResponse:
-    """Client config files, rendered by the same code the bot's buttons use."""
+    """Client config files, rendered by the same code the bot's buttons use.
+
+    The body is still returned inline, because the app shows it on screen. What
+    changed is ``url``: a real download link, which is the only thing Telegram's
+    webview will actually save.
+    """
     tg_id = user["id"]
     panel = await db.get_panel(tg_id)
     if panel is None:
         return _json({"ok": False, "error": "no panel"}, status=404)
 
     kind = str(body.get("format") or request.query.get("format") or "clash").lower()
-    uuid, host = str(panel["uuid"]), str(panel["host"])
-    endpoints = list(panel.get("endpoints") or [])
+    payload, name = _render_export(panel, kind)
+    return _json(
+        {
+            "ok": True,
+            "filename": name,
+            "body": payload,
+            "url": _download_url(request, tg_id, kind),
+        }
+    )
 
-    if kind == "clash":
-        payload, name = vless.build_clash(uuid, host, endpoints), "autovless-clash.yaml"
-    elif kind in {"singbox", "sing-box"}:
-        payload, name = vless.build_singbox(uuid, host, endpoints), "autovless-singbox.json"
-    elif kind == "fragment":
-        payload, name = fragment.xray_config(uuid, host, endpoints), fragment.filename()
-    elif kind == "trojan":
-        payload, name = "\n".join(trojan.build_links(uuid, host, endpoints)), "autovless-trojan.txt"
-    else:
-        payload, name = "\n".join(vless.build_links(uuid, host, endpoints, settings.brand)), "autovless.txt"
 
-    return _json({"ok": True, "filename": name, "body": payload})
+async def links_handler(request: web.Request, body: dict, user: dict) -> web.StreamResponse:
+    """Every subscription URL for this user, gateway first."""
+    tg_id = user["id"]
+    panel = await db.get_panel(tg_id)
+    if panel is None:
+        return _json({"ok": False, "error": "no panel"}, status=404)
+    uuid = str(panel["uuid"])
+    return _json(
+        {
+            "ok": True,
+            "gateway": subgw.enabled(),
+            "links": subgw.links(tg_id, uuid) if subgw.enabled() else {},
+            "direct": {
+                "sub": vless.sub_url(uuid, str(panel["host"])),
+                "mix": vless.sub_url(uuid, str(panel["host"]), "mix"),
+            },
+        }
+    )
 
 
 async def ping_handler(request: web.Request, body: dict, user: dict) -> web.StreamResponse:
@@ -512,8 +695,40 @@ async def rescan_handler(request: web.Request, body: dict, user: dict) -> web.St
 # --------------------------------------------------------------------- #
 
 
+async def _warp_identity(tg_id: int, fresh: bool = False) -> tuple[Optional[dict], str]:
+    row = await db.get_warp_user(tg_id)
+    if row is None or fresh:
+        try:
+            identity = await warp.provision()
+        except warp.WarpError as error:
+            return None, str(error)
+        await db.save_warp_user(tg_id, identity, [])
+        return identity, ""
+    return dict(row.get("identity") or {}), ""
+
+
+async def _warp_endpoints(family: str) -> list[dict]:
+    endpoints = await db.best_warp_endpoints(12, stable_only=True)
+    if not endpoints:
+        endpoints = await db.best_warp_endpoints(12, stable_only=False)
+    rows = [dict(item) for item in endpoints]
+    if family == "v6":
+        return [item for item in rows if ":" in str(item["ip"])] or rows
+    return [item for item in rows if ":" not in str(item["ip"])] or rows
+
+
 async def warp_handler(request: web.Request, body: dict, user: dict) -> web.StreamResponse:
-    """A real WireGuard/WARP config, rendered for the platform the app asked for."""
+    """A real WireGuard/WARP config, rendered for the platform the app asked for.
+
+    The Apple platforms get three extra things in this payload, and each of them
+    is one of the reasons an iPhone user could not connect:
+
+      * ``url`` - a genuine download, because a Blob is refused by the webview
+      * ``qr`` - the config as a QR code, which is the WireGuard app's own
+        import path and needs no file handling at all
+      * ``clean``/``routes`` - an honest statement of what the file actually
+        carries, so nobody goes looking for a setting that is not there
+    """
     if not await db.get_flag("warp_enabled") and not settings.is_admin(user["id"]):
         return _json({"ok": False, "error": "warp is disabled"}, status=403)
 
@@ -522,25 +737,11 @@ async def warp_handler(request: web.Request, body: dict, user: dict) -> web.Stre
     family = str(body.get("family") or "v4").lower()
     kind = str(body.get("kind") or "").lower() or None
 
-    row = await db.get_warp_user(tg_id)
-    if row is None or body.get("fresh"):
-        try:
-            identity = await warp.provision()
-        except warp.WarpError as error:
-            return _json({"ok": False, "error": str(error)}, status=502)
-        await db.save_warp_user(tg_id, identity, [])
-    else:
-        identity = dict(row.get("identity") or {})
+    identity, error = await _warp_identity(tg_id, bool(body.get("fresh")))
+    if identity is None:
+        return _json({"ok": False, "error": error or "warp registration failed"}, status=502)
 
-    endpoints = await db.best_warp_endpoints(12, stable_only=True)
-    if not endpoints:
-        endpoints = await db.best_warp_endpoints(12, stable_only=False)
-    rows = [dict(item) for item in endpoints]
-    if family == "v6":
-        rows = [item for item in rows if ":" in str(item["ip"])] or rows
-    else:
-        rows = [item for item in rows if ":" not in str(item["ip"])] or rows
-
+    rows = await _warp_endpoints(family)
     await db.update_warp_endpoints(tg_id, rows[:6])
     profile = warp.obfuscation(identity.get("private_key", ""))
     conf = warpconf.conf_for(identity, rows, platform=platform, kind=kind or "", profile=profile)
@@ -552,8 +753,11 @@ async def warp_handler(request: web.Request, body: dict, user: dict) -> web.Stre
             "family": family,
             "clean": warpconf.is_clean_for(platform),
             "endpoint": warpconf.label(rows, 0, platform),
+            "routes": warpconf.allowed_ips(identity, platform),
             "filename": warpconf.filename(family, kind or "awg", platform),
             "conf": conf,
+            "url": _download_url(request, tg_id, "warp", platform),
+            "qr": _qr_url(request, conf),
             "link": warp.warp_link(identity, rows),
             "singbox": warp.singbox_json(identity, rows),
             "clash": warp.clash_yaml(identity, rows),
@@ -564,6 +768,25 @@ async def warp_handler(request: web.Request, body: dict, user: dict) -> web.Stre
 # --------------------------------------------------------------------- #
 # free pool
 # --------------------------------------------------------------------- #
+
+
+def _free_token(tg_id: int) -> str:
+    body = format(int(tg_id), "x")
+    mac = hmac.new(
+        settings.secret_key.encode("utf-8"), f"free:{body}".encode("utf-8"), hashlib.sha256
+    ).digest()
+    return f"{body}.{base64.urlsafe_b64encode(mac[:12]).decode('ascii').rstrip('=')}"
+
+
+def _free_token_ok(raw: str) -> bool:
+    body, _, signature = str(raw or "").partition(".")
+    if not body or not signature:
+        return False
+    mac = hmac.new(
+        settings.secret_key.encode("utf-8"), f"free:{body}".encode("utf-8"), hashlib.sha256
+    ).digest()
+    expected = base64.urlsafe_b64encode(mac[:12]).decode("ascii").rstrip("=")
+    return hmac.compare_digest(expected, signature)
 
 
 async def free_handler(request: web.Request, body: dict, user: dict) -> web.StreamResponse:
@@ -586,7 +809,13 @@ async def free_handler(request: web.Request, body: dict, user: dict) -> web.Stre
             "ok": True,
             "protocol": result["protocol"],
             "host": result["host"],
-            "sub": result["sub"],
+            # The worker's own subscription stays in the payload, but the link the
+            # app shows is the gateway one: a free user's client cannot resolve
+            # workers.dev either.
+            "sub": f"{_public_origin(request)}/sub/free/{_free_token(tg_id)}"
+            if subgw.enabled()
+            else result["sub"],
+            "direct": result["sub"],
             "links": result["links"],
             "best": result["best"],
             "count": result["count"],
@@ -646,6 +875,8 @@ async def admin_state_handler(request: web.Request, body: dict, user: dict) -> w
             "free": await store.free_stats(),
             "ai": await aipin.report(),
             "events": await db.recent_events(12),
+            "gateway": {"enabled": subgw.enabled(), "origin": subgw.origin()},
+            "shadowsocks": {"enabled": shadowsocks.enabled(), "path": shadowsocks.path()},
         }
     )
 
@@ -706,23 +937,151 @@ async def admin_ai_handler(request: web.Request, body: dict, user: dict) -> web.
 
 
 # --------------------------------------------------------------------- #
+# subscription gateway
+# --------------------------------------------------------------------- #
+
+
+def _sub_response(body: str, content_type: str, fmt: str) -> web.Response:
+    return web.Response(
+        text=body,
+        content_type=content_type.split(";")[0].strip(),
+        charset="utf-8",
+        headers=subgw.headers(fmt),
+    )
+
+
+async def sub_handler(request: web.Request) -> web.StreamResponse:
+    """``/sub/<token>[/<format>]``: the subscription, on a domain that resolves."""
+    fmt = (request.match_info.get("fmt") or "sub").lower()
+    if fmt not in subgw.FORMATS:
+        raise web.HTTPNotFound()
+
+    found = await subgw.resolve(request.match_info.get("token", ""))
+    if found is None:
+        # 404 and nothing else. A wrong token must not reveal whether the user
+        # exists, and a client that gets a 401 here shows a login prompt.
+        raise web.HTTPNotFound()
+
+    body, content_type, _name = subgw.render(found["panel"], fmt)
+    return _sub_response(body, content_type, fmt)
+
+
+async def free_sub_handler(request: web.Request) -> web.StreamResponse:
+    """``/sub/free/<token>``: the same service for a user with no panel of their own.
+
+    Built from the shared server the admin registered plus the current verified
+    pool. There is no handshake test on this path on purpose: a subscription is
+    fetched every few hours by every client that holds it, and re-probing six
+    addresses per fetch would turn a refresh into a scan. The pool rows have
+    already been verified by the sweep and are re-checked by the curator.
+    """
+    token = request.match_info.get("token", "")
+    if not _free_token_ok(token):
+        raise web.HTTPNotFound()
+
+    server = await freepool.pick_server()
+    if server is None:
+        raise web.HTTPNotFound()
+
+    endpoints = await vless.collect_endpoints(scanner)
+    if not endpoints:
+        raise web.HTTPServiceUnavailable(text="no verified endpoint right now")
+
+    uuid = str(server["uuid"])
+    host = str(server["host"])
+    fmt = (request.query.get("format") or "sub").lower()
+    rows = vless.build_links(uuid, host, endpoints, settings.brand)
+    rows += trojan.build_links(uuid, host, endpoints)
+    body = "\n".join(rows)
+    if fmt != "raw":
+        body = base64.b64encode(body.encode("utf-8")).decode("ascii")
+    return _sub_response(body, "text/plain", fmt)
+
+
+# --------------------------------------------------------------------- #
+# downloads
+# --------------------------------------------------------------------- #
+
+
+async def download_handler(request: web.Request) -> web.StreamResponse:
+    """``/dl/<ticket>``: one file, as an attachment, for a webview that cannot Blob."""
+    ticket = _read_ticket(request.match_info.get("ticket", ""))
+    if ticket is None:
+        raise web.HTTPNotFound()
+
+    tg_id = int(ticket["u"])
+    kind = str(ticket["k"])
+
+    if kind == "warp":
+        row = await db.get_warp_user(tg_id)
+        if row is None:
+            raise web.HTTPNotFound()
+        identity = dict(row.get("identity") or {})
+        platform = normalise_platform(ticket.get("p"))
+        rows = [dict(item) for item in (row.get("endpoints") or [])]
+        if not rows:
+            rows = await _warp_endpoints("v4")
+        body = warpconf.conf_for(
+            identity,
+            rows,
+            platform=platform,
+            profile=warp.obfuscation(identity.get("private_key", "")),
+            index=int(ticket.get("i") or 0),
+        )
+        name = warpconf.filename("", "conf", platform)
+    else:
+        panel = await db.get_panel(tg_id)
+        if panel is None:
+            raise web.HTTPNotFound()
+        body, name = _render_export(panel, kind)
+
+    return web.Response(
+        body=body.encode("utf-8"),
+        headers={
+            # octet-stream, not text/plain: a webview that recognises the type
+            # renders it in a tab instead of handing it to the OS, and on iOS
+            # that is the difference between importing a tunnel and staring at
+            # a wall of text.
+            "content-type": "application/octet-stream",
+            "content-disposition": f'attachment; filename="{name}"',
+            "cache-control": "no-store",
+            "access-control-allow-origin": "*",
+        },
+    )
+
+
+# --------------------------------------------------------------------- #
 # qr
 # --------------------------------------------------------------------- #
 
 
 async def qr_handler(request: web.Request) -> web.StreamResponse:
-    """A PNG for any text, so the app never needs a QR library of its own."""
+    """A PNG for any text, so the app never needs a QR library of its own.
+
+    The limit is generous because a WireGuard config is the whole point: the
+    WireGuard app imports a tunnel from a QR code, which is the one path on iOS
+    that needs no file handling at all, and a config runs to a few hundred bytes.
+    """
     text = request.query.get("text", "").strip()
-    if not text or len(text) > 2000:
+    if not text or len(text) > 2900:
         return _json({"ok": False, "error": "bad text"}, status=400)
     try:
         import qrcode
+        from qrcode.constants import ERROR_CORRECT_L, ERROR_CORRECT_M
     except ImportError:
         return _json({"ok": False, "error": "qrcode is not installed"}, status=501)
 
-    image = qrcode.make(text, box_size=8, border=2)
+    # A long payload only fits at the lower correction level, and a QR a phone
+    # cannot fit on screen is no use either, so the box shrinks as the text grows.
+    long_text = len(text) > 700
+    image = qrcode.QRCode(
+        error_correction=ERROR_CORRECT_L if long_text else ERROR_CORRECT_M,
+        box_size=4 if long_text else 8,
+        border=2,
+    )
+    image.add_data(text)
     buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
+    image.make_image(fill_color="black", back_color="white").save(buffer, format="PNG")
     return web.Response(
         body=buffer.getvalue(),
         content_type="image/png",
@@ -733,6 +1092,38 @@ async def qr_handler(request: web.Request) -> web.StreamResponse:
 # --------------------------------------------------------------------- #
 # app
 # --------------------------------------------------------------------- #
+
+_ASSET_STAMP: dict[str, str] = {}
+
+
+def _stamp(name: str) -> str:
+    """A cache-busting stamp for one asset, from its own mtime and size.
+
+    Telegram's webview caches ``app.css`` and ``app.js`` across launches, and the
+    old page carried a hand-written ``?v=2``. Every release therefore depended on
+    somebody remembering to bump a number in a file they were not editing, and
+    when they did not, users ran new markup against old script. The stamp is
+    computed here instead, so it cannot be forgotten.
+    """
+    target = WEBAPP_DIR / name
+    try:
+        info = target.stat()
+    except OSError:
+        return "0"
+    key = f"{name}:{int(info.st_mtime)}:{info.st_size}"
+    cached = _ASSET_STAMP.get(key)
+    if cached is None:
+        cached = hashlib.sha1(key.encode("utf-8")).hexdigest()[:10]
+        _ASSET_STAMP.clear()
+        _ASSET_STAMP[key] = cached
+    return cached
+
+
+def _index_html() -> str:
+    raw = (WEBAPP_DIR / "index.html").read_text(encoding="utf-8")
+    return raw.replace("app.css?v=dev", f"app.css?v={_stamp('app.css')}").replace(
+        "app.js?v=dev", f"app.js?v={_stamp('app.js')}"
+    )
 
 
 async def static_handler(request: web.Request) -> web.StreamResponse:
@@ -748,7 +1139,17 @@ async def static_handler(request: web.Request) -> web.StreamResponse:
         target = root / "index.html"
     if not target.is_file():
         raise web.HTTPNotFound()
-    cache = "no-cache" if target.suffix in {".html", ".json"} else "public, max-age=3600"
+
+    if target.name == "index.html":
+        return web.Response(
+            text=_index_html(),
+            content_type="text/html",
+            charset="utf-8",
+            headers={"cache-control": "no-store"},
+        )
+    # Everything else is fingerprinted in the markup above, so it can be cached
+    # hard without ever going stale.
+    cache = "public, max-age=31536000, immutable" if request.query.get("v") else "no-cache"
     return web.FileResponse(target, headers={"cache-control": cache})
 
 
@@ -766,13 +1167,29 @@ async def cors(request: web.Request, handler: Callable) -> web.StreamResponse:
 
 
 async def health_handler(request: web.Request) -> web.StreamResponse:
-    return _json({"ok": True, "brand": settings.brand, "webapp": WEBAPP_DIR.exists()})
+    return _json(
+        {
+            "ok": True,
+            "brand": settings.brand,
+            "webapp": WEBAPP_DIR.exists(),
+            "gateway": subgw.enabled(),
+            "origin": subgw.origin(),
+            "shadowsocks": shadowsocks.enabled(),
+        }
+    )
 
 
 def build_app() -> web.Application:
     app = web.Application(middlewares=[cors])
     app.router.add_get("/api/health", health_handler)
     app.router.add_get("/api/qr", qr_handler)
+
+    # Public, token-authenticated routes. Registered before the static catch-all
+    # for the same reason the API routes are: a mount on "/" answers everything.
+    app.router.add_get("/sub/free/{token}", free_sub_handler)
+    app.router.add_get("/sub/{token}", sub_handler)
+    app.router.add_get("/sub/{token}/{fmt}", sub_handler)
+    app.router.add_get("/dl/{ticket}", download_handler)
 
     routes = (
         ("POST", "/api/state", guarded(state_handler), False),
@@ -782,6 +1199,7 @@ def build_app() -> web.Application:
         ("POST", "/api/panel/apply", guarded(apply_handler), False),
         ("POST", "/api/panel/delete", guarded(delete_handler), False),
         ("POST", "/api/panel/export", guarded(export_handler), False),
+        ("POST", "/api/panel/links", guarded(links_handler), False),
         ("POST", "/api/panel/ping", guarded(ping_handler), False),
         ("POST", "/api/rescan", guarded(rescan_handler), False),
         ("POST", "/api/warp/build", guarded(warp_handler), False),
@@ -823,7 +1241,13 @@ class ApiServer:
             site = web.TCPSite(runner, API_HOST, API_PORT)
             await site.start()
             self._runner = runner
-            log.info("mini app api listening on %s:%s (static: %s)", API_HOST, API_PORT, WEBAPP_DIR)
+            log.info(
+                "api listening on %s:%s (static: %s, gateway: %s)",
+                API_HOST,
+                API_PORT,
+                WEBAPP_DIR,
+                subgw.origin() or "off",
+            )
         except Exception:  # noqa: BLE001
             log.exception("could not start the mini app api")
 
