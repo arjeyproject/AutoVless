@@ -19,16 +19,31 @@ handed out was AmneziaWG, every iPhone user got "nothing happens" and blamed the
 endpoint. iOS therefore gets clean, standard WireGuard - and because that is a
 real downgrade in obfuscation, the delivery message says so out loud.
 
-Why the function names look historical
--------------------------------------
-``amnezia_conf``, ``plain_conf``, ``filename`` and ``label`` are the API the
-delivery handlers call. They lived here, were dropped in a refactor that
-introduced ``render_wg_config``, and ``handlers/pool.py`` went on calling them.
-The result was an ``AttributeError`` raised inside the delivery path, *after* the
-"building your config" notice had already been sent: the user watched a message
-that never turned into a file, which is exactly the bug report we had. They are
-back, and the newer ``render_*`` helpers are kept as thin wrappers so nothing
-else breaks.
+The second iPhone story, and the reason this file changed again
+--------------------------------------------------------------
+Dropping the obfuscation made the file *load* on iOS. It did not make the tunnel
+*carry traffic*, and the report that followed was the harder one: the handshake
+completes, the app shows a connected tunnel, and nothing loads.
+
+Two causes, both fixed here.
+
+``AllowedIPs`` used to be ``0.0.0.0/0, ::/0`` unconditionally. A WARP identity
+that Cloudflare issued without an IPv6 address - or one rendered for a platform
+whose profile leaves IPv6 out - then claims the whole IPv6 internet through an
+interface that has no IPv6 address to source from. Android and Windows shrug at
+that. The Apple client installs the route anyway, so every dual-stack lookup
+races down a black hole first, and on a carrier that answers AAAA before A that
+is every connection the user makes. The route is now claimed only when the
+interface actually holds an address in that family.
+
+``Endpoint`` used to be whichever address the pool ranked first, on whatever port
+it was measured on. The WARP pool legitimately holds endpoints on a dozen ports,
+and the ones the official client never uses are exactly the ones Iranian mobile
+carriers drop - a Worker-side scan cannot see that, because the scan does not run
+over the carrier. So the Apple platforms now prefer the four ports the official
+client itself dials, in its own order, and fall back to the measured ranking only
+when the pool has none of them. This is a preference, never a filter: a user
+whose pool holds nothing else still gets a file.
 """
 
 from __future__ import annotations
@@ -80,6 +95,16 @@ FALLBACK_ENDPOINTS: tuple[tuple[str, int], ...] = (
     ("188.114.98.1", 4500),
 )
 
+# The ports the official WARP client dials, in its own order. Preferred on the
+# Apple platforms for the reason in the module header: an exotic-but-fast port is
+# worse than a boring one that the carrier does not drop.
+CLIENT_PORTS: tuple[int, ...] = (2408, 500, 4500, 1701)
+
+PREFERRED_PORTS: Dict[str, tuple[int, ...]] = {
+    "ios": CLIENT_PORTS,
+    "macos": CLIENT_PORTS,
+}
+
 
 # --------------------------------------------------------------------- #
 # addresses and endpoints
@@ -130,16 +155,32 @@ def bracket_ipv6_endpoint(endpoint: str) -> str:
     return text
 
 
+def preferred_ports(platform: object = "") -> tuple[int, ...]:
+    """Ports this platform's client is known to be happy on, best first."""
+    return PREFERRED_PORTS.get(normalise_platform(platform), ())
+
+
 def order_for(endpoints: Sequence[dict], platform: object = "") -> list[dict]:
     """The endpoint list as this platform should see it.
 
     Only reorders, never drops: a user who picked Irancell and therefore has an
     IPv6-only pool still gets a working file. IPv4 simply goes first for the
-    platforms whose client is happier with it.
+    platforms whose client is happier with it, and on the Apple platforms the
+    ports the official client dials come before the ones it never touches.
     """
     rows = [row for row in endpoints if row and row.get("ip")]
-    if not rows or not prefers_ipv4(platform):
+    if not rows:
         return rows
+
+    wanted = preferred_ports(platform)
+    if wanted:
+        rank = {port: index for index, port in enumerate(wanted)}
+        # Stable, so the pool's own latency ranking still decides ties.
+        rows = sorted(rows, key=lambda row: rank.get(int(row.get("port") or 0), len(wanted)))
+
+    if not prefers_ipv4(platform):
+        return rows
+
     v4 = [row for row in rows if not is_v6(row["ip"])]
     v6 = [row for row in rows if is_v6(row["ip"])]
     return v4 + v6
@@ -175,6 +216,24 @@ def addresses(identity: dict, platform: object = "") -> list[str]:
     if identity.get("v6") and platform_profile(platform).supports_ipv6:
         out.append(f"{identity['v6']}/128")
     return out or ["172.16.0.2/32"]
+
+
+def allowed_ips(identity: dict, platform: object = "") -> list[str]:
+    """Route only the families the interface can actually source from.
+
+    See the module header: an ``::/0`` catch-all on an interface with no IPv6
+    address is what makes an iPhone report a connected tunnel that carries
+    nothing.
+    """
+    rows = addresses(identity, platform)
+    has_v4 = any(not is_v6(item.split("/")[0]) for item in rows)
+    has_v6 = any(is_v6(item.split("/")[0]) for item in rows)
+    out: list[str] = []
+    if has_v4 or not has_v6:
+        out.append("0.0.0.0/0")
+    if has_v6:
+        out.append("::/0")
+    return out
 
 
 def filename(family: str = "", kind: str = "awg", platform: str = "") -> str:
@@ -274,7 +333,7 @@ def render(
         "",
         "[Peer]",
         f"PublicKey = {identity['peer_public_key']}",
-        "AllowedIPs = 0.0.0.0/0, ::/0",
+        f"AllowedIPs = {', '.join(allowed_ips(identity, name))}",
         f"Endpoint = {bracket_ipv6_endpoint(host_port(host, port))}",
     ]
     if prof.keepalive:
@@ -392,11 +451,20 @@ def render_wg_config(
             if key in amnezia_keys:
                 lines.append(f"{key} = {amnezia_keys[key]}")
 
+    if allowed_ips:
+        routes = list(allowed_ips)
+    else:
+        families = {"v6" if is_v6(str(item).split("/")[0]) else "v4" for item in interface_addrs}
+        routes = ["0.0.0.0/0"] if "v4" in families or not families else []
+        if "v6" in families:
+            routes.append("::/0")
+        routes = routes or ["0.0.0.0/0"]
+
     lines += [
         "",
         "[Peer]",
         f"PublicKey = {peer_pubkey}",
-        f"AllowedIPs = {', '.join(allowed_ips or ['0.0.0.0/0', '::/0'])}",
+        f"AllowedIPs = {', '.join(routes)}",
         f"Endpoint = {bracket_ipv6_endpoint(peer_endpoint)}",
     ]
     if prof.keepalive:
@@ -438,8 +506,11 @@ def render_amneziawg_warp_config(
 __all__ = [
     "AMNEZIA_HEADERS",
     "AMNEZIA_KEYS",
+    "CLIENT_PORTS",
     "FALLBACK_ENDPOINTS",
+    "PREFERRED_PORTS",
     "addresses",
+    "allowed_ips",
     "amnezia_conf",
     "bracket_ipv6_endpoint",
     "conf_for",
@@ -451,6 +522,7 @@ __all__ = [
     "label",
     "order_for",
     "plain_conf",
+    "preferred_ports",
     "render",
     "render_amneziawg_warp_config",
     "render_wg_config",
