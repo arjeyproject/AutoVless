@@ -44,6 +44,22 @@ over the carrier. So the Apple platforms now prefer the four ports the official
 client itself dials, in its own order, and fall back to the measured ranking only
 when the pool has none of them. This is a preference, never a filter: a user
 whose pool holds nothing else still gets a file.
+
+The third iPhone story: the platform that was never actually known
+-----------------------------------------------------------------
+All of the above is correct and iPhone reports still arrived, because the
+renderer trusted a value that could not be trusted. It asked
+``should_include_amnezia_keys(platform)``, and that resolves through
+``normalise_platform``, which answers ``android`` for anything it does not
+recognise - including the empty string. So any caller that lost the platform
+segment got obfuscation keys, and an iPhone refuses the file.
+
+Every decision here that changes file *contents* now goes through
+``may_obfuscate`` and ``resolve_platform``, which say ``None``/``False`` when they
+do not know. When the platform cannot be resolved the file is rendered under
+``CAUTIOUS``: clean WireGuard, boring ports, IPv4 first. A config rendered under
+the strictest platform's rules still works on every other one. The reverse is not
+true, and that asymmetry is the entire bug.
 """
 
 from __future__ import annotations
@@ -55,11 +71,11 @@ from typing import Any, Dict, List, Optional, Sequence
 from .config import settings
 from .platforms import (
     PlatformProfile,
-    default_platform,
+    may_obfuscate,
     normalise_platform,
     prefers_ipv4,
     profile as platform_profile,
-    should_include_amnezia_keys,
+    resolve_platform,
 )
 
 log = logging.getLogger("autovless.warpconf")
@@ -85,6 +101,12 @@ AMNEZIA_KEYS: tuple[str, ...] = (
 # drops anything it cannot parse. Only the pre-handshake junk train is safe, so
 # S1/S2 stay at zero and H1-H4 keep their standard values.
 AMNEZIA_HEADERS: Dict[str, int] = {"S1": 0, "S2": 0, "H1": 1, "H2": 2, "H3": 3, "H4": 4}
+
+# The profile used when the caller's platform cannot be resolved at all. iOS on
+# purpose: its rules are the strictest we have, and a file rendered under them
+# loads and carries traffic on every other platform too. Rendering an unknown
+# caller as Android is what produced months of iPhone reports.
+CAUTIOUS = "ios"
 
 # Used only when the pool has nothing at all. These are the addresses the
 # official client itself falls back to.
@@ -153,6 +175,16 @@ def bracket_ipv6_endpoint(endpoint: str) -> str:
     except ValueError:
         pass
     return text
+
+
+def render_platform(platform: object = "") -> str:
+    """The platform a config should actually be rendered as.
+
+    The resolved platform when the caller named one, and ``CAUTIOUS`` when it did
+    not. Never ``DEFAULT``: falling back to Android is the guess this module
+    exists to stop making.
+    """
+    return resolve_platform(platform) or CAUTIOUS
 
 
 def preferred_ports(platform: object = "") -> tuple[int, ...]:
@@ -304,14 +336,19 @@ def render(
 
     ``force_clean`` drops the obfuscation even on a platform that supports it,
     which is what the plain WireGuard export button asks for.
+
+    An unresolvable ``platform`` is rendered under ``CAUTIOUS`` rather than
+    guessed into Android, and it never receives obfuscation keys. That is the
+    difference between "the caller said Android" and "the caller said nothing".
     """
-    name = normalise_platform(platform)
+    name = render_platform(platform)
     prof = platform_profile(name)
     host, port = endpoint_of(endpoints, index, name)
 
-    obfuscated = (
-        not force_clean and bool(settings.warp_amnezia) and should_include_amnezia_keys(name)
-    )
+    # ``may_obfuscate`` reads the *caller's* value, not the resolved name, so a
+    # value we could not resolve fails closed instead of inheriting Android's
+    # answer.
+    obfuscated = not force_clean and bool(settings.warp_amnezia) and may_obfuscate(platform)
 
     interface = [
         "[Interface]",
@@ -358,11 +395,15 @@ def amnezia_conf(
     The signature is deliberately the one the delivery handlers were already
     calling with, so restoring this function fixes the path without either of
     them changing shape.
+
+    The caller's platform value is passed straight through rather than defaulted
+    to Android here: ``render`` has to be able to tell an unnamed platform from a
+    named one, and defaulting in this wrapper is what hid the difference.
     """
     return render(
         identity,
         endpoints,
-        platform=platform or default_platform(),
+        platform=platform,
         obfuscation=profile,
         mtu=mtu,
         dns=dns,
@@ -383,7 +424,7 @@ def plain_conf(
     return render(
         identity,
         endpoints,
-        platform=platform or "ios",
+        platform=platform or CAUTIOUS,
         mtu=mtu,
         dns=dns,
         index=index,
@@ -399,10 +440,14 @@ def conf_for(
     profile: Optional[dict] = None,
     index: int = 0,
 ) -> str:
-    """Render whichever flavour this platform and export kind imply."""
-    name = normalise_platform(platform)
+    """Render whichever flavour this platform and export kind imply.
+
+    An unresolvable platform lands in ``plain_conf``, because a clean file loads
+    everywhere and an obfuscated one does not.
+    """
+    name = render_platform(platform)
     kind = (kind or "").strip().lower()
-    if kind == "plain" or not should_include_amnezia_keys(name):
+    if kind == "plain" or not may_obfuscate(platform):
         return plain_conf(identity, endpoints, platform=name, index=index)
     return amnezia_conf(
         identity,
@@ -418,9 +463,11 @@ def is_clean_for(platform: object) -> bool:
     """True when this platform is handed a config with no obfuscation in it.
 
     The delivery message reads this. Telling an iPhone user their junk train is
-    ``Jc=6`` when the file deliberately has none would be a lie on the screen.
+    ``Jc=6`` when the file deliberately has none would be a lie on the screen -
+    and so would telling an unknown caller they got obfuscation, which is why
+    this asks ``may_obfuscate`` and not ``should_include_amnezia_keys``.
     """
-    return not should_include_amnezia_keys(platform)
+    return not may_obfuscate(platform)
 
 
 # --------------------------------------------------------------------- #
@@ -446,7 +493,7 @@ def render_wg_config(
         lines.append(f"Address = {', '.join(interface_addrs)}")
     lines.append(f"DNS = {_dns_line(prof, dns_servers)}")
     lines.append(f"MTU = {_mtu(prof, mtu)}")
-    if should_include_amnezia_keys(platform) and amnezia_keys:
+    if may_obfuscate(platform) and amnezia_keys:
         for key in AMNEZIA_KEYS:
             if key in amnezia_keys:
                 lines.append(f"{key} = {amnezia_keys[key]}")
@@ -506,6 +553,7 @@ def render_amneziawg_warp_config(
 __all__ = [
     "AMNEZIA_HEADERS",
     "AMNEZIA_KEYS",
+    "CAUTIOUS",
     "CLIENT_PORTS",
     "FALLBACK_ENDPOINTS",
     "PREFERRED_PORTS",
@@ -525,5 +573,6 @@ __all__ = [
     "preferred_ports",
     "render",
     "render_amneziawg_warp_config",
+    "render_platform",
     "render_wg_config",
 ]
