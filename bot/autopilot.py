@@ -139,6 +139,24 @@ class Autopilot:
             finally:
                 self.running = False
 
+    async def _touch(self, panel: dict) -> None:
+        """Stamp a panel as attempted without claiming it is healthy.
+
+        ``panels_due`` orders by how stale the sync timestamp is, so a panel that
+        errors without being stamped keeps the oldest timestamp in the table and
+        comes back at the head of every single batch. One broken panel was enough
+        to starve every panel queued behind it.
+        """
+        try:
+            await db.mark_panel_synced(
+                int(panel["tg_id"]),
+                panel.get("endpoints") or [],
+                panel.get("relays") or [],
+                False,
+            )
+        except Exception:  # noqa: BLE001
+            log.debug("could not stamp panel %s", panel.get("tg_id"), exc_info=True)
+
     async def _sync(self, panel: dict) -> bool:
         tg_id = int(panel["tg_id"])
         try:
@@ -148,11 +166,14 @@ class Autopilot:
             # cycle. Stamp the sync time so the panel drops to the back of the
             # queue instead of blocking everyone behind it.
             log.info("autopilot skipped %s: %s", tg_id, error.reason)
-            await db.mark_panel_synced(tg_id, panel.get("endpoints") or [], panel.get("relays") or [], False)
+            await self._touch(panel)
             await db.log_event("autopilot_skip", tg_id, error.reason)
             return False
+        except asyncio.CancelledError:
+            raise
         except Exception as error:  # noqa: BLE001
             log.warning("autopilot error on %s: %s", tg_id, error)
+            await self._touch(panel)
             return False
 
         await db.mark_panel_synced(tg_id, result.endpoints, result.relays, result.healthy)

@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import logging
 import sys
+from typing import Any
 
 from aiogram import Bot, Dispatcher
 from aiogram.client.default import DefaultBotProperties
@@ -27,6 +28,7 @@ COMMANDS = [
     BotCommand(command="start", description="Start / \u0634\u0631\u0648\u0639"),
     BotCommand(command="menu", description="Main menu / \u0645\u0646\u0648\u06cc \u0627\u0635\u0644\u06cc"),
     BotCommand(command="app", description="Mini App / \u0645\u06cc\u0646\u06cc\u200c\u0627\u067e"),
+    BotCommand(command="selfhost", description="Free tier / \u0633\u0631\u0648\u06cc\u0633 \u0631\u0627\u06cc\u06af\u0627\u0646"),
     BotCommand(command="invite", description="Invite friends / \u062f\u0639\u0648\u062a \u062f\u0648\u0633\u062a\u0627\u0646"),
     BotCommand(command="apps", description="Apps / \u0628\u0631\u0646\u0627\u0645\u0647\u200c\u0647\u0627"),
     BotCommand(command="warp", description="WARP / \u0648\u0627\u0631\u067e"),
@@ -67,35 +69,84 @@ async def seed_options() -> None:
             await db.set_option(key, value)
 
 
-async def notify_admins(bot: Bot) -> None:
-    pool = await db.pool_stats()
-    relays = await proxy_scanner.stats()
-    warp = await warp_scanner.stats()
-    pools = await warp_pool.status()
-    pilot = await autopilot.stats()
-    keeper = await curator.stats()
-    free = await store.free_stats()
-    message = (
+def _n(value: Any, default: int = 0) -> int:
+    try:
+        return int(value)
+    except (TypeError, ValueError):
+        return default
+
+
+async def _stat(coro) -> dict:
+    """One engine's stats, or an empty dict.
+
+    Every read in the startup notice goes through here. It used to index the
+    dictionaries directly, and because the notice runs inside ``run()``'s try
+    block, a single missing key raised, fell through to the ``finally``, and shut
+    the whole bot down before it ever polled. A stat that will not load is worth
+    a blank in a message, nothing more.
+    """
+    try:
+        return dict(await coro or {})
+    except Exception:  # noqa: BLE001
+        log.debug("startup stat unavailable", exc_info=True)
+        return {}
+
+
+async def _option(coro, default: Any) -> Any:
+    try:
+        return await coro
+    except Exception:  # noqa: BLE001
+        log.debug("startup option unavailable", exc_info=True)
+        return default
+
+
+async def _startup_report() -> str:
+    pool = await _stat(db.pool_stats())
+    relays = await _stat(proxy_scanner.stats())
+    warp = await _stat(warp_scanner.stats())
+    pools = await _stat(warp_pool.status())
+    pilot = await _stat(autopilot.stats())
+    keeper = await _stat(curator.stats())
+    free = await _stat(store.free_stats())
+
+    families = dict(pools.get("families") or {})
+    v4 = dict(families.get("v4") or {})
+    v6 = dict(families.get("v6") or {})
+    target = _n(pools.get("target"))
+    lock = await _option(store.flag("referral_lock"), False)
+    required = await _option(store.get_int("referral_required", 3), 3)
+    ports = list(getattr(scanner, "ports", ()) or settings.all_ports)
+
+    return (
         f"\u2705 <b>{settings.brand}</b> is up.\n"
-        f"\U0001f4e1 clean ip pool: <b>{pool['total']}</b> (verified {pool['verified']}, "
-        f"fresh {pool['fresh']})\n"
-        f"\U0001f300 self-healing hostnames: <b>{pool['domains']}</b>\n"
-        f"\U0001f6e1 relays ready: <b>{relays['verified']}</b>\n"
-        f"\U0001f9ec warp endpoints: <b>{warp['stable']}</b>\n"
-        f"\U0001f3ca warp pools: IPv4 <b>{pools['families']['v4']['healthy']}</b>"
-        f"/{pools['target']} \u00b7 IPv6 <b>{pools['families']['v6']['healthy']}</b>"
-        f"/{pools['target']} (agent {'on' if pools['agent'] else 'off'}, "
-        f"source {pools['source']})\n"
-        f"\U0001f916 autopilot: <b>{'on' if pilot['enabled'] else 'off'}</b> "
-        f"(every {pilot['interval']}s)\n"
-        f"\U0001f9f9 curator: <b>{'on' if keeper['enabled'] else 'off'}</b> "
-        f"(every {keeper['interval']}s, {keeper['target']} fresh per port)\n"
-        f"\U0001f388 free servers: <b>{free['servers']}</b> (healthy {free['healthy']})\n"
-        f"\U0001f510 invite lock: <b>{'on' if await store.flag('referral_lock') else 'off'}</b> "
-        f"({await store.get_int('referral_required', 3)} per user)\n"
+        f"\U0001f4e1 clean ip pool: <b>{_n(pool.get('total'))}</b> "
+        f"(verified {_n(pool.get('verified'))}, fresh {_n(pool.get('fresh'))})\n"
+        f"\U0001f300 self-healing hostnames: <b>{_n(pool.get('domains'))}</b>\n"
+        f"\U0001f6e1 relays ready: <b>{_n(relays.get('verified'))}</b>\n"
+        f"\U0001f9ec warp endpoints: <b>{_n(warp.get('stable'))}</b>\n"
+        f"\U0001f3ca warp pools: IPv4 <b>{_n(v4.get('healthy'))}</b>/{target} \u00b7 "
+        f"IPv6 <b>{_n(v6.get('healthy'))}</b>/{target} "
+        f"(agent {'on' if pools.get('agent') else 'off'}, "
+        f"source {pools.get('source') or 'n/a'})\n"
+        f"\U0001f916 autopilot: <b>{'on' if pilot.get('enabled') else 'off'}</b> "
+        f"(every {_n(pilot.get('interval'), settings.autopilot_interval)}s)\n"
+        f"\U0001f9f9 curator: <b>{'on' if keeper.get('enabled') else 'off'}</b> "
+        f"(every {_n(keeper.get('interval'), settings.curator_interval)}s, "
+        f"{_n(keeper.get('target'))} fresh per port)\n"
+        f"\U0001f388 free servers: <b>{_n(free.get('servers'))}</b> "
+        f"(healthy {_n(free.get('healthy'))})\n"
+        f"\U0001f510 invite lock: <b>{'on' if lock else 'off'}</b> ({_n(required, 3)} per user)\n"
         f"\U0001f680 mini app: <b>{settings.webapp_url or 'not set'}</b>\n"
-        f"\U0001f50c ports: <b>{', '.join(str(p) for p in scanner.ports)}</b>"
+        f"\U0001f50c ports: <b>{', '.join(str(p) for p in ports)}</b>"
     )
+
+
+async def notify_admins(bot: Bot) -> None:
+    try:
+        message = await _startup_report()
+    except Exception:  # noqa: BLE001
+        log.exception("could not build the startup report")
+        message = f"\u2705 <b>{settings.brand}</b> is up."
     for admin_id in settings.admin_ids:
         try:
             await bot.send_message(admin_id, message)
