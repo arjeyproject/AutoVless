@@ -40,8 +40,16 @@ def miniapp_keyboard(url: str, lang: str) -> ReplyKeyboardMarkup:
     )
 
 
-async def _run(module: str, attr: str, *methods: str, **kwargs) -> bool:
-    """Call the first method that exists on an engine object. Never raises."""
+async def _run(module: str, attr: str, *methods: str, require_result: bool = False, **kwargs) -> bool:
+    """Call the first method that exists on an engine object. Never raises.
+
+    ``require_result`` is the difference between "the call went through" and "the
+    call did something". The awaited value used to be dropped on the floor, so
+    ``refresh_panel`` returning ``None`` - which is exactly what it does when the
+    panel or its API token is gone - was reported to the user as a success. Only
+    pass it for methods that return something meaningful; a scanner kick returns
+    ``None`` on a perfectly good run.
+    """
     try:
         loaded = importlib.import_module(f"..{module}", __package__)
     except Exception:
@@ -56,7 +64,9 @@ async def _run(module: str, attr: str, *methods: str, **kwargs) -> bool:
         try:
             result = fn(**kwargs)
             if inspect.isawaitable(result):
-                await result
+                result = await result
+            if require_result and not result:
+                return False
             return True
         except Exception:
             log.exception("mini app action failed: %s.%s", attr, name)
@@ -75,6 +85,10 @@ async def on_app_button(message: Message, lang: str = "") -> None:
 
 
 async def _open(message: Message, lang: str) -> None:
+    # Channel posts and anonymous admin messages carry no from_user, and the
+    # payload builder is keyed on the user id.
+    if message.from_user is None:
+        return
     if not settings.webapp_url.strip():
         await message.answer(
             "WEBAPP_URL is not set in .env"
@@ -99,6 +113,8 @@ async def _open(message: Message, lang: str) -> None:
 @router.message(F.web_app_data)
 async def on_webapp_data(message: Message, lang: str = "") -> None:
     lang = _lang(lang)
+    if message.from_user is None:
+        return
     raw = message.web_app_data.data if message.web_app_data else ""
     try:
         data = json.loads(raw or "{}")
@@ -118,7 +134,14 @@ async def on_webapp_data(message: Message, lang: str = "") -> None:
         pass
 
     if action == "panel_apply":
-        ok = await _run("autopilot", "autopilot", "refresh_panel", tg_id=tg_id, force_scan=True)
+        ok = await _run(
+            "autopilot",
+            "autopilot",
+            "refresh_panel",
+            require_result=True,
+            tg_id=tg_id,
+            force_scan=True,
+        )
         if not ok:
             ok = await _run("autopilot", "autopilot", "run_once", "tick", "sync")
         await message.answer(
@@ -148,6 +171,8 @@ async def on_webapp_data(message: Message, lang: str = "") -> None:
 
     if action == "save_settings":
         payload = data.get("payload") or {}
+        if not isinstance(payload, dict):
+            payload = {}
         new_lang = str(payload.get("lang") or "").lower()
         if new_lang in {"fa", "en"}:
             try:
