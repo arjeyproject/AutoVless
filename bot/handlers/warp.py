@@ -5,8 +5,8 @@ handshake more than once, scored on latency, jitter and loss. The build and
 delivery flow lives in ``handlers.pool``; this module owns the export buttons,
 the endpoint list, the rescan, the licence and the identity.
 
-Two bugs used to live in here and both produced the same symptom, which is a user
-tapping a button and nothing happening at all.
+Three bugs used to live in here and all three produced the same symptom, which is
+a user tapping a button and nothing happening at all.
 
 The first: the platform picker asked which OS and then ignored the answer. Every
 branch rendered AmneziaWG, so an iPhone user who correctly tapped iOS still got a
@@ -18,6 +18,16 @@ navigation between opening the picker and tapping it cleared the state, the
 callback matched no handler, and the tap was swallowed in silence. The export kind
 and the platform ride in the callback data now, so the flow is stateless and
 cannot rot.
+
+The third, and the reason iPhone reports outlived the first two: the platform
+segment was run through ``normalise_platform`` the moment it arrived, and that
+function answers ``android`` for anything it does not recognise - including the
+empty string it gets from a callback whose platform segment is missing. So a
+malformed or truncated callback did not fail, it silently became Android, and
+Android is the one answer that puts obfuscation keys in the file. The raw value is
+now carried as far as the renderer and resolved with ``resolve_platform``, which
+is allowed to say it does not know. When it does not know, the device picker is
+shown again rather than a file being guessed into existence.
 
 Nothing here waits on a scan. The rescan button answers straight away and the
 sweep reports back into the same message when it finishes.
@@ -41,7 +51,7 @@ from .. import db, keyboards, warpconf, warpstore
 from .. import warp as warpcore
 from ..config import settings
 from ..i18n import device_label, num, t
-from ..platforms import normalise_platform, should_include_amnezia_keys
+from ..platforms import may_obfuscate, resolve_platform
 from ..utils import ago, chunked, edit, esc, ping_label
 from ..warpscan import ScanReport, warp_scanner
 from ..warptune import TUNE
@@ -65,6 +75,10 @@ EXPORTS: dict[str, str] = {
     "clash": "warp.caption_clash",
 }
 
+# Exports whose whole point is the obfuscation. Asking for one of these on a
+# platform that cannot take it is a request that can only produce a dead file.
+OBFUSCATED_KINDS: frozenset[str] = frozenset({"awg", "awg2"})
+
 
 class WarpFlow(StatesGroup):
     # ``platform`` is deliberately gone: gating the picker on FSM state is what
@@ -84,6 +98,11 @@ def _loss_note(row: dict, lang: str) -> str:
     if loss <= 0:
         return ""
     return " \u00b7 " + t(lang, "warp.loss", pct=num(round(loss * 100), lang))
+
+
+def _kind_of(data: str, fallback: str = "awg") -> str:
+    kind = (data or "").strip().lower()
+    return kind if kind in EXPORTS else fallback
 
 
 async def show_menu(event: CallbackQuery | Message, lang: str) -> None:
@@ -188,6 +207,16 @@ async def on_rebuild(call: CallbackQuery, lang: str) -> None:
 # ------------------------------------------------ export: device picker first
 
 
+async def _ask_device(call: CallbackQuery, lang: str, kind: str) -> None:
+    """Show the device picker for an export whose platform we do not know."""
+    await edit(
+        call,
+        t(lang, "warp.select_platform"),
+        keyboards.device_picker(lang, f"f:{kind}"),
+    )
+    await call.answer()
+
+
 @router.callback_query(F.data.startswith("wg:file:"))
 async def on_file(call: CallbackQuery, lang: str) -> None:
     """Intercept a file export and ask which device it is for.
@@ -201,24 +230,17 @@ async def on_file(call: CallbackQuery, lang: str) -> None:
         await call.answer(t(lang, "warp.none"), show_alert=True)
         return
 
-    kind = (call.data or "").rsplit(":", 1)[-1]
-    if kind not in EXPORTS:
-        kind = "awg"
-
-    await edit(
-        call,
-        t(lang, "warp.select_platform"),
-        keyboards.device_picker(lang, f"f:{kind}"),
-    )
-    await call.answer()
+    await _ask_device(call, lang, _kind_of((call.data or "").rsplit(":", 1)[-1]))
 
 
 @router.callback_query(F.data.startswith("wg:dev:") & F.data.contains(":f:"))
 async def on_export_device(call: CallbackQuery, lang: str) -> None:
     """``wg:dev:<platform>:f:<kind>`` - the device picker answered for an export."""
     parts = (call.data or "").split(":")
-    platform = normalise_platform(parts[2] if len(parts) > 2 else "")
-    kind = parts[4] if len(parts) > 4 else "awg"
+    # Raw, not normalised. ``_deliver_export`` has to be able to tell "the user
+    # picked Android" from "this callback names no platform at all".
+    platform = parts[2] if len(parts) > 2 else ""
+    kind = _kind_of(parts[4] if len(parts) > 4 else "")
     await _deliver_export(call, lang, platform, kind)
 
 
@@ -226,8 +248,8 @@ async def on_export_device(call: CallbackQuery, lang: str) -> None:
 async def on_export_direct(call: CallbackQuery, lang: str) -> None:
     """``wg:exp:<platform>:<kind>`` - the device is already known, no need to ask."""
     parts = (call.data or "").split(":")
-    platform = normalise_platform(parts[2] if len(parts) > 2 else "")
-    kind = parts[3] if len(parts) > 3 else "awg"
+    platform = parts[2] if len(parts) > 2 else ""
+    kind = _kind_of(parts[3] if len(parts) > 3 else "")
     await _deliver_export(call, lang, platform, kind)
 
 
@@ -235,6 +257,11 @@ async def _deliver_export(
     call: CallbackQuery, lang: str, platform: str, kind: str
 ) -> None:
     """Render one export for one platform and send it.
+
+    ``platform`` arrives exactly as the callback carried it. It is resolved here
+    and an unresolvable value is not defaulted: it sends the user back to the
+    device picker. Defaulting it to Android is what kept shipping AmneziaWG to
+    iPhones long after the picker itself was correct.
 
     The rendering is guarded on purpose. A missing renderer used to raise here and
     the user simply never received anything; now the failure has a message.
@@ -244,12 +271,17 @@ async def _deliver_export(
         await call.answer(t(lang, "warp.none"), show_alert=True)
         return
 
-    if kind not in EXPORTS:
-        kind = "awg"
+    kind = _kind_of(kind)
+
+    name = resolve_platform(platform)
+    if name is None:
+        await _ask_device(call, lang, kind)
+        return
+
     # Asking for AmneziaWG on a platform whose client rejects it can only produce
     # a file that will not load, so the request is downgraded and said out loud
     # rather than honoured into a dead end.
-    downgraded = kind in {"awg", "awg2"} and not should_include_amnezia_keys(platform)
+    downgraded = kind in OBFUSCATED_KINDS and not may_obfuscate(name)
     if downgraded:
         kind = "plain"
 
@@ -266,10 +298,10 @@ async def _deliver_export(
             body = warpcore.clash_yaml(identity, endpoints)
         else:
             body = warpconf.conf_for(
-                identity, endpoints, platform=platform, kind=kind, profile=profile
+                identity, endpoints, platform=name, kind=kind, profile=profile
             )
     except Exception as error:  # noqa: BLE001
-        log.exception("could not render the %s export for %s", kind, platform)
+        log.exception("could not render the %s export for %s", kind, name)
         await call.message.answer(
             t(lang, "wg.render_failed", reason=esc(str(error)[:180])),
             reply_markup=keyboards.warp_menu(lang, True),
@@ -278,16 +310,16 @@ async def _deliver_export(
 
     caption = t(lang, EXPORTS[kind])
     if downgraded:
-        caption = t(lang, "wg.caption_clean", family="", device=device_label(platform, lang))
+        caption = t(lang, "wg.caption_clean", family="", device=device_label(name, lang))
         caption = f"{caption}\n\n{t(lang, 'wg.ios_dpi_hint')}"
 
     await call.message.answer_document(
         BufferedInputFile(
             body.encode("utf-8"),
-            filename=warpconf.filename("", kind, platform),
+            filename=warpconf.filename("", kind, name),
         ),
         caption=caption,
-        reply_markup=keyboards.warp_exports(lang, True, platform),
+        reply_markup=keyboards.warp_exports(lang, True, name),
     )
 
 
