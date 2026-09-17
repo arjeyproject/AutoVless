@@ -19,6 +19,22 @@ leaves alone; everyone else gets IPv4. Nothing is guessed from the phone number 
 the language: a wrong guess here is a config that cannot connect and a user who
 blames the bot.
 
+Why the device is now asked twice sometimes
+-------------------------------------------
+``wg:net:mtn`` and ``wg:net:other`` predate the device picker, and there are
+thousands of them sitting in chat histories. This module used to honour them by
+substituting ``default_platform()`` for the missing segment, which is Android,
+which is the one platform that gets obfuscation keys. So the fix above was live
+and correct and iPhone users who tapped an old button *still* got a file their
+client refuses - and neither they nor we could see why, because nothing errored.
+
+A missing platform is now treated as missing rather than as Android: the device
+picker is shown, and the user answers the two questions on a current keyboard.
+One extra tap on a stale button, in exchange for never handing anybody a file that
+cannot load. ``resolve_platform`` is what makes that distinction possible;
+``normalise_platform`` cannot, because it answers Android to everything it does
+not recognise.
+
 **Admins** get a pool screen with four verbs. *Refresh* goes hunting for new
 endpoints in the background. *Full check* re-pings everything already stored,
 deletes the dead, re-sorts the survivors by ping and prints a straight verdict:
@@ -69,7 +85,7 @@ from .. import db, keyboards, operators, warpconf, warpep, warpmanual, warpstore
 from .. import warp as warpcore
 from ..config import settings
 from ..i18n import device_label, num, t
-from ..platforms import default_platform, normalise_platform
+from ..platforms import resolve_platform
 from ..utils import ago, edit, esc, ping_label
 from ..warpep import V4, V6
 from ..warppool import AuditReport, RefreshReport, warp_pool
@@ -215,7 +231,16 @@ async def on_device_chosen(call: CallbackQuery, lang: str) -> None:
     if not await db.get_flag("warp_enabled"):
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
-    platform = normalise_platform((call.data or "").split(":")[2:3] and (call.data or "").split(":")[2])
+
+    parts = (call.data or "").split(":")
+    platform = resolve_platform(parts[2] if len(parts) > 2 else "")
+    if platform is None:
+        # The tap did not name a device we know. Ask again rather than pick one:
+        # the wrong answer here is a file that will not open.
+        await show_device(call, lang)
+        await call.answer()
+        return
+
     await show_network(call, lang, platform)
     await call.answer()
 
@@ -224,13 +249,18 @@ async def on_device_chosen(call: CallbackQuery, lang: str) -> None:
 async def on_network_chosen(call: CallbackQuery, lang: str) -> None:
     """Build and deliver a config on an endpoint of the right family.
 
-    Callback shapes, and why the platform is optional: keyboards already sitting
-    in somebody's chat history predate the device picker, so a tail without a
-    platform is honoured and falls back to Android rather than raising.
+    Callback shapes:
 
       wg:net:mtn[:platform]
       wg:net:other[:platform]
       wg:net:next:<family>[:platform]
+
+    The platform segment is optional in the data because keyboards already sitting
+    in somebody's chat history predate the device picker. It is *not* optional to
+    the renderer. A tail without one used to be filled in with Android, and Android
+    is the one platform that gets obfuscation keys, so every iPhone user tapping a
+    stale button received a config the official client refuses to load. Now the
+    picker is shown instead.
     """
     if not await db.get_flag("warp_enabled"):
         await call.answer(t(lang, "warp.off"), show_alert=True)
@@ -241,12 +271,18 @@ async def on_network_chosen(call: CallbackQuery, lang: str) -> None:
     if rotate:
         family = warpep.normalise_family(tail[1] if len(tail) > 1 else V4)
         operator = "mtn" if family == V6 else "other"
-        platform = normalise_platform(tail[2] if len(tail) > 2 else default_platform())
+        named = tail[2] if len(tail) > 2 else ""
     else:
         choice = CHOICES.get(tail[0] if tail else "other", CHOICES["other"])
         family = choice["family"]
         operator = choice["operator"]
-        platform = normalise_platform(tail[1] if len(tail) > 1 else default_platform())
+        named = tail[1] if len(tail) > 1 else ""
+
+    platform = resolve_platform(named)
+    if platform is None:
+        await show_device(call, lang)
+        await call.answer()
+        return
 
     await call.answer()
     notice = await call.message.answer(t(lang, "wg.making", family=_family_label(family, lang)))
