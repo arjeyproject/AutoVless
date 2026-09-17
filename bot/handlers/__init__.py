@@ -13,6 +13,7 @@ from . import (
     growth,
     panel,
     pool,
+    selfhost,
     support,
     user,
     warp,
@@ -26,6 +27,8 @@ def register(dispatcher: Dispatcher) -> None:
     # ``adm:`` callback and ``user`` owns the ``nav:`` ones.
     dispatcher.include_router(adminx.router)
     dispatcher.include_router(growth.router)
+    # Narrow by construction: one command and the ``sh:`` prefix, nothing else.
+    dispatcher.include_router(selfhost.router)
     dispatcher.include_router(admin.router)
     dispatcher.include_router(build.router)
     dispatcher.include_router(panel.router)
