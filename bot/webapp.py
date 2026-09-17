@@ -201,16 +201,14 @@ def encode_payload(payload: dict) -> str:
 async def build_webapp_url(tg_id: int, lang: str) -> str:
     """Mini app URL with the payload in the query string.
 
-    The fragment is left alone: Telegram writes its own tgWebAppData there.
+    The fragment is left alone: Telegram writes its own tgWebAppData there, and
+    an operator is free to pin a route in WEBAPP_URL. This used to clear it.
     """
     base = settings.webapp_url.strip()
     if not base:
         raise RuntimeError("WEBAPP_URL is not configured")
 
-    payload = await build_payload(tg_id, lang)
-    token = encode_payload(payload)
-
     parts = list(urlsplit(base if base.endswith("/") else base + "/"))
-    parts[3] = urlencode({"payload": token})
-    parts[4] = ""
+    payload = await build_payload(tg_id, lang)
+    parts[3] = urlencode({"payload": encode_payload(payload)})
     return urlunsplit(parts)

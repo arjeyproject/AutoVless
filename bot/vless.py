@@ -60,6 +60,23 @@ async def _buckets(scanner, ports: Iterable[int], depth: int) -> dict[int, list[
     return out
 
 
+def _slot(row: dict) -> str:
+    """How a chosen endpoint is remembered: one address on one port."""
+    return f"{row['ip']}:{row['port']}"
+
+
+def _taken(row: dict, used: set[str]) -> bool:
+    """Whether this endpoint is already spoken for.
+
+    Two shapes count as taken. ``address:port`` is what this module records for
+    everything it hands out. A bare address is what ``spare_endpoints`` is given
+    when an endpoint failed its acceptance check, and a host that will not answer
+    is dead on every port, not only the one that was tried - so that form keeps
+    blocking the whole host on purpose.
+    """
+    return _slot(row) in used or str(row["ip"]) in used
+
+
 def _spread(buckets: dict[int, list[dict]], needed: int, used: set[str]) -> list[dict]:
     """Fill a group by walking its ports in turn.
 
@@ -68,12 +85,23 @@ def _spread(buckets: dict[int, list[dict]], needed: int, used: set[str]) -> list
     comparison. Then the day that port is filtered on someone's ISP, the whole
     group dies at once. Round-robin costs a few milliseconds and buys the user a
     second and third way in.
+
+    Two passes, and the second one is why this was rewritten. Bookkeeping used to
+    be per address, shared across both groups, which meant an address the TLS
+    group took on 443 was unavailable to the HTTP group on 80 - the same host on a
+    different port is a genuinely different path, and refusing it shipped users
+    fewer configs than the pool could support. So: pass one still insists on an
+    address that appears nowhere else in the set, because one dead host must not
+    take a whole group with it. Pass two allows a second port on an address
+    already in use, and only ever to fill a slot that would otherwise go empty.
     """
     chosen: list[dict] = []
     if needed <= 0 or not buckets:
         return chosen
 
-    cursors = {port: 0 for port in buckets}
+    def take(row: dict) -> None:
+        used.add(_slot(row))
+        chosen.append(row)
 
     # One self-healing hostname up front whenever the group can spare a slot:
     # the address behind it is replaced upstream, so that entry keeps working
@@ -81,33 +109,44 @@ def _spread(buckets: dict[int, list[dict]], needed: int, used: set[str]) -> list
     if needed >= 2:
         for port in buckets:
             hostname = next(
-                (row for row in buckets[port] if row["kind"] == "domain" and row["ip"] not in used),
+                (
+                    row
+                    for row in buckets[port]
+                    if row["kind"] == "domain" and not _taken(row, used)
+                ),
                 None,
             )
             if hostname is not None:
-                used.add(hostname["ip"])
-                chosen.append(hostname)
+                take(hostname)
                 break
 
-    while len(chosen) < needed:
-        progressed = False
-        for port in list(buckets):
-            if len(chosen) >= needed:
-                break
-            rows = buckets[port]
-            index = cursors[port]
-            while index < len(rows):
-                row = rows[index]
-                index += 1
-                if row["ip"] in used:
-                    continue
-                used.add(row["ip"])
-                chosen.append(row)
-                progressed = True
-                break
-            cursors[port] = index
-        if not progressed:
+    for strict in (True, False):
+        if len(chosen) >= needed:
             break
+        hosts = {str(row["ip"]) for row in chosen} if strict else set()
+        cursors = {port: 0 for port in buckets}
+        while len(chosen) < needed:
+            progressed = False
+            for port in list(buckets):
+                if len(chosen) >= needed:
+                    break
+                rows = buckets[port]
+                index = cursors[port]
+                while index < len(rows):
+                    row = rows[index]
+                    index += 1
+                    if _taken(row, used):
+                        continue
+                    if strict:
+                        if str(row["ip"]) in hosts:
+                            continue
+                        hosts.add(str(row["ip"]))
+                    take(row)
+                    progressed = True
+                    break
+                cursors[port] = index
+            if not progressed:
+                break
 
     return chosen
 
