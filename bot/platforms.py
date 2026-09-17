@@ -16,6 +16,26 @@ clean standard WireGuard. Android gets the full obfuscation. Windows gets the
 same as Android because its clients understand it. macOS is grouped with iOS
 because the app is the same codebase and the same strict parser.
 
+Why it changed again: the guess that survived
+---------------------------------------------
+The picker was correct and the renderer was correct, and iPhone reports kept
+arriving anyway. The reason was one line in here. ``normalise_platform`` answered
+``android`` to *everything* it did not recognise, including the empty string, so
+"the caller said Android" and "the caller said nothing I understand" produced the
+same answer - and that answer was the one platform that gets obfuscation keys.
+
+Every path that can lose the platform segment therefore ended in an AmneziaWG
+file: a keyboard from before the picker existed (``wg:net:mtn`` with no tail), a
+truncated ``callback_data``, a hand-typed deep link, a rename in the alias table.
+An Android user in that state gets a working file, so nobody noticed. An iPhone
+user gets one their client refuses, and no error either of us can see.
+
+``resolve_platform`` is the honest version: it returns ``None`` when it does not
+know, and callers that decide what goes *inside* a config use it and fail safe.
+``normalise_platform`` still answers ``DEFAULT`` because dozens of display call
+sites need *a* profile and none of them can usefully fail - but it is now only
+ever used for that.
+
 Everything in here is a lookup. The rendering itself lives in ``bot.warpconf``.
 """
 
@@ -140,11 +160,57 @@ _ALIASES: Dict[str, str] = {
     "m": "macos",
 }
 
+# Characters that separate a platform name from the noise around it in callback
+# data, i18n keys and deep links: ``wg:dev:ios``, ``btn.wg_ios``, ``plat-ios``.
+_SEPARATORS: tuple[str, ...] = (":", "-", ".", "/", " ", "|", "=", ",")
+
+
+def _tokens(value: object) -> list[str]:
+    """The words inside a value, so a wrapped platform name is still findable."""
+    text = str(value or "").strip().lower()
+    for char in _SEPARATORS:
+        text = text.replace(char, "_")
+    return [part for part in text.split("_") if part]
+
+
+def resolve_platform(value: object) -> Optional[str]:
+    """The platform this value names, or ``None`` when it names nothing.
+
+    Use this - not ``normalise_platform`` - anywhere the answer decides what goes
+    inside a config file. ``None`` means "assume nothing", which is a different
+    and much safer thing than "assume Android".
+
+    An exact match wins. Failing that the value is split on the separators that
+    show up in callback data and i18n keys, so ``wg:dev:ios`` and ``btn.wg_ios``
+    both resolve. Single letter aliases (``i``, ``a``, ``w``, ``m``) are honoured
+    only as a whole value: finding them inside a token would turn any stray word
+    into a platform.
+    """
+    text = str(value or "").strip().lower()
+    if not text:
+        return None
+    if text in _ALIASES:
+        return _ALIASES[text]
+    for token in _tokens(text):
+        if len(token) > 1 and token in _ALIASES:
+            return _ALIASES[token]
+    return None
+
+
+def is_known(value: object) -> bool:
+    """True when ``value`` names a platform we actually support."""
+    return resolve_platform(value) is not None
+
 
 def normalise_platform(value: object) -> str:
-    """Any spelling in, one of ``PLATFORMS`` out. Never raises."""
-    text = str(value or "").strip().lower()
-    return _ALIASES.get(text, DEFAULT)
+    """Any spelling in, one of ``PLATFORMS`` out. Never raises.
+
+    Unrecognised input still answers ``DEFAULT``, because the many display call
+    sites need *a* profile and none of them can usefully fail. That fallback is
+    exactly why it must not be used to decide file contents - see
+    ``resolve_platform`` and ``may_obfuscate``.
+    """
+    return resolve_platform(value) or DEFAULT
 
 
 def default_platform() -> str:
@@ -171,8 +237,28 @@ def is_supported(name: object) -> bool:
 
 
 def should_include_amnezia_keys(platform: str) -> bool:
-    """Whether this platform may receive AmneziaWG obfuscation keys."""
+    """Whether this platform may receive AmneziaWG obfuscation keys.
+
+    Resolves through ``normalise_platform``, so an unknown value answers for
+    Android. Kept for callers that already hold a resolved platform name. If the
+    value came from outside - callback data, a database row, a query string - use
+    ``may_obfuscate`` instead.
+    """
     return profile(platform).supports_amneziawg
+
+
+def may_obfuscate(value: object) -> bool:
+    """Whether obfuscation is safe for a *caller supplied* platform value.
+
+    Fails closed, because the cost of guessing wrong is not symmetric: clean
+    WireGuard on Android is a working tunnel with weaker obfuscation, while
+    AmneziaWG on an iPhone is a file the client refuses outright. So an
+    unrecognised value gets the clean config.
+    """
+    resolved = resolve_platform(value)
+    if resolved is None:
+        return False
+    return PLATFORMS[resolved].supports_amneziawg
 
 
 def get_mtu(platform: str) -> int:
@@ -204,5 +290,38 @@ def label_key(platform: str) -> str:
 
 
 def kind_for(platform: str) -> str:
-    """Which export a platform should get by default: ``awg`` or ``plain``."""
-    return "awg" if should_include_amnezia_keys(platform) else "plain"
+    """Which export a platform should get by default: ``awg`` or ``plain``.
+
+    Fails closed for the same reason ``may_obfuscate`` does.
+    """
+    return "awg" if may_obfuscate(platform) else "plain"
+
+
+__all__ = [
+    "DEFAULT",
+    "ORDER",
+    "PLATFORMS",
+    "PLATFORM_ANDROID",
+    "PLATFORM_IOS",
+    "PLATFORM_MACOS",
+    "PLATFORM_WINDOWS",
+    "PlatformProfile",
+    "default_platform",
+    "emoji",
+    "get_dns_servers",
+    "get_keepalive",
+    "get_mtu",
+    "get_platform",
+    "is_known",
+    "is_supported",
+    "kind_for",
+    "label_key",
+    "list_platforms",
+    "may_obfuscate",
+    "normalise_platform",
+    "prefers_ipv4",
+    "profile",
+    "resolve_platform",
+    "should_include_amnezia_keys",
+    "should_include_ipv6",
+]
