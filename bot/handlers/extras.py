@@ -44,11 +44,13 @@ async def on_convert_input(message: Message, state: FSMContext, lang: str) -> No
     ]
 
     parsed: list[dict] = []
+    valid: list[str] = []
     for link in candidates:
         try:
             parsed.append(vless.parse_vless(link))
         except ValueError:
             continue
+        valid.append(link)
 
     if not parsed:
         await message.answer(t(lang, "convert_bad"))
@@ -56,7 +58,7 @@ async def on_convert_input(message: Message, state: FSMContext, lang: str) -> No
 
     await state.clear()
 
-    blob = base64.b64encode("\n".join(candidates).encode("utf-8")).decode("ascii")
+    blob = base64.b64encode("\n".join(valid).encode("utf-8")).decode("ascii")
     await message.answer_document(
         BufferedInputFile(clash_yaml(parsed).encode("utf-8"), filename="converted-clash.yaml")
     )

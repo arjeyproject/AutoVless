@@ -64,6 +64,10 @@ async def seed_options() -> None:
     for key, value in db.DEFAULT_OPTIONS.items():
         existing = await db.fetch_one("SELECT 1 FROM options WHERE key = ?", (key,))
         if existing is None:
+            # WARP_ENABLED=false used to leave the seeded flag on, so the menus
+            # stayed reachable while the engines behind them were never started.
+            if key == "warp_enabled" and not settings.warp_enabled:
+                value = "0"
             await db.set_option(key, value)
 
 
@@ -135,8 +139,17 @@ async def run() -> None:
     await api_server.start()
 
     try:
-        await bot.set_my_commands(COMMANDS)
-        await notify_admins(bot)
+        # Neither of these is worth the bot's life. A rejected command list or a
+        # single bad admin id used to raise here, before polling started, which
+        # looked exactly like "the bot does not start".
+        try:
+            await bot.set_my_commands(COMMANDS)
+        except Exception:  # noqa: BLE001
+            log.warning("could not publish the command list", exc_info=True)
+        try:
+            await notify_admins(bot)
+        except Exception:  # noqa: BLE001
+            log.warning("could not send the boot report to the admins", exc_info=True)
         log.info("%s is polling", settings.brand)
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
     finally:
@@ -155,8 +168,11 @@ async def run() -> None:
 def main() -> None:
     try:
         asyncio.run(run())
-    except (KeyboardInterrupt, SystemExit):
+    except KeyboardInterrupt:
         pass
+    # SystemExit is deliberately not swallowed: preflight() exits with a code on
+    # a broken configuration, and hiding it made the container stop with status 0
+    # so `restart: unless-stopped` never brought it back.
 
 
 if __name__ == "__main__":
