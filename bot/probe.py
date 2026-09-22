@@ -85,6 +85,22 @@ async def _dial(ip: str, port: int, timeout: float, tls: bool, sni: str):
     return await asyncio.wait_for(opening, timeout=timeout)
 
 
+def _status(text: str) -> int:
+    """The numeric status of the response's own status line, or 0.
+
+    Substring matching was enough to fool this: a 404 carrying a header such as
+    ``X-Status: 101`` counted as a successful upgrade, and the dead address went
+    into the pool as verified.
+    """
+    line = text.split("\n", 1)[0].strip()
+    if not line.upper().startswith("HTTP/"):
+        return 0
+    parts = line.split(maxsplit=2)
+    if len(parts) < 2 or not parts[1].isdigit():
+        return 0
+    return int(parts[1])
+
+
 def _colo(text: str, default: str = "CF") -> str:
     for pattern in (_COLO_TRACE, _COLO_RAY):
         found = pattern.search(text)
@@ -145,8 +161,7 @@ async def websocket(
         await _shutdown(writer)
 
     text = raw.decode("latin1", "ignore")
-    head = text[:64].upper()
-    if not head.startswith("HTTP/") or " 101" not in head:
+    if _status(text) != 101:
         return None
     return {
         "latency": (time.perf_counter() - started) * 1000,
@@ -184,7 +199,7 @@ async def trace(
         await _shutdown(writer)
 
     text = raw.decode("latin1", "ignore")
-    if not text.startswith("HTTP/") or not any(code in text[:32] for code in (" 200", " 301", " 302")):
+    if _status(text) not in (200, 301, 302):
         return None
     return {
         "latency": (time.perf_counter() - started) * 1000,
