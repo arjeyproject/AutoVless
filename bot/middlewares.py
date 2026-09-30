@@ -10,7 +10,7 @@ from aiogram import BaseMiddleware, Bot
 from aiogram.enums import ChatMemberStatus
 from aiogram.types import CallbackQuery, Message, TelegramObject, Update, User
 
-from . import db, keyboards, referral
+from . import db, keyboards, payment, referral
 from .config import settings
 from .i18n import normalise, t
 
@@ -21,6 +21,10 @@ ALLOWED_WHILE_LOCKED = {"join:check", "nav:lang"}
 # the recheck button and the language switch always pass.
 ALLOWED_WHILE_UNPAID = {"ref:check", "nav:invite", "nav:lang", "join:check"}
 UNPAID_COMMANDS = ("/start", "/invite", "/cancel")
+# The paywall, likewise, must leave a way to pay: every ``pay:`` callback, the
+# language switch and the commands that draw the pay screen.
+ALLOWED_WHILE_NOT_PAID = {"nav:lang", "join:check"}
+NOT_PAID_COMMANDS = ("/start", "/pay", "/cancel")
 MEMBER_STATES = {
     ChatMemberStatus.CREATOR,
     ChatMemberStatus.ADMINISTRATOR,
@@ -36,6 +40,11 @@ def _actor(event: Update) -> User | None:
     if event.edited_message:
         return event.edited_message.from_user
     return None
+
+
+def _is_payment(event: Update) -> bool:
+    """A settled payment is never blocked by any lock: the money already moved."""
+    return bool(event.message and event.message.successful_payment)
 
 
 async def _reply(event: Update, text: str, markup: Any = None) -> None:
@@ -76,7 +85,7 @@ class ContextMiddleware(BaseMiddleware):
             await _reply(event, t(lang, "banned"))
             return None
 
-        if await db.get_flag("maintenance") and not is_admin:
+        if await db.get_flag("maintenance") and not is_admin and not _is_payment(event):
             await _reply(event, t(lang, "maintenance"))
             return None
 
@@ -96,7 +105,7 @@ class ChannelLockMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         actor = _actor(event)
-        if actor is None or data.get("is_admin"):
+        if actor is None or data.get("is_admin") or _is_payment(event):
             return await handler(event, data)
 
         callback = event.callback_query
@@ -138,7 +147,7 @@ class ReferralLockMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         actor = _actor(event)
-        if actor is None or data.get("is_admin"):
+        if actor is None or data.get("is_admin") or _is_payment(event):
             return await handler(event, data)
 
         if not await referral.enabled():
@@ -160,6 +169,56 @@ class ReferralLockMiddleware(BaseMiddleware):
         lang = data.get("lang", settings.default_lang)
         bot: Bot = data["bot"]
         body, markup = await referral.gate_text(bot, actor.id, lang)
+        await _reply(event, body, markup)
+        return None
+
+
+class PaywallMiddleware(BaseMiddleware):
+    """Paid entry. Nothing opens until the user has an active payment.
+
+    Runs after the channel and invite locks, so a user meets them in a sensible
+    order: join, invite (if the admin wants both), then pay. ``pay:`` callbacks,
+    ``/start`` and ``/pay`` always pass because they *are* the way to pay, and a
+    settled payment update is never blocked.
+    """
+
+    async def __call__(
+        self,
+        handler: Callable[[TelegramObject, dict[str, Any]], Awaitable[Any]],
+        event: TelegramObject,
+        data: dict[str, Any],
+    ) -> Any:
+        if not isinstance(event, Update):
+            return await handler(event, data)
+
+        actor = _actor(event)
+        if actor is None or data.get("is_admin") or _is_payment(event):
+            return await handler(event, data)
+
+        if not await payment.enabled():
+            return await handler(event, data)
+
+        callback = event.callback_query
+        if callback is not None:
+            name = callback.data or ""
+            if name.startswith("pay:") or name in ALLOWED_WHILE_NOT_PAID:
+                return await handler(event, data)
+
+        message = event.message
+        if message is not None:
+            text = (message.text or "").strip().lower()
+            if text.startswith(NOT_PAID_COMMANDS):
+                return await handler(event, data)
+
+        if await payment.is_paid(actor.id):
+            return await handler(event, data)
+
+        # Imported here: the handlers package imports this module, so a top-level
+        # import would be circular.
+        from .handlers.payment import gate
+
+        lang = data.get("lang", settings.default_lang)
+        body, markup = await gate(lang)
         await _reply(event, body, markup)
         return None
 
@@ -202,7 +261,7 @@ class ThrottleMiddleware(BaseMiddleware):
             return await handler(event, data)
 
         actor = _actor(event)
-        if actor is None:
+        if actor is None or _is_payment(event):
             return await handler(event, data)
 
         now = time.monotonic()
@@ -225,3 +284,4 @@ def register(dispatcher: Any) -> None:
     dispatcher.update.outer_middleware(ThrottleMiddleware())
     dispatcher.update.outer_middleware(ChannelLockMiddleware())
     dispatcher.update.outer_middleware(ReferralLockMiddleware())
+    dispatcher.update.outer_middleware(PaywallMiddleware())

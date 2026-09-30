@@ -12,7 +12,7 @@ from aiogram.enums import ParseMode
 from aiogram.fsm.storage.memory import MemoryStorage
 from aiogram.types import BotCommand
 
-from . import db, handlers, middlewares, referral, store
+from . import db, handlers, middlewares, payment, referral, shadowsocks, store
 from .api import api_server
 from .autopilot import autopilot
 from .config import settings
@@ -27,6 +27,7 @@ COMMANDS = [
     BotCommand(command="start", description="Start / \u0634\u0631\u0648\u0639"),
     BotCommand(command="menu", description="Main menu / \u0645\u0646\u0648\u06cc \u0627\u0635\u0644\u06cc"),
     BotCommand(command="app", description="Mini App / \u0645\u06cc\u0646\u06cc\u200c\u0627\u067e"),
+    BotCommand(command="pay", description="Subscription / \u0627\u0634\u062a\u0631\u0627\u06a9"),
     BotCommand(command="invite", description="Invite friends / \u062f\u0639\u0648\u062a \u062f\u0648\u0633\u062a\u0627\u0646"),
     BotCommand(command="apps", description="Apps / \u0628\u0631\u0646\u0627\u0645\u0647\u200c\u0647\u0627"),
     BotCommand(command="warp", description="WARP / \u0648\u0627\u0631\u067e"),
@@ -79,6 +80,7 @@ async def notify_admins(bot: Bot) -> None:
     pilot = await autopilot.stats()
     keeper = await curator.stats()
     free = await store.free_stats()
+    pay = await payment.config()
     message = (
         f"\u2705 <b>{settings.brand}</b> is up.\n"
         f"\U0001f4e1 clean ip pool: <b>{pool['total']}</b> (verified {pool['verified']}, "
@@ -97,6 +99,8 @@ async def notify_admins(bot: Bot) -> None:
         f"\U0001f388 free servers: <b>{free['servers']}</b> (healthy {free['healthy']})\n"
         f"\U0001f510 invite lock: <b>{'on' if await store.flag('referral_lock') else 'off'}</b> "
         f"({await store.get_int('referral_required', 3)} per user)\n"
+        f"\U0001f4b3 paid entry: <b>{'on' if pay['enabled'] else 'off'}</b> ({pay['gateway']})\n"
+        f"\U0001f511 shadowsocks: <b>{'on' if shadowsocks.enabled() else 'off'}</b>\n"
         f"\U0001f680 mini app: <b>{settings.webapp_url or 'not set'}</b>\n"
         f"\U0001f50c ports: <b>{', '.join(str(p) for p in scanner.ports)}</b>"
     )
@@ -116,11 +120,15 @@ async def run() -> None:
     # Tables added after 1.0 patch themselves in here, before any handler can
     # read one that does not exist yet.
     await store.ensure()
+    await payment.ensure()
 
     bot = Bot(
         token=settings.bot_token,
         default=DefaultBotProperties(parse_mode=ParseMode.HTML, link_preview_is_disabled=True),
     )
+    # The Zarinpal callback and the mini app's Stars invoices run inside the API,
+    # which has no Bot of its own.
+    payment.bind_bot(bot)
     dispatcher = Dispatcher(storage=MemoryStorage())
 
     middlewares.register(dispatcher)

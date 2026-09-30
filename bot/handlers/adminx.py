@@ -3,7 +3,7 @@
 This router is included *before* ``handlers.admin`` on purpose. That module owns
 one broad ``adm:`` handler, so the only way to add a screen without rewriting it
 is to claim the specific callbacks first - including ``adm:menu``, because the
-admin home needs three more buttons and the keyboard is built there.
+admin home needs more buttons and the keyboard is built there.
 """
 
 from __future__ import annotations
@@ -44,10 +44,11 @@ def _state(lang: str, value: bool) -> str:
 
 
 def admin_home(lang: str) -> InlineKeyboardMarkup:
-    """The stock admin keyboard plus the three new screens."""
+    """The stock admin keyboard plus the newer screens."""
     markup = keyboards.admin_menu(lang)
     rows = list(markup.inline_keyboard)
     extra = [
+        [_b(t(lang, "btn.pay_admin"), "adm:pay")],
         [_b(t(lang, "btn.ref_lock"), "adm:ref"), _b(t(lang, "btn.free_admin"), "adm:free")],
         [_b(t(lang, "btn.ai_relays"), "adm:ai")],
     ]
@@ -174,13 +175,14 @@ async def on_referral_count(call: CallbackQuery, state: FSMContext, lang: str, i
     await call.answer()
 
 
-@router.message(AdminXFlow.referral_count, F.text)
+@router.message(AdminXFlow.referral_count, F.text, ~F.text.startswith("/"))
 async def on_referral_count_set(
     message: Message, state: FSMContext, lang: str, is_admin: bool
 ) -> None:
     if not _guard(is_admin):
         return
     raw = (message.text or "").strip()
+    raw = raw.translate(str.maketrans("\u06f0\u06f1\u06f2\u06f3\u06f4\u06f5\u06f6\u06f7\u06f8\u06f9", "0123456789"))
     if not raw.isdigit():
         await message.answer(t(lang, "admin.ref_bad"))
         return
@@ -257,7 +259,7 @@ async def on_free_add(call: CallbackQuery, state: FSMContext, lang: str, is_admi
     await call.answer()
 
 
-@router.message(AdminXFlow.free_server, F.text)
+@router.message(AdminXFlow.free_server, F.text, ~F.text.startswith("/"))
 async def on_free_server_input(
     message: Message, state: FSMContext, lang: str, is_admin: bool
 ) -> None:

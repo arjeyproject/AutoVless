@@ -9,11 +9,12 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import db, keyboards, operators, referral, screens
+from .. import db, keyboards, operators, payment, referral, screens
 from ..config import settings
 from ..i18n import other_lang, t
 from ..middlewares import missing_channels
 from ..utils import edit, esc
+from .payment import gate as pay_gate
 
 log = logging.getLogger("autovless.handlers.user")
 router = Router(name="user")
@@ -43,6 +44,13 @@ async def on_start(
 
     if not await referral.unlocked(message.from_user.id, is_admin):
         body, markup = await referral.gate_text(message.bot, message.from_user.id, lang)
+        await message.answer(body, reply_markup=markup, disable_web_page_preview=True)
+        return
+
+    # Paid entry comes after the invite, for the same reason the middlewares run
+    # in that order: an invite has to be credited on /start whatever else happens.
+    if not await payment.is_paid(message.from_user.id, is_admin):
+        body, markup = await pay_gate(lang)
         await message.answer(body, reply_markup=markup, disable_web_page_preview=True)
         return
 
@@ -81,6 +89,13 @@ async def on_language(call: CallbackQuery, lang: str, is_admin: bool) -> None:
     await db.set_lang(call.from_user.id, new_lang)
     if not await referral.unlocked(call.from_user.id, is_admin):
         body, markup = await referral.gate_text(call.bot, call.from_user.id, new_lang)
+        await edit(call, body, markup)
+        await call.answer()
+        return
+    # The language button is reachable from the pay screen, so it must redraw the
+    # pay screen in the new language rather than hand out the main menu.
+    if not await payment.is_paid(call.from_user.id, is_admin):
+        body, markup = await pay_gate(new_lang)
         await edit(call, body, markup)
         await call.answer()
         return
@@ -140,6 +155,18 @@ async def on_join_check(call: CallbackQuery, lang: str, is_admin: bool) -> None:
     missing = await missing_channels(call.bot, call.from_user.id, channels) if channels else []
     if missing:
         await call.answer(t(lang, "join_fail"), show_alert=True)
+        return
+    # join:check is allowed through every lock so it can clear the channel one,
+    # which made it a way around the invite lock and the paywall. It is not now.
+    if not await referral.unlocked(call.from_user.id, is_admin):
+        body, markup = await referral.gate_text(call.bot, call.from_user.id, lang)
+        await edit(call, body, markup)
+        await call.answer(t(lang, "join_ok"))
+        return
+    if not await payment.is_paid(call.from_user.id, is_admin):
+        body, markup = await pay_gate(lang)
+        await edit(call, body, markup)
+        await call.answer(t(lang, "join_ok"))
         return
     name = call.from_user.first_name or ""
     text, markup = await screens.main_menu(name, lang, is_admin)
