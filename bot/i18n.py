@@ -12,6 +12,7 @@ from .locales.device import DEVICE
 from .locales.en import EN
 from .locales.fa import FA
 from .locales.growth import GROWTH
+from .locales.payment import PAYMENT
 from .locales.proton import PROTON_STRINGS
 from .locales.support import SUPPORT
 from .locales.turbo import TURBO
@@ -28,9 +29,9 @@ RULE = "\u2501" * 14
 # the WARP family because the device picker owns anything it names - including
 # ``warp.select_platform``, which had no entry anywhere and was rendering its own
 # key as the screen body. AI and Proton follow. TURBO is next, so the trojan and
-# fragment screens own their copy outright, and GROWTH is last because the invite
-# lock, the free pool and the AI exit screen are the newest arrivals and own every
-# key they name.
+# fragment screens own their copy outright, and GROWTH follows because the invite
+# lock, the free pool and the AI exit screen own every key they name. PAYMENT is
+# last: the paid entry gate and the iPhone WARP delivery are the newest screens.
 CATALOG: dict[str, dict[str, str]] = {
     "fa": {
         **FA,
@@ -46,6 +47,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **PROTON_STRINGS.get("fa", {}),
         **TURBO["fa"],
         **GROWTH["fa"],
+        **PAYMENT["fa"],
     },
     "en": {
         **EN,
@@ -61,6 +63,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **PROTON_STRINGS.get("en", {}),
         **TURBO["en"],
         **GROWTH["en"],
+        **PAYMENT["en"],
     },
 }
 

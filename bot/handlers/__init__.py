@@ -12,6 +12,7 @@ from . import (
     extras,
     growth,
     panel,
+    payment,
     pool,
     support,
     user,
@@ -21,7 +22,11 @@ from . import (
 
 
 def register(dispatcher: Dispatcher) -> None:
-    # ``adminx`` and ``growth`` go first because they claim specific callbacks that
+    # ``payment`` goes first of all: it owns ``pay:`` and ``adm:pay`` callbacks,
+    # the pre-checkout query and ``successful_payment``, and a payment update that
+    # fell through to a broader router would be a payment nobody recorded.
+    dispatcher.include_router(payment.router)
+    # ``adminx`` and ``growth`` go next because they claim specific callbacks that
     # the older, broader routers would otherwise swallow: ``admin`` owns every
     # ``adm:`` callback and ``user`` owns the ``nav:`` ones.
     dispatcher.include_router(adminx.router)
