@@ -13,9 +13,9 @@ So we emit AmneziaWG configs that stay byte compatible with a plain peer:
     packets are simply discarded by the peer
   * I1 optionally prepends a QUIC-shaped decoy for AmneziaWG 1.5+ clients
 
-That is what lets an obfuscated client talk to an unmodified WARP endpoint.
-Parameters are derived per user and cached, so a rebuild keeps the same
-fingerprint instead of looking like a brand new client every time.
+For clients that do their own obfuscation rather than read AmneziaWG keys -
+Hiddify on iPhone is the one that matters - ``hiddify_link`` hands over the same
+identity with Hiddify's fake-packet parameters attached.
 
 Registration is the fragile part. Cloudflare rotates its client API without
 notice and a single hardcoded version is how this feature dies quietly, so
@@ -65,6 +65,10 @@ FALLBACK_ENDPOINTS = (
     ("188.114.96.1", 1701),
     ("188.114.98.1", 4500),
 )
+
+# Hiddify's fake-packet knobs: how many, how big, how far apart, and which
+# header mode. m4 is the mode Hiddify itself recommends for WARP.
+HIDDIFY_NOISE = {"ifp": "5-10", "ifps": "40-100", "ifpd": "20-250", "ifpm": "m4"}
 
 
 class WarpError(Exception):
@@ -291,12 +295,7 @@ def _quic_signature(rng: random.Random) -> str:
 
 
 def obfuscation(seed: object) -> dict:
-    """Per-user junk train. Stable for a given seed, different between users.
-
-    Only pre-handshake junk is used. Header magic and packet prefixes stay at
-    WireGuard defaults because the peer on the other side is Cloudflare's and
-    would drop anything it cannot parse.
-    """
+    """Per-user junk train. Stable for a given seed, different between users."""
     rng = random.Random(f"{settings.secret_key}:{seed}")
     jmin = rng.randint(80, 220)
     jmax = rng.randint(jmin + 320, 1024)
@@ -340,7 +339,12 @@ def wireguard_conf(
     mtu: Optional[int] = None,
     dns: Optional[str] = None,
 ) -> str:
-    """Plain WireGuard. Kept for clients without obfuscation support."""
+    """Plain WireGuard. Kept for clients without obfuscation support.
+
+    ``PersistentKeepalive`` belongs to ``[Peer]``. It used to be written into
+    ``[Interface]``, which strict parsers (the official apps among them) treat
+    as an unknown key and refuse the whole file over.
+    """
     host, port = _endpoint(endpoints)
     return "\n".join(
         [
@@ -349,12 +353,12 @@ def wireguard_conf(
             f"Address = {', '.join(_addresses(identity))}",
             f"DNS = {dns or settings.warp_dns}",
             f"MTU = {mtu or settings.warp_mtu}",
-            f"PersistentKeepalive = 25",
             "",
             "[Peer]",
             f"PublicKey = {identity['peer_public_key']}",
             "AllowedIPs = 0.0.0.0/0, ::/0",
             f"Endpoint = {_hostport(host, port)}",
+            "PersistentKeepalive = 25",
             "",
         ]
     )
@@ -424,6 +428,50 @@ def warp_link(
         "&wnoise=quic&wnoisecount=15&wpayloadsize=1-1500&wnoisedelay=1-10"
         f"#{quote(label, safe='')}"
     )
+
+
+def hiddify_link(
+    identity: dict,
+    endpoints: Sequence[dict] = (),
+    index: int = 0,
+    name: Optional[str] = None,
+    mtu: int = 1280,
+) -> str:
+    """Hiddify's ``wg://`` link: the user's own identity plus fake packets.
+
+    Hiddify runs on iPhone and does its own anti-DPI noise (``ifp`` count,
+    ``ifps`` size, ``ifpd`` delay, ``ifpm`` mode) in front of the handshake,
+    which is what an Iranian carrier needs to see to leave a WARP session alone.
+    The identity was registered server-side, so the phone never has to reach
+    Cloudflare's registration API, which is itself often blocked.
+    """
+    host, port = _endpoint(endpoints, index)
+    label = name or f"{settings.brand}-WARP"
+    reserved = ",".join(str(part) for part in identity.get("reserved") or [0, 0, 0])
+    local = ",".join(_addresses(identity))
+    noise = "&".join(f"{key}={value}" for key, value in HIDDIFY_NOISE.items())
+    return (
+        f"wg://{_hostport(host, port)}"
+        f"?pk={quote(identity['private_key'], safe='')}"
+        f"&local_address={quote(local, safe=',')}"
+        f"&peer_pk={quote(identity['peer_public_key'], safe='')}"
+        f"&pre_shared_key="
+        f"&reserved={reserved}"
+        f"&mtu={int(mtu)}"
+        f"&{noise}"
+        f"#{quote(label, safe='')}"
+    )
+
+
+def hiddify_auto_link(name: Optional[str] = None) -> str:
+    """Hiddify's own ``warp://`` scheme: the app registers WARP by itself.
+
+    The fallback when the bot's endpoints are the problem: Hiddify picks an
+    endpoint of its own and applies the same noise.
+    """
+    label = name or f"{settings.brand}-WARP-auto"
+    noise = "&".join(f"{key}={value}" for key, value in HIDDIFY_NOISE.items())
+    return f"warp://auto/?{noise}#{quote(label, safe='')}"
 
 
 def links(identity: dict, endpoints: Sequence[dict]) -> list[str]:

@@ -11,39 +11,24 @@ things that decide whether a file even loads:
   * whether the AmneziaWG obfuscation keys appear inside ``[Interface]``
   * MTU, DNS and keepalive per platform
 
-The second one is the whole iPhone story, and it is worth stating plainly because
-it was diagnosed as filtering for months: the official WireGuard app for iOS is a
-strict INI parser. It meets ``Jc`` inside ``[Interface]``, concludes the file is
-not a WireGuard config, and refuses the entire thing. Since every config the bot
-handed out was AmneziaWG, every iPhone user got "nothing happens" and blamed the
-endpoint. iOS therefore gets clean, standard WireGuard - and because that is a
-real downgrade in obfuscation, the delivery message says so out loud.
+The iPhone story, in three chapters
+----------------------------------
+1. The official WireGuard app for iOS is a strict INI parser. It meets ``Jc``
+   inside ``[Interface]`` and refuses the entire file, so every AmneziaWG config
+   produced "nothing happens". iOS therefore got clean standard WireGuard.
 
-The second iPhone story, and the reason this file changed again
---------------------------------------------------------------
-Dropping the obfuscation made the file *load* on iOS. It did not make the tunnel
-*carry traffic*, and the report that followed was the harder one: the handshake
-completes, the app shows a connected tunnel, and nothing loads.
+2. The clean file *loaded* but did not *carry traffic*: ``AllowedIPs`` claimed
+   ``::/0`` on interfaces with no IPv6 address, and the endpoint was often on a
+   port Iranian carriers drop. Routes are now claimed per family, and Apple
+   platforms prefer the four ports the official client dials.
 
-Two causes, both fixed here.
-
-``AllowedIPs`` used to be ``0.0.0.0/0, ::/0`` unconditionally. A WARP identity
-that Cloudflare issued without an IPv6 address - or one rendered for a platform
-whose profile leaves IPv6 out - then claims the whole IPv6 internet through an
-interface that has no IPv6 address to source from. Android and Windows shrug at
-that. The Apple client installs the route anyway, so every dual-stack lookup
-races down a black hole first, and on a carrier that answers AAAA before A that
-is every connection the user makes. The route is now claimed only when the
-interface actually holds an address in that family.
-
-``Endpoint`` used to be whichever address the pool ranked first, on whatever port
-it was measured on. The WARP pool legitimately holds endpoints on a dozen ports,
-and the ones the official client never uses are exactly the ones Iranian mobile
-carriers drop - a Worker-side scan cannot see that, because the scan does not run
-over the carrier. So the Apple platforms now prefer the four ports the official
-client itself dials, in its own order, and fall back to the measured ranking only
-when the pool has none of them. This is a preference, never a filter: a user
-whose pool holds nothing else still gets a file.
+3. Even a perfect clean file fails on most Iranian carriers, because the plain
+   WireGuard handshake is fingerprinted and dropped within moments. The answer
+   is not a better clean file, it is a different app: **AmneziaWG** is on the App
+   Store for iPhone, iPad and Mac, and it speaks exactly the obfuscated format
+   Android already gets. ``apple_amnezia_conf`` renders that file with the Apple
+   profile's ports, MTU and routing, and the delivery flow hands it out first,
+   keeping the clean file as the fallback for the official app.
 """
 
 from __future__ import annotations
@@ -96,8 +81,8 @@ FALLBACK_ENDPOINTS: tuple[tuple[str, int], ...] = (
 )
 
 # The ports the official WARP client dials, in its own order. Preferred on the
-# Apple platforms for the reason in the module header: an exotic-but-fast port is
-# worse than a boring one that the carrier does not drop.
+# Apple platforms: an exotic-but-fast port is worse than a boring one that the
+# carrier does not drop.
 CLIENT_PORTS: tuple[int, ...] = (2408, 500, 4500, 1701)
 
 PREFERRED_PORTS: Dict[str, tuple[int, ...]] = {
@@ -126,13 +111,7 @@ def host_port(ip: object, port: object) -> str:
 
 
 def bracket_ipv6_endpoint(endpoint: str) -> str:
-    """Bracket an ``host:port`` string when the host is IPv6.
-
-    Idempotent, and it leaves hostnames and IPv4 alone. The bug this closes: an
-    unbracketed ``2606:4700:d0::a29f:c001:2408`` where the final colon is
-    ambiguous, which some clients read as a port and others as part of the
-    address.
-    """
+    """Bracket an ``host:port`` string when the host is IPv6. Idempotent."""
     text = str(endpoint or "").strip()
     if not text or ":" not in text:
         return text
@@ -161,13 +140,7 @@ def preferred_ports(platform: object = "") -> tuple[int, ...]:
 
 
 def order_for(endpoints: Sequence[dict], platform: object = "") -> list[dict]:
-    """The endpoint list as this platform should see it.
-
-    Only reorders, never drops: a user who picked Irancell and therefore has an
-    IPv6-only pool still gets a working file. IPv4 simply goes first for the
-    platforms whose client is happier with it, and on the Apple platforms the
-    ports the official client dials come before the ones it never touches.
-    """
+    """The endpoint list as this platform should see it. Reorders, never drops."""
     rows = [row for row in endpoints if row and row.get("ip")]
     if not rows:
         return rows
@@ -219,12 +192,7 @@ def addresses(identity: dict, platform: object = "") -> list[str]:
 
 
 def allowed_ips(identity: dict, platform: object = "") -> list[str]:
-    """Route only the families the interface can actually source from.
-
-    See the module header: an ``::/0`` catch-all on an interface with no IPv6
-    address is what makes an iPhone report a connected tunnel that carries
-    nothing.
-    """
+    """Route only the families the interface can actually source from."""
     rows = addresses(identity, platform)
     has_v4 = any(not is_v6(item.split("/")[0]) for item in rows)
     has_v6 = any(is_v6(item.split("/")[0]) for item in rows)
@@ -273,8 +241,6 @@ def _dns_line(prof: PlatformProfile, dns: Optional[object]) -> str:
 def _mtu(prof: PlatformProfile, mtu: Optional[int]) -> int:
     if mtu:
         return int(mtu)
-    # The configured value keeps the operator's knob, but never above what the
-    # platform can actually carry.
     configured = int(settings.warp_mtu or 0)
     return min(configured, prof.mtu) if configured else prof.mtu
 
@@ -286,6 +252,11 @@ def _junk(values: Optional[dict]) -> Dict[str, Any]:
     for key, name in (("jc", "Jc"), ("jmin", "Jmin"), ("jmax", "Jmax")):
         if source.get(key) is not None:
             out[name] = source[key]
+    # A junk train is the whole point of the file. If the caller had no profile,
+    # fall back to sane values instead of emitting a header-only config.
+    out.setdefault("Jc", 5)
+    out.setdefault("Jmin", 50)
+    out.setdefault("Jmax", 1000)
     return out
 
 
@@ -299,17 +270,21 @@ def render(
     signature: bool = False,
     index: int = 0,
     force_clean: bool = False,
+    force_obfuscation: bool = False,
 ) -> str:
     """The one renderer. Everything else here is a thin wrapper over it.
 
     ``force_clean`` drops the obfuscation even on a platform that supports it,
     which is what the plain WireGuard export button asks for.
+    ``force_obfuscation`` emits it even on a platform whose *official* client
+    cannot read it - which is right when the file is meant for the AmneziaWG
+    app on that platform instead.
     """
     name = normalise_platform(platform)
     prof = platform_profile(name)
     host, port = endpoint_of(endpoints, index, name)
 
-    obfuscated = (
+    obfuscated = force_obfuscation or (
         not force_clean and bool(settings.warp_amnezia) and should_include_amnezia_keys(name)
     )
 
@@ -353,12 +328,7 @@ def amnezia_conf(
     platform: object = "",
     index: int = 0,
 ) -> str:
-    """AmneziaWG, unless the platform cannot take it - then clean WireGuard.
-
-    The signature is deliberately the one the delivery handlers were already
-    calling with, so restoring this function fixes the path without either of
-    them changing shape.
-    """
+    """AmneziaWG, unless the platform cannot take it - then clean WireGuard."""
     return render(
         identity,
         endpoints,
@@ -371,6 +341,29 @@ def amnezia_conf(
     )
 
 
+def apple_amnezia_conf(
+    identity: dict,
+    endpoints: Sequence[dict] = (),
+    profile: Optional[dict] = None,
+    platform: object = "ios",
+    index: int = 0,
+) -> str:
+    """AmneziaWG for the AmneziaWG app on iPhone, iPad and Mac.
+
+    Same junk train Android gets, rendered with the Apple profile: its ports,
+    its MTU, IPv4-first and per-family routes. No ``I1``: the signature packet
+    needs a newer AmneziaWG than some App Store builds ship.
+    """
+    return render(
+        identity,
+        endpoints,
+        platform=platform or "ios",
+        obfuscation=profile,
+        index=index,
+        force_obfuscation=True,
+    )
+
+
 def plain_conf(
     identity: dict,
     endpoints: Sequence[dict] = (),
@@ -379,7 +372,7 @@ def plain_conf(
     platform: object = "",
     index: int = 0,
 ) -> str:
-    """Standard WireGuard, no obfuscation anywhere. What iOS actually accepts."""
+    """Standard WireGuard, no obfuscation anywhere. What the official app accepts."""
     return render(
         identity,
         endpoints,
@@ -399,9 +392,15 @@ def conf_for(
     profile: Optional[dict] = None,
     index: int = 0,
 ) -> str:
-    """Render whichever flavour this platform and export kind imply."""
+    """Render whichever flavour this platform and export kind imply.
+
+    ``amnezia`` asks for the obfuscated file on any platform, which is how the
+    Apple platforms get their AmneziaWG-app file.
+    """
     name = normalise_platform(platform)
     kind = (kind or "").strip().lower()
+    if kind == "amnezia":
+        return apple_amnezia_conf(identity, endpoints, profile, platform=name, index=index)
     if kind == "plain" or not should_include_amnezia_keys(name):
         return plain_conf(identity, endpoints, platform=name, index=index)
     return amnezia_conf(
@@ -415,11 +414,7 @@ def conf_for(
 
 
 def is_clean_for(platform: object) -> bool:
-    """True when this platform is handed a config with no obfuscation in it.
-
-    The delivery message reads this. Telling an iPhone user their junk train is
-    ``Jc=6`` when the file deliberately has none would be a lie on the screen.
-    """
+    """True when this platform's *default* file has no obfuscation in it."""
     return not should_include_amnezia_keys(platform)
 
 
@@ -512,6 +507,7 @@ __all__ = [
     "addresses",
     "allowed_ips",
     "amnezia_conf",
+    "apple_amnezia_conf",
     "bracket_ipv6_endpoint",
     "conf_for",
     "endpoint_of",
