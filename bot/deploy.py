@@ -26,6 +26,10 @@ That choice now lives in ``bot.aipin``, which pins one geolocated relay per pane
 and stores it, so the exit address survives a pool reshuffle instead of following
 it. Ordinary traffic keeps the fastest-first chain, where a reshuffle costs
 nothing.
+
+The Shadowsocks bindings travel with every upload too. They used to be missing
+from this function entirely, which is why every ``ss://`` link the bot handed
+out timed out: the worker had no key to open the stream with.
 """
 
 from __future__ import annotations
@@ -39,7 +43,7 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 
-from . import aipin, db, proxies, vless
+from . import aipin, db, proxies, shadowsocks, vless
 from .cloudflare import CloudflareClient, CloudflareError, script_name
 from .config import settings
 from .probe import measure
@@ -188,6 +192,7 @@ def _bindings(
         "DNS_SERVER": settings.dns_server,
         "FALLBACK_HOST": settings.fallback_host,
         "BUILD_ID": str(int(time.time())),
+        **shadowsocks.bindings(uuid),
     }
 
 
@@ -481,7 +486,9 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
 
     Same account, same script, same uuid, same subscription URL: only the
     endpoint list and the relay chain change. This is what lets clean IPs be
-    applied to every live config without anyone pressing rebuild.
+    applied to every live config without anyone pressing rebuild - and, since
+    the bundle is re-uploaded here too, what brings every older panel up to the
+    current worker (Shadowsocks included) without the user doing anything.
 
     The AI pin is stored per uuid, and the uuid does not change here, so a
     refresh keeps the same exit address for AI traffic even as the ordinary chain

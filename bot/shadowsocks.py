@@ -9,6 +9,9 @@ plaintext structure anywhere - the very first byte on the wire is one of 32
 random salt bytes, and everything after it is AEAD ciphertext. A classifier
 tuned to spot a VLESS header or a Trojan digest has nothing to match on.
 
+Like VLESS and Trojan, none of this touches the operator's VPS: the traffic runs
+client -> Cloudflare edge -> the user's own worker -> destination.
+
 Why it is routed by path instead of sniffed
 ------------------------------------------
 The worker tells VLESS from Trojan by looking at the first frame. That trick
@@ -30,6 +33,13 @@ same secret, and ``bot.shadowsocks`` is the only place that knows both.
 
 The cipher is ``aes-256-gcm``: hardware accelerated everywhere, and the default
 every client already agrees on.
+
+Why it used to be dead, and is not now
+-------------------------------------
+The links were generated for months while the worker bundle had no Shadowsocks
+inbound and the deploy step never bound ``SS_KEY``, so every ``ss://`` link timed
+out. The inbound is now inlined into ``worker/vless-worker.js`` and
+``bindings()`` below is part of every upload, so the switch is on by default.
 """
 
 from __future__ import annotations
@@ -53,13 +63,11 @@ PLUGIN = "v2ray-plugin"
 
 
 def enabled() -> bool:
-    """Whether Shadowsocks links are offered.
-
-    Off by default, and that is deliberate rather than shy: the links are only
-    useful once the worker bundle in front of them carries the inbound, so the
-    operator turns this on in the same step as the worker that answers it.
-    """
-    return (os.getenv("SS") or "").strip().lower() in {"1", "true", "yes", "on"}
+    """Whether Shadowsocks links are offered. On unless ``SS=false``."""
+    raw = (os.getenv("SS") or "").strip().lower()
+    if not raw:
+        return True
+    return raw in {"1", "true", "yes", "on"}
 
 
 def path() -> str:
@@ -143,21 +151,30 @@ def build_link(uuid: str, host: str, endpoint: dict, index: int, brand: str = ""
     userinfo = base64.urlsafe_b64encode(
         f"{METHOD}:{password_for(uuid)}".encode("utf-8")
     ).decode("ascii").rstrip("=")
-    query = urlencode({"plugin": _plugin_opts(host)})
+    query = urlencode({"plugin": _plugin_opts(host)}, quote_via=quote)
     label = quote(_remark(endpoint, index, brand), safe="")
     return f"ss://{userinfo}@{endpoint['ip']}:{endpoint['port']}?{query}#{label}"
 
 
 def build_links(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") -> list[str]:
+    if not enabled():
+        return []
     return [
         build_link(uuid, host, endpoint, index, brand)
         for index, endpoint in enumerate(usable(endpoints), start=1)
     ]
 
 
+def sub_url(uuid: str, host: str) -> str:
+    """The worker serves a Shadowsocks-only subscription of its own."""
+    return f"https://{host}/{uuid}/ss"
+
+
 def clash_proxies(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") -> list[str]:
     """Clash/Mihomo blocks. Returned as text so the caller can splice them in."""
     blocks: list[str] = []
+    if not enabled():
+        return blocks
     for index, endpoint in enumerate(usable(endpoints), start=1):
         name = _remark(endpoint, index, brand).replace('"', "'")
         blocks.append(
@@ -169,7 +186,7 @@ def clash_proxies(uuid: str, host: str, endpoints: Sequence[dict], brand: str = 
                     f"    port: {endpoint['port']}",
                     f"    cipher: {METHOD}",
                     f"    password: {password_for(uuid)}",
-                    "    udp: true",
+                    "    udp: false",
                     f"    plugin: {PLUGIN}",
                     "    plugin-opts:",
                     "      mode: websocket",
@@ -184,6 +201,8 @@ def clash_proxies(uuid: str, host: str, endpoints: Sequence[dict], brand: str = 
 
 
 def names(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") -> list[str]:
+    if not enabled():
+        return []
     return [
         _remark(endpoint, index, brand).replace('"', "'")
         for index, endpoint in enumerate(usable(endpoints), start=1)
@@ -195,6 +214,8 @@ def singbox_outbounds(
 ) -> list[dict]:
     """sing-box reaches this inbound through the v2ray plugin as well."""
     out: list[dict] = []
+    if not enabled():
+        return out
     for index, endpoint in enumerate(usable(endpoints), start=1):
         out.append(
             {
@@ -212,12 +233,14 @@ def singbox_outbounds(
 
 
 def bindings(uuid: str) -> dict[str, str]:
-    """What the worker needs to serve this inbound."""
+    """What the worker needs to serve this inbound. Part of every upload."""
     return {
         "SS": "true" if enabled() else "false",
         "SS_KEY": key_hex(uuid),
         "SS_METHOD": METHOD,
         "SS_PATH": path(),
+        # Only used by the worker to render its own /ss and /mix subscriptions.
+        "SS_PASSWORD": password_for(uuid),
     }
 
 
@@ -235,5 +258,6 @@ __all__ = [
     "password_for",
     "path",
     "singbox_outbounds",
+    "sub_url",
     "usable",
 ]
