@@ -5,19 +5,11 @@ handshake more than once, scored on latency, jitter and loss. The build and
 delivery flow lives in ``handlers.pool``; this module owns the export buttons,
 the endpoint list, the rescan, the licence and the identity.
 
-Two bugs used to live in here and both produced the same symptom, which is a user
-tapping a button and nothing happening at all.
-
-The first: the platform picker asked which OS and then ignored the answer. Every
-branch rendered AmneziaWG, so an iPhone user who correctly tapped iOS still got a
-file carrying ``Jc`` in ``[Interface]``, which the official WireGuard app refuses
-wholesale. ``warpconf`` now decides the shape from the platform.
-
-The second: the picker's handler was gated on ``WarpFlow.platform``. Any
-navigation between opening the picker and tapping it cleared the state, the
-callback matched no handler, and the tap was swallowed in silence. The export kind
-and the platform ride in the callback data now, so the flow is stateless and
-cannot rot.
+The iPhone rule, stated once: the official WireGuard app refuses AmneziaWG keys,
+and the plain handshake it can read is filtered on Iranian carriers. So an
+AmneziaWG request on iOS or macOS is answered with a file for the *AmneziaWG*
+app (App Store), not downgraded to a clean file that would load and then carry
+nothing.
 
 Nothing here waits on a scan. The rescan button answers straight away and the
 sweep reports back into the same message when it finishes.
@@ -67,8 +59,7 @@ EXPORTS: dict[str, str] = {
 
 
 class WarpFlow(StatesGroup):
-    # ``platform`` is deliberately gone: gating the picker on FSM state is what
-    # made it a dead end. Only the licence prompt genuinely needs state.
+    # Only the licence prompt genuinely needs state.
     license = State()
 
 
@@ -114,8 +105,6 @@ async def show_menu(event: CallbackQuery | Message, lang: str) -> None:
         state=t(lang, "admin.on" if stats["scanning"] else "admin.off"),
         status=status,
     )
-    # The flag is honoured now. It used to be passed and dropped, which is why a
-    # user with an identity saw a screen with no way to download anything.
     await edit(event, text, keyboards.warp_menu(lang, record is not None))
 
 
@@ -143,13 +132,7 @@ async def on_warp_command(message: Message, state: FSMContext, lang: str) -> Non
 
 @router.callback_query(F.data == "wg:build")
 async def on_build(call: CallbackQuery, state: FSMContext, lang: str) -> None:
-    """Legacy callback, kept for keyboards still sitting in chat history.
-
-    It used to provision an identity, save it, and stop. No file was ever sent and
-    the screen it returned to had no export button on it, so "build" genuinely
-    produced nothing a user could install. It now opens the device picker and the
-    pool flow takes it from there, which is the path that renders and delivers.
-    """
+    """Legacy callback, kept for keyboards still sitting in chat history."""
     await state.clear()
     if not await db.get_flag("warp_enabled"):
         await call.answer(t(lang, "warp.off"), show_alert=True)
@@ -190,12 +173,7 @@ async def on_rebuild(call: CallbackQuery, lang: str) -> None:
 
 @router.callback_query(F.data.startswith("wg:file:"))
 async def on_file(call: CallbackQuery, lang: str) -> None:
-    """Intercept a file export and ask which device it is for.
-
-    The kind travels in the picker's own callback data. Stashing it in FSM state
-    is what used to break this: a navigation cleared the state, the follow-up tap
-    matched nothing, and the user got no file and no error.
-    """
+    """Intercept a file export and ask which device it is for."""
     record = await db.get_warp_user(call.from_user.id)
     if record is None:
         await call.answer(t(lang, "warp.none"), show_alert=True)
@@ -234,11 +212,7 @@ async def on_export_direct(call: CallbackQuery, lang: str) -> None:
 async def _deliver_export(
     call: CallbackQuery, lang: str, platform: str, kind: str
 ) -> None:
-    """Render one export for one platform and send it.
-
-    The rendering is guarded on purpose. A missing renderer used to raise here and
-    the user simply never received anything; now the failure has a message.
-    """
+    """Render one export for one platform and send it. Failures say so."""
     record = await db.get_warp_user(call.from_user.id)
     if record is None:
         await call.answer(t(lang, "warp.none"), show_alert=True)
@@ -246,12 +220,9 @@ async def _deliver_export(
 
     if kind not in EXPORTS:
         kind = "awg"
-    # Asking for AmneziaWG on a platform whose client rejects it can only produce
-    # a file that will not load, so the request is downgraded and said out loud
-    # rather than honoured into a dead end.
-    downgraded = kind in {"awg", "awg2"} and not should_include_amnezia_keys(platform)
-    if downgraded:
-        kind = "plain"
+    # An AmneziaWG request on a platform whose *official* client cannot read it is
+    # answered with a file for the AmneziaWG app on that platform.
+    apple_awg = kind in {"awg", "awg2"} and not should_include_amnezia_keys(platform)
 
     identity = record["identity"]
     endpoints = record.get("endpoints") or []
@@ -264,6 +235,8 @@ async def _deliver_export(
             body = warpcore.singbox_json(identity, endpoints)
         elif kind == "clash":
             body = warpcore.clash_yaml(identity, endpoints)
+        elif apple_awg:
+            body = warpconf.apple_amnezia_conf(identity, endpoints, profile, platform=platform)
         else:
             body = warpconf.conf_for(
                 identity, endpoints, platform=platform, kind=kind, profile=profile
@@ -277,15 +250,13 @@ async def _deliver_export(
         return
 
     caption = t(lang, EXPORTS[kind])
-    if downgraded:
-        caption = t(lang, "wg.caption_clean", family="", device=device_label(platform, lang))
-        caption = f"{caption}\n\n{t(lang, 'wg.ios_dpi_hint')}"
+    name = warpconf.filename("", kind, platform)
+    if apple_awg:
+        caption = t(lang, "wg.ios_awg_caption")
+        name = warpconf.filename("", "amnezia", platform)
 
     await call.message.answer_document(
-        BufferedInputFile(
-            body.encode("utf-8"),
-            filename=warpconf.filename("", kind, platform),
-        ),
+        BufferedInputFile(body.encode("utf-8"), filename=name),
         caption=caption,
         reply_markup=keyboards.warp_exports(lang, True, platform),
     )
@@ -299,7 +270,11 @@ async def on_links(call: CallbackQuery, lang: str) -> None:
         return
 
     await call.answer()
-    links = warpcore.links(record["identity"], record.get("endpoints") or [])
+    endpoints = record.get("endpoints") or []
+    links = warpcore.links(record["identity"], endpoints)
+    # Hiddify (every platform, iPhone included) reads its own scheme with its own
+    # anti-filter noise, so it gets a link of its own at the end.
+    links.append(warpcore.hiddify_link(record["identity"], endpoints, name=f"{settings.brand}-WARP-Hiddify"))
     body = "\n\n".join(f"<code>{esc(link)}</code>" for link in links)
     parts = chunked(t(lang, "warp.caption_link", links=body))
     for index, part in enumerate(parts):
