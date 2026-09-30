@@ -1,24 +1,31 @@
 /**
  * AutoVless edge worker.
  *
- * VLESS *and* Trojan over WebSocket, running on the user's own Cloudflare
- * account.
+ * VLESS, Trojan *and* Shadowsocks over WebSocket, running on the user's own
+ * Cloudflare account. None of the traffic touches the operator's VPS:
  *
  *   client -> clean CF IP:443|80 -> CF edge -> this worker -> destination
  *
- * Two protocols, one endpoint, no configuration. The first frame decides: a
- * Trojan client opens with 56 hex characters and a CRLF, and nothing else can,
- * because a VLESS header starts with a zero byte. So the worker sniffs instead
- * of asking, and the same address, port and path serve both. That matters
- * because a VLESS handshake and a Trojan handshake look nothing alike to a DPI
- * box: a network that has learned to kill one frequently still passes the
- * other, and the user gets a second way in without a second panel.
+ * Two protocols share one path and are told apart by the first frame: a Trojan
+ * client opens with 56 hex characters and a CRLF, and nothing else can, because
+ * a VLESS header starts with a zero byte. So the worker sniffs instead of
+ * asking, and the same address, port and path serve both. That matters because a
+ * VLESS handshake and a Trojan handshake look nothing alike to a DPI box: a
+ * network that has learned to kill one frequently still passes the other.
  *
- * Trojan is only ever offered on TLS ports. Its entire cover story is "this is
- * ordinary HTTPS", and on a plain port there is no TLS record to hide inside -
- * the password would cross the wire in the clear and most clients refuse the
- * config outright. TROJAN_PASSWORD defaults to UUID, so an existing panel
- * starts speaking Trojan the moment it picks up this bundle.
+ * Shadowsocks is the third shape and it cannot be sniffed: its first 32 bytes
+ * are random salt, which is indistinguishable from anything. It therefore gets
+ * its own WebSocket path, SS_PATH ("/ss" by default), and fetch() dispatches on
+ * that before any sniffing happens. The master key arrives pre-derived as SS_KEY
+ * hex, because EVP_BytesToKey needs MD5 and WebCrypto has none; from there it is
+ * HKDF-SHA1 and AES-256-GCM, both native. The same code lives in
+ * worker/shadowsocks.js, where scripts/test-shadowsocks.mjs checks it against an
+ * independent client.
+ *
+ * Trojan and Shadowsocks are only ever offered on TLS ports. Their cover story is
+ * "this is ordinary HTTPS", and on a plain port there is no TLS record to hide
+ * inside. TROJAN_PASSWORD defaults to UUID, so an existing panel starts speaking
+ * Trojan the moment it picks up this bundle.
  *
  * The subscription this worker serves is not a frozen list. Every fetch blends
  * three sources of entry addresses:
@@ -27,41 +34,21 @@
  *   2. CLEAN_DOMAINS  hostnames whose DNS is kept pointed at healthy edges
  *   3. SUB_SOURCES    public clean-IP lists, fetched through the edge cache
  *
- * That is what makes clean IPs automatic: a client refreshing its subscription
- * picks up today's addresses without anyone rebuilding anything, and the
- * hostname entries keep working even when every raw address in the list ages
- * out.
+ * Ports are spread on purpose, so the day 443 is filtered on someone's network
+ * they still have a second and third way in.
  *
- * Ports are spread on purpose. A group used to emit every config on its first
- * port, so all TLS configs sat on 443 and the day 443 was filtered on someone's
- * network their whole TLS set went dark together. Measured addresses keep the
- * port they were verified on, and unmeasured entries are dealt across the
- * group's remaining ports, so a user always has a second and third way in.
- *
- * AI destinations get their own outbound path, and it is worth explaining
- * because "everything works except ChatGPT" was the single most common report.
- * A Worker cannot open a socket to a Cloudflare owned address. chatgpt.com,
- * openai.com, claude.ai and perplexity.ai are all Cloudflare-fronted, so the
- * direct attempt cannot succeed - it can only burn the connect timeout, which on
- * a Worker is frequently the entire request budget. Those hosts therefore go
- * relay-first.
- *
- * And the relay is pinned rather than picked. When every request left through a
- * different Cloudflare datacentre, these sites logged the user out constantly
- * and threw "unusual activity" checks. stickyOrder() rotates the relay list by a
+ * AI destinations get their own outbound path. A Worker cannot open a socket to
+ * a Cloudflare owned address, and chatgpt.com, openai.com, claude.ai and
+ * perplexity.ai are all Cloudflare-fronted, so those hosts go relay-first. The
+ * relay is pinned rather than picked: stickyOrder() rotates the relay list by a
  * hash of the destination hostname, so one host always exits through one relay
- * and the site sees a steady address. AI_PROXY_IP pins a dedicated relay when an
- * operator wants a hard guarantee.
- *
- * HTTP responses carry permissive CORS headers so the Telegram Mini App, which
- * is served from a different origin, can read /health, /probe, /ai and
- * /endpoints. Nothing here is secret: the path already contains the account
- * UUID, and without that UUID every request lands on the landing page.
+ * and the site sees a steady address. AI_PROXY_IP pins a dedicated relay.
  *
  * Paths, all under /<uuid>/ :
  *   sub | raw        VLESS subscription, base64 or plain
  *   trojan           Trojan subscription (TLS endpoints only)
- *   mix              both protocols in one subscription
+ *   ss               Shadowsocks subscription (TLS endpoints only)
+ *   mix              every protocol in one subscription
  *   clash | singbox  ready made client configs
  *   endpoints        the live entry list as JSON
  *   health | probe | ai   diagnostics the bot reads
@@ -70,10 +57,13 @@
  *   UUID             the single account id allowed on this worker
  *   TROJAN_PASSWORD  trojan password. Defaults to UUID.
  *   TROJAN           "false" turns the trojan inbound and its paths off
+ *   SS               "false" turns the shadowsocks inbound off
+ *   SS_KEY           shadowsocks master key, 64 hex characters
+ *   SS_PATH          websocket path shadowsocks listens on (default /ss)
+ *   SS_METHOD        cipher name used in generated links (aes-256-gcm)
+ *   SS_PASSWORD      password used in generated links (the key's source)
  *   PROXY_IP         comma separated relay list, e.g. "1.2.3.4:443,proxy.example.com"
  *   AI_PROXY_IP      relays reserved for AI destinations. Falls back to PROXY_IP.
- *                    Prefer a literal IP here: a hostname whose DNS rotates gives
- *                    away the steady exit address this whole path is for.
  *   AI_DOMAINS       extra AI hostnames to route this way, comma separated
  *   AI_ROUTE         "false" turns the whole behaviour off
  *   SUB_HOST         hostname used inside generated configs (defaults to request host)
@@ -108,14 +98,10 @@ const TROJAN_HEAD = 58;
 /**
  * Destinations that need the relay path.
  *
- * Two different reasons land on the same list. Some of these are
- * Cloudflare-fronted, so a Worker literally cannot reach them directly. The rest
- * are reachable but score a Cloudflare datacentre egress as suspicious, which
- * shows up as constant re-logins rather than an outright failure. Both are fixed
- * by exiting through one steady relay.
- *
- * Matching is by suffix, so "openai.com" also covers "api.openai.com", and
- * "oaistatic.com" is listed separately because it is a different apex.
+ * Some of these are Cloudflare-fronted, so a Worker literally cannot reach them
+ * directly. The rest are reachable but score a Cloudflare datacentre egress as
+ * suspicious, which shows up as constant re-logins. Both are fixed by exiting
+ * through one steady relay. Matching is by suffix.
  */
 const DEFAULT_AI_DOMAINS = [
   "openai.com",
@@ -160,14 +146,11 @@ const DEFAULT_AI_DOMAINS = [
 /**
  * Client bytes are kept until the destination proves it can talk, so a failover
  * can replay them instead of handing the next relay a half-eaten stream. The cap
- * keeps a big upload from parking megabytes in memory; past it, replay is simply
- * given up on and the current socket is final.
+ * keeps a big upload from parking megabytes in memory.
  */
 const MAX_REPLAY_BYTES = 512 * 1024;
 
-// Outbound reachability targets. None of these may be a Cloudflare address: a
-// Worker cannot open a socket to Cloudflare's own network, so probing one always
-// fails and tells you nothing about the tunnel.
+// Outbound reachability targets. None of these may be a Cloudflare address.
 const PROBE_TARGETS = [
   { hostname: "www.wikipedia.org", port: 80, host: "www.wikipedia.org" },
   { hostname: "example.com", port: 80, host: "example.com" }
@@ -189,7 +172,14 @@ export default {
       if (!cfg.uuidBytes) return textResponse("worker is not configured", 500);
 
       const upgrade = (request.headers.get("Upgrade") || "").toLowerCase();
-      if (upgrade === "websocket") return handleTunnel(request, cfg);
+      if (upgrade === "websocket") {
+        // Shadowsocks is dispatched by path, before any sniffing: its first bytes
+        // are random salt and cannot be told apart from anything else.
+        if (cfg.ssActive && ssPathMatch(new URL(request.url).pathname, cfg.ssPath)) {
+          return handleSsTunnel(request, cfg);
+        }
+        return handleTunnel(request, cfg);
+      }
       return await handleHttp(request, cfg);
     } catch (err) {
       return textResponse("bad request", 400);
@@ -208,6 +198,8 @@ function readConfig(env, request) {
   const aiProxies = splitList(aiOverride || env.AI_PROXY_IP || "");
   const tlsPorts = intList(env.TLS_PORTS, SERVE_TLS_PORTS);
   const httpPorts = intList(env.HTTP_PORTS, SERVE_HTTP_PORTS);
+  const ssKey = ssKeyBytes(env.SS_KEY);
+  const ssOn = String(env.SS || "true").toLowerCase() !== "false";
 
   return {
     uuid,
@@ -217,6 +209,12 @@ function readConfig(env, request) {
     // speaking trojan the moment it is re-uploaded, with no migration step.
     trojanPassword: String(env.TROJAN_PASSWORD || env.TROJAN_PASS || uuid).trim(),
     trojan: String(env.TROJAN || "true").toLowerCase() !== "false",
+    // Shadowsocks needs its key; without one the inbound stays shut.
+    ssKey,
+    ssActive: ssOn && !!ssKey,
+    ssPath: String(env.SS_PATH || "/ss"),
+    ssMethod: String(env.SS_METHOD || "aes-256-gcm").trim() || "aes-256-gcm",
+    ssPassword: String(env.SS_PASSWORD || "").trim(),
     proxies,
     aiProxies,
     aiDomains: aiDomainList(env.AI_DOMAINS),
@@ -291,13 +289,8 @@ function uuidToBytes(uuid) {
 
 /**
  * SHA-224, by hand, because the trojan handshake is defined as exactly that and
- * WebCrypto on Workers does not implement it - crypto.subtle.digest offers
- * SHA-1, SHA-256, SHA-384 and SHA-512 and nothing else. SHA-224 is SHA-256 with
- * a different initial state and a truncated output, so this is the same
- * compression function everyone already trusts.
- *
- * It runs once per password: the digest is memoised, so a connection costs a map
- * lookup rather than a hash.
+ * WebCrypto on Workers does not implement it. SHA-224 is SHA-256 with a
+ * different initial state and a truncated output. Memoised per password.
  */
 const K256 = new Uint32Array(
   (
@@ -400,6 +393,221 @@ function trojanDigest(cfg) {
   return hit;
 }
 
+/* ------------------------------------------- shadowsocks: aead aes-256-gcm */
+
+/*
+ * Framing:  salt(32) || [ len(2) + tag(16) ] [ payload(len) + tag(16) ] ...
+ * subkey  = HKDF-SHA1(master, salt, "ss-subkey", 32), one per direction
+ * nonce   = 12 byte little-endian counter, advanced after every AEAD operation
+ * chunks  cap at 0x3fff bytes
+ * The first plaintext bytes are a SOCKS-shaped target address, parsed by the
+ * same readSocksAddress the Trojan inbound uses.
+ */
+const SS_INFO = ENCODER.encode("ss-subkey");
+const SS_SALT_BYTES = 32;
+const SS_TAG_BYTES = 16;
+const SS_MAX_CHUNK = 0x3fff;
+
+function ssKeyBytes(text) {
+  const hex = String(text || "").replace(/[^0-9a-f]/gi, "").toLowerCase();
+  if (hex.length !== 64) return null;
+  const out = new Uint8Array(32);
+  for (let i = 0; i < 32; i++) out[i] = parseInt(hex.slice(i * 2, i * 2 + 2), 16);
+  return out;
+}
+
+async function ssSubkey(master, salt) {
+  const base = await crypto.subtle.importKey("raw", master, "HKDF", false, ["deriveBits"]);
+  const bits = await crypto.subtle.deriveBits(
+    { name: "HKDF", hash: "SHA-1", salt, info: SS_INFO },
+    base,
+    256
+  );
+  return crypto.subtle.importKey("raw", new Uint8Array(bits), { name: "AES-GCM" }, false, [
+    "encrypt",
+    "decrypt"
+  ]);
+}
+
+function ssBump(nonce) {
+  for (let i = 0; i < nonce.length; i++) {
+    if (++nonce[i] !== 0) break;
+  }
+}
+
+/** A stateful reader: feed it frames, get back whole plaintext chunks. */
+function ssOpener(key) {
+  const nonce = new Uint8Array(12);
+  let buffer = new Uint8Array(0);
+  let expect = -1;
+
+  const open = async (slice) => {
+    try {
+      const plain = await crypto.subtle.decrypt(
+        { name: "AES-GCM", iv: nonce, tagLength: 128 },
+        key,
+        slice
+      );
+      return new Uint8Array(plain);
+    } catch (err) {
+      return null;
+    }
+  };
+
+  return async function push(chunk) {
+    if (chunk && chunk.byteLength) buffer = concat(buffer, chunk);
+    const out = [];
+    for (;;) {
+      if (expect < 0) {
+        if (buffer.byteLength < 2 + SS_TAG_BYTES) break;
+        const head = await open(buffer.slice(0, 2 + SS_TAG_BYTES));
+        if (!head) throw new Error("ss length auth failed");
+        ssBump(nonce);
+        expect = (head[0] << 8) | head[1];
+        if (expect < 1 || expect > SS_MAX_CHUNK) throw new Error("ss chunk size");
+        buffer = buffer.slice(2 + SS_TAG_BYTES);
+        continue;
+      }
+      if (buffer.byteLength < expect + SS_TAG_BYTES) break;
+      const body = await open(buffer.slice(0, expect + SS_TAG_BYTES));
+      if (!body) throw new Error("ss payload auth failed");
+      ssBump(nonce);
+      buffer = buffer.slice(expect + SS_TAG_BYTES);
+      expect = -1;
+      if (body.byteLength) out.push(body);
+    }
+    return out;
+  };
+}
+
+/** The other direction. Splits anything over the protocol's chunk limit. */
+function ssSealer(key) {
+  const nonce = new Uint8Array(12);
+  const seal = async (plain) => {
+    const box = await crypto.subtle.encrypt(
+      { name: "AES-GCM", iv: nonce, tagLength: 128 },
+      key,
+      plain
+    );
+    ssBump(nonce);
+    return new Uint8Array(box);
+  };
+
+  return async function push(payload) {
+    let rest = payload;
+    let out = new Uint8Array(0);
+    while (rest.byteLength) {
+      const piece = rest.slice(0, SS_MAX_CHUNK);
+      rest = rest.slice(piece.byteLength);
+      const size = new Uint8Array([(piece.byteLength >> 8) & 0xff, piece.byteLength & 0xff]);
+      out = concat(out, await seal(size));
+      out = concat(out, await seal(piece));
+    }
+    return out;
+  };
+}
+
+async function ssSession(master, clientSalt) {
+  const serverSalt = new Uint8Array(SS_SALT_BYTES);
+  crypto.getRandomValues(serverSalt);
+  return {
+    serverSalt,
+    read: ssOpener(await ssSubkey(master, clientSalt)),
+    write: ssSealer(await ssSubkey(master, serverSalt))
+  };
+}
+
+function ssPathMatch(pathname, configured) {
+  const want = String(configured || "/ss").split("?")[0];
+  const got = String(pathname || "/").split("?")[0];
+  return got === want || got === want.replace(/\/+$/, "");
+}
+
+/**
+ * One Shadowsocks session over one WebSocket.
+ *
+ * The first 32 bytes are the client's salt. After that everything is sealed
+ * chunks; the first plaintext is the target address, and from then on the
+ * plaintext is the client's stream. Answers go back sealed under our own salt,
+ * which rides in front of the first sealed byte - the same "prefix on the first
+ * answer" slot VLESS uses for its two byte response header.
+ */
+function handleSsTunnel(request, cfg) {
+  const pair = new WebSocketPair();
+  const client = pair[0];
+  const server = pair[1];
+  server.accept();
+
+  const state = {
+    ws: server,
+    cfg,
+    socket: null,
+    write: null,
+    header: null,
+    mode: "ss",
+    prefix: null,
+    encode: null,
+    spoke: false,
+    done: false
+  };
+  const ss = { salt: new Uint8Array(0), session: null };
+
+  wsReadable(server, "")
+    .pipeTo(
+      new WritableStream({
+        async write(chunk) {
+          await onSsChunk(state, ss, chunk);
+        },
+        close() {
+          shutdown(state);
+        },
+        abort() {
+          shutdown(state);
+        }
+      })
+    )
+    .catch(() => shutdown(state));
+
+  return new Response(null, { status: 101, webSocket: client });
+}
+
+async function onSsChunk(state, ss, chunk) {
+  let bytes = toBytes(chunk);
+  if (!ss.session) {
+    ss.salt = concat(ss.salt, bytes);
+    if (ss.salt.byteLength < SS_SALT_BYTES) return;
+    const clientSalt = ss.salt.slice(0, SS_SALT_BYTES);
+    bytes = ss.salt.slice(SS_SALT_BYTES);
+    ss.salt = null;
+    ss.session = await ssSession(state.cfg.ssKey, clientSalt);
+    state.prefix = ss.session.serverSalt;
+    state.encode = ss.session.write;
+  }
+
+  // A wrong key throws here, which ends the session: to a prober this endpoint
+  // is a web server that hung up.
+  const plains = await ss.session.read(bytes);
+  for (const plain of plains) {
+    if (state.write) {
+      await state.write(plain);
+      continue;
+    }
+    state.header = state.header ? concat(state.header, plain) : plain;
+    const target = readSocksAddress(state.header, 0);
+    if (target.partial) continue;
+    if (target.error) throw new Error(target.error);
+    const head = {
+      isUdp: false,
+      port: target.port,
+      address: target.address,
+      hostname: target.hostname,
+      payload: state.header.slice(target.cursor)
+    };
+    state.header = null;
+    state.write = openTcp(state, head);
+  }
+}
+
 /* ------------------------------------------------------------------ tunnel */
 
 function handleTunnel(request, cfg) {
@@ -420,6 +628,7 @@ function handleTunnel(request, cfg) {
     // if a failover is still allowed.
     mode: "",
     prefix: null,
+    encode: null,
     spoke: false,
     done: false
   };
@@ -498,15 +707,8 @@ function decodeEarlyData(header) {
 }
 
 /**
- * Which protocol is this?
- *
- * A trojan client opens with the hex sha224 of its password - 56 characters from
- * [0-9a-f] - followed by CRLF. A VLESS client opens with a zero version byte,
- * which is not a hex character, so one non-hex byte in the first 56 settles it
- * immediately and no VLESS session is ever mistaken for a trojan one.
- *
- * "" means the answer needs more bytes. Some clients split the preamble across
- * frames, and guessing early is how a working client gets dropped for no reason.
+ * Which protocol is this? A trojan client opens with 56 hex characters and CRLF;
+ * a VLESS client opens with a zero byte. "" means the answer needs more bytes.
  */
 function sniff(bytes) {
   const seen = Math.min(bytes.length, 56);
@@ -544,9 +746,7 @@ async function onClientChunk(state, chunk) {
   if (head.error) throw new Error(head.error);
   state.header = null;
   // VLESS expects a two byte response header before the first payload byte;
-  // trojan expects the destination's bytes verbatim. Sending VLESS's preamble on
-  // a trojan session corrupts the very first TLS record and looks exactly like a
-  // dead endpoint, so the difference is carried explicitly.
+  // trojan expects the destination's bytes verbatim.
   state.prefix = mode === "trojan" ? null : VLESS_RESPONSE;
 
   if (head.isUdp) {
@@ -636,10 +836,6 @@ function readVlessHeader(raw, expected) {
  *   +0       command  1 connect, 3 udp associate
  *   +1       address type  1 ipv4, 3 domain, 4 ipv6   (SOCKS5 numbering)
  *   ...      address, then port, then CRLF, then payload
- *
- * A wrong password is answered by tearing the socket down rather than by an
- * error frame, which is the whole point of the protocol: to anything probing it,
- * this endpoint is an ordinary web server that hung up.
  */
 function readTrojanHeader(raw, cfg) {
   const bytes = toBytes(raw);
@@ -671,7 +867,7 @@ function readTrojanHeader(raw, cfg) {
   };
 }
 
-/** ATYP, address, big endian port. Shared by the trojan request and its UDP frames. */
+/** ATYP, address, big endian port. Shared by trojan, its UDP frames, and shadowsocks. */
 function readSocksAddress(bytes, start) {
   let cursor = start;
   if (bytes.length < cursor + 1) return { partial: true };
@@ -688,7 +884,7 @@ function readSocksAddress(bytes, start) {
   } else if (type === 3) {
     if (bytes.length < cursor + 1) return { partial: true };
     const length = bytes[cursor++];
-    if (!length) return { error: "empty trojan address" };
+    if (!length) return { error: "empty address" };
     if (bytes.length < cursor + length) return { partial: true };
     address = DECODER.decode(bytes.slice(cursor, cursor + length));
     hostname = address;
@@ -703,7 +899,7 @@ function readSocksAddress(bytes, start) {
     hostname = "[" + address + "]";
     cursor += 16;
   } else {
-    return { error: "bad trojan address type " + type };
+    return { error: "bad address type " + type };
   }
 
   if (bytes.length < cursor + 2) return { partial: true };
@@ -739,16 +935,7 @@ function hashOf(text) {
   return hash >>> 0;
 }
 
-/**
- * Rotate a list so a given seed always lands on the same head.
- *
- * This is the whole "static IP" mechanism. Picking the fastest relay per request
- * would move the exit address around, and an AI site reading a different IP every
- * few seconds treats that as account abuse: it logs the user out and starts
- * asking for verification. Pinning by destination hostname keeps one site on one
- * exit for as long as that relay lives, while still spreading different sites
- * across the whole relay chain.
- */
+/** Rotate a list so a given seed always lands on the same head: the static-IP pin. */
 function stickyOrder(list, seed) {
   if (list.length < 2) return list.slice();
   const offset = hashOf(seed) % list.length;
@@ -765,14 +952,8 @@ function relayTargets(raw, port) {
 }
 
 /**
- * The ordered list of places to try for this destination.
- *
- * Normal traffic goes direct first, then falls back through the relays. AI
- * traffic is inverted, because the direct attempt to a Cloudflare-fronted host
- * cannot succeed from inside a Worker: leaving it first only spends the connect
- * timeout, and on a Worker that is frequently the entire request budget. Direct
- * stays on the end rather than being dropped, so a host on the list that turns
- * out not to be Cloudflare-fronted still works when every relay is down.
+ * The ordered list of places to try for this destination. Normal traffic goes
+ * direct first, then through the relays; AI traffic is relay-first and pinned.
  */
 function buildAttempts(cfg, head) {
   const direct = { hostname: head.hostname, port: head.port, relay: false, source: "direct" };
@@ -815,9 +996,9 @@ function splitHostPort(raw, defaultPort) {
 /**
  * Open the destination, walking the candidate list until one of them actually
  * answers. Everything the client sends before the far end says a word is kept,
- * so a failover replays the session from its first byte rather than joining it
- * halfway through. Identical for both protocols: by this point the difference is
- * only the two byte prefix on the first answer.
+ * so a failover replays the session from its first byte. Identical for all three
+ * protocols: by this point the difference is only the prefix on the first
+ * answer and, for shadowsocks, the sealing of every answer.
  */
 function openTcp(state, head) {
   const attempts = buildAttempts(state.cfg, head);
@@ -841,8 +1022,6 @@ function openTcp(state, head) {
     try {
       socket = connect({ hostname: target.hostname, port: target.port });
       state.socket = socket;
-      // opened settles on the handshake, which keeps failover in the
-      // hundreds of milliseconds instead of waiting out a write timeout.
       if (socket.opened) await withTimeout(socket.opened, CONNECT_TIMEOUT_MS);
       const writer = socket.writable.getWriter();
       for (const chunk of box.replay) {
@@ -874,8 +1053,6 @@ function openTcp(state, head) {
   return async (chunk) => {
     const bytes = toBytes(chunk);
 
-    // Once the far end has spoken there is nothing left to fail over to, so the
-    // replay buffer is released instead of growing for the whole session.
     if (state.spoke) {
       box.replay = [];
       box.bytes = 0;
@@ -898,9 +1075,6 @@ function openTcp(state, head) {
       return;
     }
 
-    // No socket yet. A replayable chunk is already queued above; if replay was
-    // given up on there is nowhere to put it, and dropping it silently would
-    // corrupt the stream, so the session ends honestly instead.
     if (!box.replayable) shutdown(state);
   };
 }
@@ -930,18 +1104,8 @@ function openDns(state, head) {
 }
 
 /**
- * Trojan UDP, for DNS and nothing else.
- *
- * Trojan frames its UDP packets as ATYP + address + port + length + CRLF +
- * payload, which is a different shape from VLESS's bare length prefix, so it
- * needs its own translation: unwrap the frame, forward the payload to the
- * resolver over TCP with a length prefix, then wrap each answer back up using
- * the address bytes the client asked for.
- *
- * Anything that is not port 53 is dropped rather than answered. A Worker has no
- * UDP socket at all, so the honest options are DNS through a TCP resolver or
- * nothing, and silently dropping a QUIC packet lets the client fall back to TCP
- * instead of hanging on a tunnel that pretends to carry it.
+ * Trojan UDP, for DNS and nothing else. A Worker has no UDP socket at all, so the
+ * honest options are DNS through a TCP resolver or nothing.
  */
 function openTrojanUdp(state, head) {
   const socket = connect({ hostname: state.cfg.dns, port: state.cfg.dnsPort });
@@ -964,9 +1128,6 @@ function openTrojanUdp(state, head) {
           buffer = buffer.slice(size + 2);
           if (state.ws.readyState !== WS_OPEN) return;
           const target = queue.shift();
-          // No pending question means this is not an answer to anything the
-          // client asked for, and inventing an address to wrap it in would only
-          // confuse the resolver on the other side.
           if (!target) continue;
           state.spoke = true;
           state.ws.send(trojanUdpFrame(target, answer));
@@ -1017,8 +1178,6 @@ function readTrojanUdpFrame(bytes) {
   const start = cursor + 4; // length, then CRLF
   if (bytes.byteLength < start + size) return null;
   return {
-    // The address bytes verbatim, so the answer carries exactly what was asked
-    // for rather than a re-encoding of it.
     head: bytes.slice(0, cursor),
     port: target.port,
     payload: bytes.slice(start, start + size),
@@ -1045,15 +1204,21 @@ function lengthPrefixed(payload) {
   return out;
 }
 
+/**
+ * Destination -> client. ``state.encode`` is set only on a shadowsocks session,
+ * where every answer has to be sealed; ``state.prefix`` rides in front of the
+ * first answer (VLESS response header, or the shadowsocks server salt).
+ */
 async function pumpRemote(state, socket) {
   let received = 0;
   try {
     await socket.readable.pipeTo(
       new WritableStream({
-        write(chunk) {
+        async write(chunk) {
           if (state.ws.readyState !== WS_OPEN) throw new Error("websocket closed");
-          const bytes = toBytes(chunk);
+          let bytes = toBytes(chunk);
           received += bytes.byteLength;
+          if (state.encode) bytes = await state.encode(bytes);
           if (state.spoke) {
             state.ws.send(bytes);
           } else {
@@ -1137,17 +1302,11 @@ function normaliseList(raw) {
   return out;
 }
 
-/**
- * Pull the public clean-IP lists through the edge cache. The cache key is the
- * URL, the TTL is SUB_REFRESH, so a thousand clients refreshing at once cost one
- * upstream request per window.
- */
+/** Pull the public clean-IP lists through the edge cache. */
 async function fetchSources(cfg) {
   const found = [];
   const LIMIT = 120;
   for (const url of cfg.sources.slice(0, 4)) {
-    // The cap used to break the inner loop only, so the remaining lists were
-    // still fetched and their rows immediately thrown away.
     if (found.length >= LIMIT) break;
     try {
       const response = await fetch(url, {
@@ -1176,11 +1335,7 @@ async function fetchSources(cfg) {
   return found;
 }
 
-/**
- * Rotate deterministically inside each refresh window. Everyone who fetches in
- * the same window gets the same answer, which keeps the cache useful, and the
- * next window moves the list along so a blocked address is not served forever.
- */
+/** Rotate deterministically inside each refresh window. */
 function rotate(items, cfg) {
   if (items.length < 2) return items;
   const window = Math.floor(Date.now() / (Math.max(60, cfg.refresh) * 1000));
@@ -1215,10 +1370,6 @@ async function liveEndpoints(cfg) {
     const ports = group.ports;
     const bag = [];
 
-    // A measured address keeps the port it was verified on: moving it to another
-    // port would be inventing a result nobody checked, which is how dead configs
-    // got shipped in the first place. Everything unmeasured is dealt across the
-    // group's ports instead, so the set is never one port wide.
     const bakedGroup = baked.filter((item) => groupOf(item.port, cfg) === group.key);
     const deal = (items) =>
       items.map((item, index) => ({ ...item, port: ports[index % ports.length] }));
@@ -1234,9 +1385,6 @@ async function liveEndpoints(cfg) {
           : ports[index % ports.length]
     }));
 
-    // Reserve one slot for a self-healing hostname and one for a live address
-    // whenever the group is big enough to spare them. The rest stay on the
-    // measured, bot-verified addresses.
     const domainSlots = group.count >= 2 && domainGroup.length ? 1 : 0;
     const freshSlots = group.count >= 3 && freshGroup.length ? 1 : 0;
     const bakedSlots = Math.max(0, group.count - domainSlots - freshSlots);
@@ -1245,7 +1393,6 @@ async function liveEndpoints(cfg) {
     for (const item of domainGroup.slice(0, domainSlots)) take(bag, item);
     for (const item of freshGroup.slice(0, freshSlots)) take(bag, item);
 
-    // Top up from anything left so the user always receives a full set.
     for (const item of [...bakedGroup, ...freshGroup, ...domainGroup]) {
       if (bag.length >= group.count) break;
       take(bag, item);
@@ -1268,6 +1415,9 @@ async function handleHttp(request, cfg) {
   const kind = (segments[1] || "sub").toLowerCase();
 
   if (kind === "health") {
+    const protocols = ["vless"];
+    if (cfg.trojan) protocols.push("trojan");
+    if (cfg.ssActive) protocols.push("shadowsocks");
     return jsonResponse({
       ok: true,
       brand: cfg.brand,
@@ -1281,8 +1431,10 @@ async function handleHttp(request, cfg) {
       ai_route: cfg.aiRoute,
       ai_proxies: cfg.aiProxies.length,
       ai_domains: cfg.aiDomains.length,
-      protocols: cfg.trojan ? ["vless", "trojan"] : ["vless"],
+      protocols,
       trojan: cfg.trojan,
+      shadowsocks: cfg.ssActive,
+      ss_path: cfg.ssActive ? cfg.ssPath : null,
       tls_ports: cfg.tlsPorts,
       http_ports: cfg.httpPorts,
       colo: request.cf && request.cf.colo ? request.cf.colo : null
@@ -1313,14 +1465,17 @@ async function handleHttp(request, cfg) {
     return jsonResponse(buildSingbox(cfg, endpoints));
   }
 
-  // Trojan only, and both protocols together. Kept as separate paths rather than
-  // folded into the default subscription: a user who adds the mixed link gets
-  // twice the entries, and that is a choice, not a surprise.
   let links;
   if (kind === "trojan") {
     links = buildTrojanLinks(cfg, endpoints);
+  } else if (kind === "ss" || kind === "shadowsocks") {
+    links = buildSsLinks(cfg, endpoints);
   } else if (kind === "mix" || kind === "all") {
-    links = [...buildLinks(cfg, endpoints), ...buildTrojanLinks(cfg, endpoints)];
+    links = [
+      ...buildLinks(cfg, endpoints),
+      ...buildTrojanLinks(cfg, endpoints),
+      ...buildSsLinks(cfg, endpoints)
+    ];
   } else {
     links = buildLinks(cfg, endpoints);
   }
@@ -1359,11 +1514,7 @@ function landing(cfg) {
   });
 }
 
-/**
- * Outbound reachability, measured from inside the worker. This is the check that
- * tells the bot whether the tunnel can actually carry traffic, and which relays
- * are usable right now.
- */
+/** Outbound reachability, measured from inside the worker. */
 async function probe(cfg) {
   let direct = { ok: false, error: "not attempted" };
   for (const target of PROBE_TARGETS) {
@@ -1386,12 +1537,7 @@ async function probe(cfg) {
   };
 }
 
-/**
- * What the AI path looks like right now, and which relay each well known host is
- * pinned to. This is what the bot's AI screen reads, and it is also the fastest
- * way for an operator to tell whether "ChatGPT does not open" is a relay problem
- * or something else entirely.
- */
+/** What the AI path looks like right now, and where each well known host is pinned. */
 async function aiReport(cfg) {
   const pool = cfg.aiProxies.length ? cfg.aiProxies : cfg.proxies;
   const relays = [];
@@ -1464,11 +1610,12 @@ function withTimeout(promise, ms) {
 
 function remark(cfg, endpoint, index, protocol) {
   const secure = isTls(endpoint.port, cfg);
-  const name = (protocol || "vless").toUpperCase();
+  const name = protocol === "ss" ? "SS" : (protocol || "vless").toUpperCase();
   let badge = secure ? "\u26a1" : "\ud83d\udfe1";
   if (endpoint.kind === "domain") badge = "\ud83c\udf00";
   if (endpoint.kind === "live") badge = "\ud83d\udd04";
   if (protocol === "trojan") badge = endpoint.kind === "domain" ? "\ud83c\udf00" : "\ud83c\udfaf";
+  if (protocol === "ss") badge = endpoint.kind === "domain" ? "\ud83c\udf00" : "\ud83d\udee1";
   const ping = endpoint.latency ? Math.round(Number(endpoint.latency)) + "ms" : "auto";
   const tail = secure ? "" : " | \ud83d\udd0c" + endpoint.port;
   const lock = secure && Number(endpoint.port) !== 443 ? " | \ud83d\udd12" + endpoint.port : "";
@@ -1526,11 +1673,7 @@ function buildLinks(cfg, endpoints) {
   return links;
 }
 
-/**
- * Trojan links, TLS endpoints only. On a plain port there is no TLS record to
- * hide the handshake inside, so a trojan config there is both broken and
- * pointless, and no amount of client-side coaxing changes that.
- */
+/** Trojan links, TLS endpoints only. */
 function buildTrojanLinks(cfg, endpoints) {
   if (!cfg.trojan) return [];
   const links = [];
@@ -1559,6 +1702,33 @@ function buildTrojanLinks(cfg, endpoints) {
         params.toString() +
         "#" +
         label
+    );
+  }
+  return links;
+}
+
+/**
+ * SIP002 Shadowsocks links with the websocket plugin, TLS endpoints only. Needs
+ * SS_PASSWORD: the worker only holds the derived key, and a link carries the
+ * password a client derives that key from.
+ */
+function buildSsLinks(cfg, endpoints) {
+  if (!cfg.ssActive || !cfg.ssPassword) return [];
+  const userinfo = btoa(cfg.ssMethod + ":" + cfg.ssPassword)
+    .replace(/\+/g, "-")
+    .replace(/\//g, "_")
+    .replace(/=+$/, "");
+  const plugin = encodeURIComponent(
+    "v2ray-plugin;mode=websocket;tls;host=" + cfg.host + ";path=" + cfg.ssPath + ";mux=0"
+  );
+  const links = [];
+  let index = 0;
+  for (const endpoint of endpoints) {
+    if (!isTls(endpoint.port, cfg)) continue;
+    index += 1;
+    const label = encodeURIComponent(remark(cfg, endpoint, index, "ss"));
+    links.push(
+      "ss://" + userinfo + "@" + endpoint.ip + ":" + endpoint.port + "?plugin=" + plugin + "#" + label
     );
   }
   return links;
@@ -1701,10 +1871,6 @@ function buildSingbox(cfg, endpoints) {
 
 /* --------------------------------------------------------------- responses */
 
-/**
- * Permissive CORS. The mini app lives on another origin and only ever reads
- * data that is already gated behind the UUID in the path.
- */
 function corsHeaders() {
   return {
     "access-control-allow-origin": "*",
