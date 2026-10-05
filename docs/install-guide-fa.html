@@ -1,0 +1,302 @@
+<!doctype html>
+<html lang="fa" dir="rtl">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>راهنمای نصب AutoVless از صفر تا صد</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link href="https://fonts.googleapis.com/css2?family=Vazirmatn:wght@400;600;800&family=JetBrains+Mono:wght@400;600&display=swap" rel="stylesheet">
+<style>
+:root{
+  --paper:oklch(97.5% .012 95);
+  --paper-2:oklch(94% .018 95);
+  --ink:oklch(24% .02 160);
+  --ink-2:oklch(45% .02 160);
+  --line:oklch(88% .02 120);
+  --green:oklch(44% .11 165);
+  --green-soft:oklch(92% .045 165);
+  --clay:oklch(60% .15 45);
+  --clay-soft:oklch(94% .04 55);
+  --code:oklch(22% .025 165);
+  --code-ink:oklch(93% .02 140);
+  --warn-soft:oklch(94% .05 85);
+  --ease:cubic-bezier(.16,1,.3,1);
+}
+*{box-sizing:border-box}
+html{scroll-behavior:smooth}
+body{margin:0;background:var(--paper);color:var(--ink);font-family:Vazirmatn,system-ui,sans-serif;font-size:17px;line-height:1.85}
+a{color:var(--green)}
+header{padding:72px 24px 48px;background:var(--green);color:oklch(97% .015 140)}
+header .wrap{max-width:1100px;margin:auto}
+.eyebrow{font-size:.8rem;letter-spacing:.08em;font-weight:600;opacity:.8}
+h1{font-size:clamp(2rem,5vw,3.4rem);line-height:1.25;margin:8px 0 16px;font-weight:800;text-wrap:balance}
+header p{max-width:60ch;font-size:1.15rem;opacity:.92;margin:0}
+.meta{display:flex;flex-wrap:wrap;gap:8px 24px;margin-top:28px;font-size:.9rem}
+.meta b{font-family:'JetBrains Mono',monospace;font-weight:600;direction:ltr;display:inline-block}
+.layout{max-width:1100px;margin:auto;display:grid;grid-template-columns:1fr;gap:48px;padding:48px 24px 120px}
+@media(min-width:960px){.layout{grid-template-columns:240px 1fr}}
+nav{font-size:.92rem}
+@media(min-width:960px){nav{position:sticky;top:24px;align-self:start}}
+nav ol{list-style:none;margin:0;padding:0;counter-reset:n}
+nav li{counter-increment:n}
+nav a{display:flex;gap:10px;padding:6px 10px;border-radius:8px;color:var(--ink-2);text-decoration:none;transition:background .2s var(--ease)}
+nav a::before{content:counter(n,persian);font-weight:800;color:var(--clay);min-width:1.4em}
+nav a:hover,nav a:focus-visible{background:var(--paper-2);color:var(--ink)}
+main{max-width:72ch;min-width:0}
+section{padding-top:24px;margin-bottom:56px;scroll-margin-top:16px}
+.step-no{display:inline-grid;place-items:center;width:44px;height:44px;border-radius:50%;background:var(--clay);color:var(--paper);font-weight:800;font-size:1.2rem}
+h2{font-size:1.6rem;margin:12px 0 12px;line-height:1.4;text-wrap:balance}
+h3{font-size:1.15rem;margin:28px 0 8px}
+p{margin:0 0 16px;text-wrap:pretty}
+ul,ol.plain{padding-inline-start:22px;margin:0 0 16px}
+li{margin-bottom:6px}
+code{font-family:'JetBrains Mono',monospace;font-size:.86em;background:var(--paper-2);padding:1px 6px;border-radius:5px;direction:ltr;unicode-bidi:embed}
+.cmd{position:relative;margin:12px 0 20px;direction:ltr;text-align:left}
+.cmd pre{margin:0;background:var(--code);color:var(--code-ink);padding:18px 20px;padding-right:92px;border-radius:12px;overflow-x:auto;font-family:'JetBrains Mono',monospace;font-size:.86rem;line-height:1.7}
+.cmd button{position:absolute;top:10px;right:10px;font:600 .8rem Vazirmatn,sans-serif;border:1px solid oklch(40% .03 165);background:oklch(30% .03 165);color:var(--code-ink);padding:6px 12px;border-radius:8px;cursor:pointer;min-height:32px;transition:background .15s var(--ease)}
+.cmd button:hover{background:oklch(36% .04 165)}
+.cmd button:focus-visible{outline:2px solid var(--clay);outline-offset:2px}
+.cmd button.done{background:var(--green);border-color:var(--green)}
+.note{background:var(--green-soft);padding:16px 20px;border-radius:12px;margin:16px 0}
+.warn{background:var(--warn-soft);padding:16px 20px;border-radius:12px;margin:16px 0}
+.danger{background:var(--clay-soft);padding:16px 20px;border-radius:12px;margin:16px 0}
+.note b:first-child,.warn b:first-child,.danger b:first-child{display:block;margin-bottom:4px}
+table{width:100%;border-collapse:collapse;font-size:.92rem;margin:12px 0 20px}
+th,td{text-align:right;padding:10px 12px;border-bottom:1px solid var(--line);vertical-align:top}
+th{font-weight:800;color:var(--ink-2);font-size:.82rem;letter-spacing:.02em}
+.flow{display:grid;grid-template-columns:repeat(auto-fit,minmax(150px,1fr));gap:2px;margin:20px 0;background:var(--line);border-radius:12px;overflow:hidden}
+.flow div{background:var(--paper);padding:14px;font-size:.88rem;line-height:1.6}
+.flow b{display:block;color:var(--green);font-size:.95rem}
+.flow .hot b{color:var(--clay)}
+footer{text-align:center;color:var(--ink-2);font-size:.85rem;padding:24px}
+@media(max-width:640px){body{font-size:16px}header{padding:48px 20px 36px}.layout{padding:32px 18px 80px}}
+</style>
+</head>
+<body>
+<header><div class="wrap">
+  <div class="eyebrow">AUTOVLESS · راهنمای مدیر</div>
+  <h1>نصب ربات و مینی‌اپ AutoVless روی اوبونتو، با IP ثابت برای ChatGPT و Gemini</h1>
+  <p>دستورها را به ترتیب کپی و اجرا کنید. هر مرحله یک تست دارد؛ تا تست سبز نشده، سراغ مرحله بعد نروید.</p>
+  <div class="meta"><span>دامنه مینی‌اپ: <b>prostoreshop.site</b></span><span>سیستم‌عامل: <b>Ubuntu 22.04 / 24.04</b></span><span>زمان تقریبی: ۴۰ دقیقه</span></div>
+</div></header>
+
+<div class="layout">
+<nav aria-label="فهرست"><ol>
+  <li><a href="#idea">ایده IP ثابت</a></li>
+  <li><a href="#need">پیش‌نیازها</a></li>
+  <li><a href="#ssh">اتصال و آماده‌سازی سرور</a></li>
+  <li><a href="#dns">تنظیم دامنه</a></li>
+  <li><a href="#fw">فایروال</a></li>
+  <li><a href="#bot">نصب ربات</a></li>
+  <li><a href="#app">HTTPS و مینی‌اپ</a></li>
+  <li><a href="#relay">رله IP ثابت هوش مصنوعی</a></li>
+  <li><a href="#start">اجرای نهایی</a></li>
+  <li><a href="#father">دکمه مینی‌اپ در BotFather</a></li>
+  <li><a href="#users">تحویل به کاربران</a></li>
+  <li><a href="#test">تست ChatGPT و Gemini</a></li>
+  <li><a href="#fix">عیب‌یابی</a></li>
+  <li><a href="#keep">آپدیت و بکاپ</a></li>
+</ol></nav>
+
+<main>
+
+<section id="idea">
+<span class="step-no">۱</span>
+<h2>ایده: چرا ارور منطقه می‌گیرید و چطور حل می‌شود</h2>
+<p>کانفیگ‌های VLESS این ربات روی Cloudflare Worker ساخته می‌شوند. مشکل این است که Worker نمی‌تواند مستقیم به سایت‌هایی که پشت Cloudflare هستند (مثل ChatGPT و Claude) وصل شود، و Gemini هم IP دیتاسنتر Cloudflare را که مدام عوض می‌شود مشکوک می‌داند و مدام لاگین می‌خواهد یا ارور منطقه می‌دهد.</p>
+<p>راه‌حل: سرور اوبونتوی خودتان (که خارج از ایران است) یک <b>رله خصوصی</b> می‌شود. Worker فقط ترافیک سایت‌های هوش مصنوعی را به این رله می‌فرستد و رله آن را با <b>IP ثابت سرور شما</b> به سایت تحویل می‌دهد. نتیجه: ChatGPT و Gemini همیشه یک IP آلمان یا هلند یا آمریکا می‌بینند، نه IP ایران و نه IP چرخشی.</p>
+<div class="flow">
+  <div><b>کاربر</b>v2rayNG / Hiddify</div>
+  <div><b>IP تمیز کلادفلر</b>ورودی کانفیگ</div>
+  <div><b>Worker کاربر</b>پنل VLESS</div>
+  <div class="hot"><b>رله شما :8443</b>فقط دامنه‌های AI</div>
+  <div><b>ChatGPT / Gemini</b>IP ثابت سرور شما را می‌بیند</div>
+</div>
+<p>بقیه سایت‌ها مثل قبل مستقیم از Cloudflare می‌روند، پس حجم سرور شما فقط صرف هوش مصنوعی می‌شود. رله هم فقط نام دامنه‌های هوش مصنوعی را عبور می‌دهد، پس پروکسی باز و قابل سوءاستفاده نیست.</p>
+</section>
+
+<section id="need">
+<span class="step-no">۲</span>
+<h2>پیش‌نیازها</h2>
+<table>
+<tr><th>مورد</th><th>توضیح</th></tr>
+<tr><td>سرور مجازی</td><td>Ubuntu 22.04 یا 24.04، حداقل ۱ هسته و ۱ گیگ رم. <b>حتماً خارج از ایران</b> (آلمان، هلند، فنلاند یا آمریکا). کشور سرور همان کشوری است که ChatGPT و Gemini می‌بینند.</td></tr>
+<tr><td>دامنه</td><td><code>prostoreshop.site</code> با دسترسی به پنل DNS (ترجیحاً Cloudflare).</td></tr>
+<tr><td>توکن ربات</td><td>از <code>@BotFather</code> با دستور <code>/newbot</code>.</td></tr>
+<tr><td>آیدی عددی شما</td><td>به <code>@userinfobot</code> پیام بدهید، عدد Id را بردارید.</td></tr>
+<tr><td>برنامه SSH</td><td>ویندوز: Termius یا PowerShell. اندروید: Termius. مک: Terminal.</td></tr>
+</table>
+<div class="warn"><b>درباره IP سرور</b>اگر IP سرور قبلاً در لیست سیاه گوگل باشد، Gemini باز هم سخت‌گیری می‌کند. بعد از مرحله ۸ تست را انجام دهید؛ اگر loc درست بود ولی Gemini لاگین نمی‌گرفت، از ارائه‌دهنده IP جدید بخواهید.</div>
+</section>
+
+<section id="ssh">
+<span class="step-no">۳</span>
+<h2>اتصال و آماده‌سازی سرور</h2>
+<p>به جای <code>SERVER_IP</code> آی‌پی سرورتان را بگذارید:</p>
+<div class="cmd"><pre>ssh root@SERVER_IP</pre></div>
+<p>به‌روزرسانی سیستم و تنظیم ساعت:</p>
+<div class="cmd"><pre>apt update && apt -y upgrade
+apt -y install curl git nano ufw dnsutils
+timedatectl set-timezone Asia/Tehran</pre></div>
+<p>اگر پیام ریستارت داد، <code>reboot</code> بزنید و دوباره وصل شوید.</p>
+</section>
+
+<section id="dns">
+<span class="step-no">۴</span>
+<h2>تنظیم دامنه prostoreshop.site</h2>
+<ol class="plain">
+<li>وارد پنل DNS دامنه شوید (Cloudflare → دامنه → DNS → Records).</li>
+<li>یک رکورد <b>A</b> بسازید: Name = <code>@</code>، Content = آی‌پی سرور.</li>
+<li>در Cloudflare ابر را <b>خاکستری (DNS only)</b> کنید. برای گرفتن گواهی SSL لازم است.</li>
+</ol>
+<p>تست (باید آی‌پی سرور را برگرداند):</p>
+<div class="cmd"><pre>dig +short prostoreshop.site</pre></div>
+<div class="note"><b>بعداً اختیاری</b>اگر دامنه از داخل ایران باز نشد، بعد از گرفتن گواهی (مرحله ۷) ابر را نارنجی کنید و در SSL/TLS حالت <b>Full (strict)</b> را بگذارید.</div>
+</section>
+
+<section id="fw">
+<span class="step-no">۵</span>
+<h2>فایروال</h2>
+<p>فقط پورت‌های لازم باز می‌مانند. پورت 8088 (API داخلی ربات) عمداً بسته است.</p>
+<div class="cmd"><pre>ufw allow OpenSSH
+ufw allow 80/tcp
+ufw allow 443/tcp
+ufw allow 8443/tcp
+ufw --force enable
+ufw status</pre></div>
+<div class="danger"><b>اول OpenSSH</b>اگر پورت SSH شما غیر از 22 است، قبل از enable آن را هم باز کنید (<code>ufw allow 2222/tcp</code>) وگرنه دسترسی‌تان قطع می‌شود.</div>
+</section>
+
+<section id="bot">
+<span class="step-no">۶</span>
+<h2>نصب ربات AutoVless</h2>
+<p>اسکریپت نصب، داکر را نصب می‌کند، پروژه را در <code>/opt/autovless</code> می‌گذارد و ربات را بالا می‌آورد:</p>
+<div class="cmd"><pre>curl -fsSL https://raw.githubusercontent.com/arjeyproject/AutoVless/main/install.sh -o install.sh
+sudo bash install.sh</pre></div>
+<p>به سؤال‌ها این‌طور جواب دهید:</p>
+<table>
+<tr><th>سؤال</th><th>جواب</th></tr>
+<tr><td>Bot token from @BotFather</td><td>توکن ربات</td></tr>
+<tr><td>Your numeric Telegram id</td><td>آیدی عددی شما (چند ادمین: با کاما)</td></tr>
+<tr><td>Support link</td><td>لینک پشتیبانی خودتان، یا Enter</td></tr>
+<tr><td>Your domain for the mini app</td><td><code>prostoreshop.site</code></td></tr>
+</table>
+<p>تست: در تلگرام به ربات <code>/start</code> بدهید. یک پیام گزارش «is up» هم برای ادمین می‌آید. لاگ زنده:</p>
+<div class="cmd"><pre>cd /opt/autovless && docker compose logs -f --tail 50</pre></div>
+<p>با <code>Ctrl+C</code> از لاگ خارج شوید (ربات خاموش نمی‌شود).</p>
+</section>
+
+<section id="app">
+<span class="step-no">۷</span>
+<h2>HTTPS و فعال‌سازی مینی‌اپ</h2>
+<p>تلگرام مینی‌اپ را فقط روی HTTPS باز می‌کند. این اسکریپت Caddy را نصب می‌کند، گواهی رایگان می‌گیرد و دامنه را به ربات وصل می‌کند. مقادیر <code>WEBAPP_URL</code>، <code>PUBLIC_URL</code> و <code>API_HOST=127.0.0.1</code> را هم خودش در <code>.env</code> می‌نویسد:</p>
+<div class="cmd"><pre>cd /opt/autovless
+sudo bash scripts/setup-miniapp.sh prostoreshop.site
+docker compose up -d --build</pre></div>
+<p>تست (باید <code>"ok": true</code> برگرداند):</p>
+<div class="cmd"><pre>curl https://prostoreshop.site/api/health</pre></div>
+<p>در مرورگر هم <code>https://prostoreshop.site</code> را باز کنید؛ صفحه مینی‌اپ باید با قفل سبز بیاید (بیرون از تلگرام پیام احراز هویت می‌دهد که طبیعی است).</p>
+</section>
+
+<section id="relay">
+<span class="step-no">۸</span>
+<h2>رله IP ثابت برای ChatGPT و Gemini</h2>
+<p>این مهم‌ترین مرحله است. اسکریپت یک رله SNI روی پورت 8443 می‌سازد که فقط دامنه‌های هوش مصنوعی را عبور می‌دهد، و <code>AI_PROXY_IP=IP_سرور:8443</code> را در <code>.env</code> می‌گذارد:</p>
+<div class="cmd"><pre>cd /opt/autovless
+sudo bash scripts/setup-ai-relay.sh 8443</pre></div>
+<p>آخر اسکریپت یک تست خودکار اجرا می‌شود و باید چیزی شبیه این ببینید:</p>
+<div class="cmd"><pre>ip=203.0.113.25
+loc=DE</pre></div>
+<p><code>ip</code> باید دقیقاً IP سرور شما باشد و <code>loc</code> کشور سرور. اگر <code>loc=IR</code> بود یعنی سرور داخل ایران است و این روش برایش کار نمی‌کند.</p>
+<div class="note"><b>چرا AI_PROXY_IP؟</b>ربات به‌صورت پیش‌فرض از رله‌های عمومی استفاده می‌کند که ممکن است بمیرند یا کشورشان عوض شود. با <code>AI_PROXY_IP</code> همه کاربران برای همه سایت‌های هوش مصنوعی (و مسیر لاگین گوگل) از یک IP ثابت و مطمئن خارج می‌شوند و این تنظیم بر همه چیز اولویت دارد.</div>
+<p>بررسی دستی مقدارها:</p>
+<div class="cmd"><pre>grep -E '^(AI_ROUTE|AI_PROXY_IP|WEBAPP_URL|PUBLIC_URL|API_HOST)=' /opt/autovless/.env</pre></div>
+</section>
+
+<section id="start">
+<span class="step-no">۹</span>
+<h2>اجرای نهایی</h2>
+<div class="cmd"><pre>cd /opt/autovless
+docker compose up -d --build
+docker compose ps
+docker compose logs --tail 40</pre></div>
+<p>در لاگ باید <code>api listening on 127.0.0.1:8088</code> و <code>is polling</code> ببینید. پیام وضعیت ادمین در تلگرام هم خط <code>mini app: https://prostoreshop.site</code> را نشان می‌دهد.</p>
+</section>
+
+<section id="father">
+<span class="step-no">۱۰</span>
+<h2>دکمه مینی‌اپ در BotFather</h2>
+<ol class="plain">
+<li>به <code>@BotFather</code> بروید و <code>/mybots</code> را بزنید، ربات را انتخاب کنید.</li>
+<li><b>Bot Settings → Menu Button → Configure menu button</b></li>
+<li>آدرس: <code>https://prostoreshop.site</code> و عنوان: <code>پنل من</code></li>
+<li>اختیاری: <code>/newapp</code> برای ساخت لینک مستقیم <code>t.me/YourBot/app</code> با همان آدرس.</li>
+</ol>
+<p>تست: در ربات <code>/app</code> بزنید یا دکمه منو را لمس کنید؛ مینی‌اپ داخل تلگرام باز می‌شود و نام شما را نشان می‌دهد.</p>
+</section>
+
+<section id="users">
+<span class="step-no">۱۱</span>
+<h2>تحویل به کاربران</h2>
+<ol class="plain">
+<li>کاربر در ربات یا مینی‌اپ گزینه ساخت پنل را می‌زند و توکن API کلادفلر خودش را می‌دهد (Cloudflare → My Profile → API Tokens → قالب <b>Edit Cloudflare Workers</b>).</li>
+<li>ربات Worker را می‌سازد و لینک اشتراک روی <code>https://prostoreshop.site/sub/...</code> می‌دهد (این دامنه برخلاف workers.dev در ایران فیلتر DNS نیست).</li>
+<li>کاربر لینک را در v2rayNG، Hiddify، Streisand یا NekoBox وارد می‌کند و Update می‌زند.</li>
+</ol>
+<div class="warn"><b>پنل‌های قدیمی</b>پنل‌هایی که قبل از تنظیم رله ساخته شده‌اند هنوز Worker قدیمی دارند. در ربات روی هر پنل دکمه «اعمال IP تازه» را بزنید یا صبر کنید تا اتوپایلوت خودش آپدیت کند. لینک اشتراک عوض نمی‌شود.</div>
+</section>
+
+<section id="test">
+<span class="step-no">۱۲</span>
+<h2>تست ChatGPT و Gemini از گوشی کاربر</h2>
+<p>با کانفیگ وصل شوید و در مرورگر این آدرس را باز کنید:</p>
+<div class="cmd"><pre>https://chatgpt.com/cdn-cgi/trace</pre></div>
+<p>خط <code>ip=</code> باید IP سرور شما و <code>loc=</code> کشور سرور باشد. چند بار رفرش کنید: IP <b>نباید</b> عوض شود. بعد <code>gemini.google.com</code> را باز و لاگین کنید.</p>
+<div class="note"><b>نکته Gemini</b>اگر قبلاً با IP ایران وارد اکانت گوگل شده‌اید، یک بار از اکانت خارج شوید، کش مرورگر را پاک کنید و دوباره وارد شوید. حالت ناشناس (Incognito) سریع‌ترین تست است.</div>
+</section>
+
+<section id="fix">
+<span class="step-no">۱۳</span>
+<h2>عیب‌یابی</h2>
+<table>
+<tr><th>مشکل</th><th>راه‌حل</th></tr>
+<tr><td>ربات جواب نمی‌دهد</td><td><code>docker compose logs --tail 100</code>. خطای BOT_TOKEN یا ADMIN_IDS یعنی <code>.env</code> را با <code>nano /opt/autovless/.env</code> اصلاح و <code>docker compose up -d</code> کنید.</td></tr>
+<tr><td>Caddy گواهی نمی‌گیرد</td><td>رکورد A درست نیست یا ابر نارنجی است. <code>journalctl -u caddy -n 50</code> را ببینید، DNS را اصلاح و <code>systemctl restart caddy</code>.</td></tr>
+<tr><td>مینی‌اپ سفید می‌ماند</td><td><code>curl https://prostoreshop.site/api/health</code>. اگر 502 داد ربات بالا نیست؛ <code>docker compose ps</code>.</td></tr>
+<tr><td>ChatGPT باز نمی‌شود</td><td>تست رله: <code>curl --connect-to chatgpt.com:443:127.0.0.1:8443 https://chatgpt.com/cdn-cgi/trace</code>. اگر جواب داد، پورت 8443 را در فایروال ارائه‌دهنده سرور (پنل دیتاسنتر) هم باز کنید و پنل را «اعمال IP تازه» کنید.</td></tr>
+<tr><td>Gemini ارور منطقه می‌دهد</td><td>trace را از گوشی چک کنید. اگر loc درست است ولی ارور هست، IP سرور نزد گوگل بدنام است؛ IP یا لوکیشن سرور را عوض کنید و اسکریپت مرحله ۸ را دوباره اجرا کنید.</td></tr>
+<tr><td>nginx بالا نمی‌آید</td><td><code>nginx -t</code> و <code>ss -ltnp | grep -E ':80|:443|:8443'</code>. نباید nginx روی 80 یا 443 باشد؛ آن پورت‌ها مال Caddy است.</td></tr>
+</table>
+</section>
+
+<section id="keep">
+<span class="step-no">۱۴</span>
+<h2>آپدیت و بکاپ</h2>
+<h3>آپدیت ربات</h3>
+<div class="cmd"><pre>cd /opt/autovless && git pull && docker compose up -d --build</pre></div>
+<h3>بکاپ دیتابیس و تنظیمات</h3>
+<div class="cmd"><pre>cd /opt/autovless && tar czf ~/autovless-backup-$(date +%F).tar.gz .env data</pre></div>
+<p>فایل بکاپ را با <code>scp</code> یا SFTP به کامپیوتر خودتان منتقل کنید. فایل <code>.env</code> و پوشه <code>data</code> شامل توکن‌ها و کلید رمزنگاری است؛ آن را جایی عمومی نگذارید.</p>
+</section>
+
+</main>
+</div>
+<footer>AutoVless · prostoreshop.site</footer>
+
+<script>
+document.querySelectorAll('.cmd').forEach(box=>{
+  const btn=document.createElement('button');
+  btn.type='button';btn.textContent='کپی';
+  btn.addEventListener('click',async()=>{
+    const text=box.querySelector('pre').innerText;
+    try{await navigator.clipboard.writeText(text);}catch(e){
+      const t=document.createElement('textarea');t.value=text;document.body.appendChild(t);t.select();document.execCommand('copy');t.remove();
+    }
+    btn.textContent='کپی شد';btn.classList.add('done');
+    setTimeout(()=>{btn.textContent='کپی';btn.classList.remove('done');},1600);
+  });
+  box.appendChild(btn);
+});
+</script>
+</body>
+</html>
