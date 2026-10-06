@@ -1,8 +1,8 @@
 """Payload and URL builder for the Telegram Mini App served from webapp/.
 
-The mini app is a static page on GitHub Pages. It cannot read the database, so
-everything it needs is packed into one base64url blob and handed over in the
-query string when the Web App button is built.
+The mini app asks the bot's own API for everything (``POST /api/state`` with the
+signed Telegram initData), so the Web App button only needs a clean URL.
+``build_payload`` is kept for anything that still wants a one-shot snapshot.
 
 Every engine read here is best effort on purpose: a missing scanner, a stopped
 autopilot or a WARP module that moved must never stop the mini app from opening.
@@ -15,8 +15,9 @@ import importlib
 import inspect
 import json
 import logging
+import time
 from typing import Any
-from urllib.parse import urlencode, urlsplit, urlunsplit
+from urllib.parse import parse_qsl, urlencode, urlsplit, urlunsplit
 
 from . import db, vless
 from .config import settings
@@ -199,7 +200,15 @@ def encode_payload(payload: dict) -> str:
 
 
 async def build_webapp_url(tg_id: int, lang: str) -> str:
-    """Mini app URL with the payload in the query string.
+    """The mini app URL for a Web App button.
+
+    Two bugs lived here. The whole state was packed into ``?payload=`` - a URL
+    several kilobytes long that the app never even reads (it asks ``/api/state``
+    with the signed initData instead), and that Telegram can refuse for a button.
+    And the query string was *replaced*, so an operator's ``?api=...`` (needed when
+    the static files sit on GitHub Pages) was silently thrown away and the app
+    landed on "API not configured". The query is now merged, the payload is gone,
+    and a short ``lang`` / ``v`` pair is all that rides along.
 
     The fragment is left alone: Telegram writes its own tgWebAppData there.
     """
@@ -207,10 +216,13 @@ async def build_webapp_url(tg_id: int, lang: str) -> str:
     if not base:
         raise RuntimeError("WEBAPP_URL is not configured")
 
-    payload = await build_payload(tg_id, lang)
-    token = encode_payload(payload)
-
-    parts = list(urlsplit(base if base.endswith("/") else base + "/"))
-    parts[3] = urlencode({"payload": token})
+    parts = list(urlsplit(base))
+    if not parts[2]:
+        parts[2] = "/"
+    query = dict(parse_qsl(parts[3], keep_blank_values=True))
+    query.pop("payload", None)
+    query["lang"] = "en" if str(lang).lower() == "en" else "fa"
+    query["v"] = str(int(time.time()) // 3600)
+    parts[3] = urlencode(query)
     parts[4] = ""
     return urlunsplit(parts)
