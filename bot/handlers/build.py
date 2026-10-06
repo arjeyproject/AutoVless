@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
-from .. import db, deploy, keyboards, operators, screens
+from .. import db, deploy, edge, keyboards, operators, screens
 from ..cloudflare import token_looks_valid
 from ..config import settings
 from ..i18n import num, t
@@ -23,6 +23,36 @@ _in_flight: set[int] = set()
 
 class BuildFlow(StatesGroup):
     token = State()
+
+
+def _domain_note(lang: str, host: str) -> str:
+    """Say plainly which front door the configs use, and what to do about it."""
+    if not edge.is_dev_host(host):
+        if lang == "en":
+            return (
+                "\n\n\U0001f6e1 Your configs use your own domain "
+                f"<code>{esc(host)}</code> instead of workers.dev, which is what "
+                "lets them get past filtering in Iran."
+            )
+        return (
+            "\n\n\U0001f6e1 کانفیگ‌ها به جای workers.dev روی دامنه‌ی خودت "
+            f"<code>{esc(host)}</code> ساخته شدند؛ همین باعث می‌شود از فیلترینگ ایران رد شوند."
+        )
+    if lang == "en":
+        return (
+            "\n\n\u26a0\ufe0f No domain was found on your Cloudflare account, so these "
+            "configs still use workers.dev, which is filtered on most Iranian "
+            "networks. Add any domain (a free one works) to Cloudflare, create a new "
+            "token with the button (it now includes Workers Routes: Edit), then "
+            "press Rebuild. The bot moves the panel onto the domain by itself."
+        )
+    return (
+        "\n\n\u26a0\ufe0f روی اکانت کلادفلرت دامنه‌ای پیدا نشد و کانفیگ‌ها هنوز روی "
+        "workers.dev هستند که روی بیشتر اینترنت‌های ایران فیلتر است. یک دامنه (حتی "
+        "رایگان) به کلادفلر اضافه کن، با دکمه‌ی ساخت توکن یک توکن جدید بساز (حالا "
+        "دسترسی Workers Routes: Edit هم دارد) و «بازسازی پنل» را بزن؛ ربات خودش پنل "
+        "را روی دامنه منتقل می‌کند."
+    )
 
 
 @router.callback_query(F.data == "nav:build")
@@ -143,6 +173,7 @@ async def run_build(
     )
     if not panel.healthy:
         body = f"{body}\n\n{t(lang, 'health_warn')}"
+    body += _domain_note(lang, panel.host)
 
     await progress_message.edit_text(body, reply_markup=keyboards.panel_menu(lang))
 

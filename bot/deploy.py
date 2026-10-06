@@ -5,31 +5,31 @@ The whole build is six steps, each reported back to the user:
   1. verify the token and resolve the account
   2. make sure a workers.dev subdomain exists
   3. pick clean entry points and relays
-  4. upload the worker and expose it on workers.dev
+  4. upload the worker, expose it, and attach the user's own domain
   5. prove the tunnel is alive before calling it ready
   6. accept only the endpoints that answer a real WebSocket upgrade
 
-Step 6 is the gate that matters. A panel used to ship whatever the pool offered;
-now every address in a config has completed the client's own handshake against
-this panel's own hostname, on its own port and path. Anything that fails is
-demoted in the pool, replaced, and the worker is re-uploaded with the healed
-list, so a user is never handed a config that cannot ping.
+The front door
+--------------
+The hostname a panel ships with is the single biggest factor in whether its
+configs ping in Iran. ``workers.dev`` as SNI is filtered there, so a panel whose
+configs carry it is dead on arrival no matter how clean the entry IPs are, and
+the acceptance check below cannot see that because it runs from this server.
+So when the user's Cloudflare account holds any active zone, the worker is
+attached to ``<label>.<zone>`` (see ``bot.edge``) and that is the hostname every
+config carries. workers.dev is kept only as the fallback for an account with no
+domain, or a domain that never answers.
 
-``refresh`` does steps 3 to 6 only. It keeps the script name and the panel uuid,
-so the subscription link never changes while the addresses under it do.
+``refresh`` does steps 3 to 6 only, and also moves a workers.dev panel onto a
+domain the moment one shows up on the account. Same script name, same uuid, so
+the gateway subscription link never changes while the hostname and addresses
+under it do.
 
 One binding here is deliberately *not* chosen for speed. ``AI_PROXY_IP`` is the
 relay every AI destination exits through, and the entire point of it is that the
-address stops moving: a Cloudflare datacentre that changes on every refresh is
-what makes ChatGPT and Gemini log a user out and start demanding verification.
-That choice now lives in ``bot.aipin``, which pins one geolocated relay per panel
-and stores it, so the exit address survives a pool reshuffle instead of following
-it. Ordinary traffic keeps the fastest-first chain, where a reshuffle costs
-nothing.
+address stops moving. That choice lives in ``bot.aipin``.
 
-The Shadowsocks bindings travel with every upload too. They used to be missing
-from this function entirely, which is why every ``ss://`` link the bot handed
-out timed out: the worker had no key to open the stream with.
+The Shadowsocks bindings travel with every upload too.
 """
 
 from __future__ import annotations
@@ -43,7 +43,7 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 
-from . import aipin, db, proxies, shadowsocks, vless
+from . import aipin, db, edge, proxies, shadowsocks, vless
 from .cloudflare import CloudflareClient, CloudflareError, script_name
 from .config import settings
 from .probe import measure
@@ -64,8 +64,6 @@ MARK_ACTIVE = "\u23f3"
 MARK_IDLE = "\u25ab\ufe0f"
 
 # Acceptance is deliberately stricter than the sweep: three tries, two hits.
-# One blip must not drop a good address, and one lucky answer must not promote a
-# bad one.
 ACCEPT_ROUNDS = 3
 ACCEPT_REQUIRED = 2
 
@@ -94,6 +92,7 @@ class Panel:
     healthy: bool = False
     probe: dict = field(default_factory=dict)
     rejected: int = 0
+    custom_domain: bool = False
 
 
 def render_steps(lang: str, index: int, translate) -> str:
@@ -139,12 +138,7 @@ async def _select_endpoints(force_scan: bool) -> list[dict]:
 
 
 async def _select_relays() -> list[str]:
-    """Relays let the worker reach Cloudflare-fronted destinations.
-
-    The worker walks this list in order, so one dead relay never takes the panel
-    down with it. Scanned relays lead, long-lived seeds sit underneath as a
-    floor, and the chain is always at least two deep.
-    """
+    """Relays let the worker reach Cloudflare-fronted destinations."""
     rows = await proxy_scanner.pick(settings.proxy_per_panel)
     if not rows:
         await proxy_scanner.scan_once()
@@ -169,13 +163,11 @@ def _bindings(
     relays: list[str],
     ai_relays: Optional[list[str]] = None,
 ) -> dict[str, str]:
-    """Plain text vars handed to the worker. Shared by build and refresh so the
-    two paths can never drift apart."""
+    """Plain text vars handed to the worker. Shared by build and refresh."""
     return {
         "UUID": uuid,
         "PROXY_IP": ",".join(relays),
         "AI_ROUTE": "true" if settings.ai_route else "false",
-        # One relay, on purpose. See bot/aipin.py.
         "AI_PROXY_IP": ",".join(ai_relays or []),
         "AI_DOMAINS": ",".join(aipin.ai_domains()),
         "SUB_HOST": host,
@@ -202,12 +194,7 @@ def _bindings(
 
 
 async def _accept(host: str, endpoints: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Run the client's own handshake against this panel for every endpoint.
-
-    Survivors come back with the latency the client will actually see, measured
-    end to end through the worker, which is also what ends up printed in the
-    config name.
-    """
+    """Run the client's own handshake against this panel for every endpoint."""
     keep: list[dict] = []
     dead: list[dict] = []
 
@@ -242,13 +229,7 @@ async def _accept(host: str, endpoints: list[dict]) -> tuple[list[dict], list[di
 
 
 async def _ship(host: str, endpoints: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Accept, then heal: replace what failed with something that passes.
-
-    Replacements are drawn from the same group as the endpoint they stand in
-    for, so a TLS slot never quietly becomes a plain one. If the pool has
-    nothing left that works, the panel ships short on purpose. Four configs that
-    ping beat nine that do not.
-    """
+    """Accept, then heal: replace what failed with something that passes."""
     keep, dead = await _accept(host, endpoints)
     if not dead:
         return keep, []
@@ -309,36 +290,34 @@ async def _ship(host: str, endpoints: list[dict]) -> tuple[list[dict], list[dict
 # --------------------------------------------------------------------- #
 
 
-async def _health(host: str, uuid: str, attempts: Optional[int] = None) -> tuple[bool, dict]:
-    """Wait for the hostname to publish, then prove outbound traffic works."""
-    health_url = f"https://{host}/{uuid}/health"
-    probe_url = f"https://{host}/{uuid}/probe"
+async def _published(host: str, uuid: str, attempts: Optional[int] = None) -> bool:
+    """Has this hostname started answering for the panel yet?"""
+    url = f"https://{host}/{uuid}/health"
     tries = attempts or settings.health_attempts
-
-    async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
-        live = False
+    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
         for attempt in range(tries):
             try:
-                response = await client.get(health_url)
+                response = await client.get(url)
                 if response.status_code == 200 and response.json().get("ok"):
-                    live = True
-                    break
+                    return True
             except Exception:  # noqa: BLE001
                 pass
             await asyncio.sleep(min(2 + attempt * 2, 8))
+    return False
 
-        if not live:
-            return False, {}
 
-        try:
-            response = await client.get(probe_url)
+async def _health(host: str, uuid: str, attempts: Optional[int] = None) -> tuple[bool, dict]:
+    """Wait for the hostname to publish, then prove outbound traffic works."""
+    if not await _published(host, uuid, attempts):
+        return False, {}
+
+    try:
+        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
+            response = await client.get(f"https://{host}/{uuid}/probe")
             report = response.json() if response.status_code == 200 else {}
-        except Exception:  # noqa: BLE001
-            report = {}
+    except Exception:  # noqa: BLE001
+        report = {}
 
-    # A panel is healthy when the worker can open an outbound socket at all.
-    # Relays are a bonus path, not the gate: plenty of destinations are reached
-    # directly, and demanding a live relay used to mark working panels as dead.
     return bool(report.get("ok")), report
 
 
@@ -361,7 +340,6 @@ async def _remember_reference(host: str) -> None:
 
 
 async def _record_pin(uuid: str, relays: list[str], country: str) -> None:
-    """Keep the panel row in step with the pin, for the admin screens."""
     if not relays:
         return
     try:
@@ -371,6 +349,30 @@ async def _record_pin(uuid: str, relays: list[str], country: str) -> None:
         )
     except Exception:  # noqa: BLE001
         log.debug("could not record the ai pin on the panel row", exc_info=True)
+
+
+async def _record_host(uuid: str, host: str) -> None:
+    """The panel moved front doors: every screen and the gateway follow the row."""
+    try:
+        await db.execute("UPDATE panels SET host = ? WHERE uuid = ?", (host, uuid))
+    except Exception:  # noqa: BLE001
+        log.warning("could not record the new host %s for %s", host, uuid, exc_info=True)
+
+
+async def _move_to_domain(token: str, account_id: str, script: str, uuid: str) -> str:
+    """Attach a custom domain to a live workers.dev panel. ``""`` if none."""
+    try:
+        async with CloudflareClient(token) as cf:
+            hostname = await edge.attach(cf, account_id, script)
+    except CloudflareError as error:
+        log.info("custom domain move skipped for %s: %s", script, error.message)
+        return ""
+    if not hostname:
+        return ""
+    if not await _published(hostname, uuid, attempts=6):
+        log.warning("custom domain %s attached but not answering yet", hostname)
+        return ""
+    return hostname
 
 
 # --------------------------------------------------------------------- #
@@ -394,6 +396,7 @@ async def build(
     started = time.perf_counter()
     reuse = reuse or {}
     code = _read_worker()
+    custom = ""
 
     await _announce(progress, 0)
     try:
@@ -415,7 +418,7 @@ async def build(
 
             script = reuse.get("script_name") or script_name()
             panel_uuid = reuse.get("uuid") or vless.new_uuid()
-            host = f"{script}.{subdomain}.workers.dev"
+            dev_host = f"{script}.{subdomain}.workers.dev"
             ai_relays, ai_country = await aipin.choose(relays, panel_uuid)
 
             await _announce(progress, 3)
@@ -423,13 +426,22 @@ async def build(
                 account_id,
                 script,
                 code,
-                _bindings(panel_uuid, host, endpoints, relays, ai_relays),
+                _bindings(panel_uuid, dev_host, endpoints, relays, ai_relays),
             )
             await cf.enable_workers_dev(account_id, script)
+            # The script has to exist before a domain can point at it.
+            custom = await edge.attach(cf, account_id, script)
     except CloudflareError as error:
         raise DeployError(error.message) from error
 
     await _announce(progress, 4)
+    host = dev_host
+    if custom:
+        if await _published(custom, panel_uuid):
+            host = custom
+        else:
+            log.warning("custom domain %s never answered, falling back to %s", custom, dev_host)
+
     healthy, report = await _health(host, panel_uuid)
     if report:
         await _demote_dead_relays(report)
@@ -437,9 +449,9 @@ async def build(
     endpoints, rejected = await _ship(host, endpoints)
     if endpoints:
         await _remember_reference(host)
-    if rejected:
-        # The worker serves its own subscription from ENDPOINTS, so the healed
-        # list has to go back up or clients would keep pulling the dead rows.
+    if rejected or host != dev_host:
+        # The worker serves its own subscription from ENDPOINTS and SUB_HOST, so
+        # the healed list and the final hostname have to go back up.
         try:
             async with CloudflareClient(token) as cf:
                 await cf.upload_script(
@@ -449,13 +461,14 @@ async def build(
                     _bindings(panel_uuid, host, endpoints, relays, ai_relays),
                 )
         except CloudflareError as error:
-            log.warning("could not re-upload the healed endpoint list: %s", error.message)
+            log.warning("could not re-upload the final bindings: %s", error.message)
 
     await _record_pin(panel_uuid, ai_relays, ai_country)
     build_ms = int((time.perf_counter() - started) * 1000)
     log.info(
-        "panel built host=%s endpoints=%s rejected=%s relays=%s ai=%s(%s) healthy=%s in %sms",
+        "panel built host=%s custom=%s endpoints=%s rejected=%s relays=%s ai=%s(%s) healthy=%s in %sms",
         host,
+        host != dev_host,
         len(endpoints),
         len(rejected),
         len(relays),
@@ -478,21 +491,15 @@ async def build(
         healthy=healthy,
         probe=report,
         rejected=len(rejected),
+        custom_domain=host != dev_host,
     )
 
 
 async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     """Re-point an existing panel at fresh entry addresses.
 
-    Same account, same script, same uuid, same subscription URL: only the
-    endpoint list and the relay chain change. This is what lets clean IPs be
-    applied to every live config without anyone pressing rebuild - and, since
-    the bundle is re-uploaded here too, what brings every older panel up to the
-    current worker (Shadowsocks included) without the user doing anything.
-
-    The AI pin is stored per uuid, and the uuid does not change here, so a
-    refresh keeps the same exit address for AI traffic even as the ordinary chain
-    is reshuffled by latency underneath it.
+    Same account, same script, same uuid: only the endpoint list, the relay
+    chain and - once, if the account has a domain - the front door change.
     """
     token = panel.get("token")
     if not token:
@@ -500,27 +507,35 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
 
     started = time.perf_counter()
     code = _read_worker()
-    candidates = await _select_endpoints(force_scan)
-    relays = await _select_relays()
+    account_id = str(panel["account_id"])
+    script = str(panel["script_name"])
     host = str(panel["host"])
     panel_uuid = str(panel["uuid"])
+
+    if edge.enabled() and edge.is_dev_host(host):
+        moved = await _move_to_domain(str(token), account_id, script, panel_uuid)
+        if moved:
+            log.info("panel %s moved from %s to %s", panel_uuid, host, moved)
+            host = moved
+            await _record_host(panel_uuid, host)
+
+    candidates = await _select_endpoints(force_scan)
+    relays = await _select_relays()
     ai_relays, ai_country = await aipin.choose(relays, panel_uuid)
 
-    # The panel is already live, so acceptance can run before the upload here:
-    # the addresses are tested against the hostname that is serving right now.
     endpoints, rejected = await _ship(host, candidates)
     if not endpoints:
         raise DeployError("no endpoint could complete a websocket upgrade")
 
     try:
-        async with CloudflareClient(token) as cf:
+        async with CloudflareClient(str(token)) as cf:
             await cf.upload_script(
-                str(panel["account_id"]),
-                str(panel["script_name"]),
+                account_id,
+                script,
                 code,
                 _bindings(panel_uuid, host, endpoints, relays, ai_relays),
             )
-            await cf.enable_workers_dev(str(panel["account_id"]), str(panel["script_name"]))
+            await cf.enable_workers_dev(account_id, script)
     except CloudflareError as error:
         raise DeployError(error.message) from error
 
@@ -532,8 +547,8 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     await _record_pin(panel_uuid, ai_relays, ai_country)
 
     return Panel(
-        account_id=str(panel["account_id"]),
-        script=str(panel["script_name"]),
+        account_id=account_id,
+        script=script,
         host=host,
         uuid=panel_uuid,
         endpoints=endpoints,
@@ -544,6 +559,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
         healthy=healthy,
         probe=report,
         rejected=len(rejected),
+        custom_domain=not edge.is_dev_host(host),
     )
 
 

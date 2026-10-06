@@ -17,6 +17,8 @@ API = "https://api.cloudflare.com/client/v4"
 REQUIRED_HINTS = (
     "Workers Scripts: Edit",
     "Account Settings: Read",
+    "Zone: Read",
+    "Workers Routes: Edit",
 )
 
 
@@ -187,6 +189,46 @@ class CloudflareClient:
         if subdomain:
             return subdomain
         return await self.claim_subdomain(account_id)
+
+    # ------------------------------------------------------------------ #
+    # zones and custom domains
+    # ------------------------------------------------------------------ #
+
+    async def list_zones(self, account_id: str) -> list[dict]:
+        """Zones this token can see on the account. Empty on a missing permission."""
+        try:
+            result = await self._call(
+                "GET",
+                "/zones",
+                params={"account.id": account_id, "per_page": 50},
+            )
+        except CloudflareError as exc:
+            if exc.status in (401, 403, 404):
+                return []
+            raise
+        return [zone for zone in (result or []) if isinstance(zone, dict)]
+
+    async def attach_domain(
+        self,
+        account_id: str,
+        zone_id: str,
+        zone_name: str,
+        hostname: str,
+        script_name: str,
+    ) -> dict:
+        """Workers Custom Domain: Cloudflare creates the DNS record and the cert."""
+        result = await self._call(
+            "PUT",
+            f"/accounts/{account_id}/workers/domains",
+            json={
+                "environment": "production",
+                "hostname": hostname,
+                "service": script_name,
+                "zone_id": zone_id,
+                "zone_name": zone_name,
+            },
+        )
+        return result or {}
 
     # ------------------------------------------------------------------ #
     # worker scripts
