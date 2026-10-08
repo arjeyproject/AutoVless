@@ -1,10 +1,9 @@
 #!/usr/bin/env python3
-"""Repair stale panels without rescanning the whole Cloudflare address space.
+"""Replace stale/corrupted Workers with fresh deployments.
 
-The current panel endpoints are used for the first redeploy. Only after the
-current Worker is live and the real client-path gate fails do we fall back to a
-normal refresh/scan. This keeps repair bounded and prevents Ctrl-C from leaving
-an in-flight scan looking like a failed deployment.
+A broken script can keep returning Cloudflare 1101 even after an in-place upload.
+This utility creates a new Worker script while preserving the panel UUID and
+account, then persists the new host only after the real health gate.
 """
 from __future__ import annotations
 
@@ -14,8 +13,8 @@ from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
-from bot import aipin, db, deploy  # noqa: E402
-from bot.cloudflare import CloudflareClient, CloudflareError  # noqa: E402
+from bot import db, deploy  # noqa: E402
+from bot.cloudflare import CloudflareError  # noqa: E402
 
 
 def short(value: object) -> str:
@@ -23,41 +22,16 @@ def short(value: object) -> str:
     return text[:8] + "..." + text[-8:] if len(text) > 16 else "<set>"
 
 
-async def bootstrap(old: dict) -> None:
-    """Upload the current artifact using the panel's existing endpoint set."""
-    token = str(old.get("token") or "")
-    uuid = str(old["uuid"])
-    endpoints = list(old.get("endpoints") or [])
-    if not endpoints:
-        raise deploy.DeployError("panel has no stored endpoints")
-    relays = list(old.get("relays") or [])
-    ai_relays, _ = await aipin.choose(relays, uuid) if relays else ([], "")
-    async with CloudflareClient(token) as cf:
-        await cf.upload_script(
-            str(old["account_id"]),
-            str(old["script_name"]),
-            deploy._read_worker(),
-            deploy._bindings(uuid, str(old["host"]), endpoints, relays, ai_relays),
-        )
-        await cf.enable_workers_dev(str(old["account_id"]), str(old["script_name"]))
-
-
 async def repair_one(tg_id: int, old: dict) -> bool:
-    await bootstrap(old)
-    host = str(old["host"])
-    healthy, report = await deploy._health(host, str(old["uuid"]), attempts=3)
-    if report:
-        await deploy._demote_dead_relays(report)
-    if healthy:
-        accepted, rejected = await deploy._accept(host, list(old["endpoints"]))
-        if accepted and not rejected:
-            await db.mark_panel_synced(tg_id, accepted, old.get("relays") or [], healthy=True)
-            return True
-    # The artifact is now current. Only this fallback may scan for replacements.
-    fresh = await deploy.refresh(old, force_scan=False)
+    reuse = {"account_id": str(old["account_id"]), "uuid": str(old["uuid"])}
+    fresh = await deploy.build(str(old["token"]), reuse=reuse, force_scan=False)
     if not fresh.healthy or not fresh.endpoints:
         return False
-    await db.mark_panel_synced(tg_id, fresh.endpoints, fresh.relays, healthy=True)
+    await db.save_panel(
+        tg_id, fresh.account_id, fresh.script, fresh.host, fresh.uuid,
+        str(old["token"]), fresh.endpoints, fresh.build_ms,
+        relays=fresh.relays, healthy=True,
+    )
     return True
 
 
@@ -72,19 +46,19 @@ async def main() -> int:
         print(f"stored refreshable panels: {len(panels)}")
         failed = 0
         for tg_id, old in panels:
-            host = str(old.get("host") or "")
+            old_host = str(old.get("host") or "")
             try:
                 if await repair_one(tg_id, old):
-                    print(f"PASS host={host} uuid={short(old.get('uuid'))}")
+                    print(f"PASS old_host={old_host} uuid={short(old.get('uuid'))}")
                 else:
                     failed += 1
-                    print(f"FAIL host={host} uuid={short(old.get('uuid'))} reason=health_gate")
+                    print(f"FAIL old_host={old_host} uuid={short(old.get('uuid'))} reason=health_gate")
             except (CloudflareError, deploy.DeployError) as exc:
                 failed += 1
-                print(f"FAIL host={host} uuid={short(old.get('uuid'))} reason={type(exc).__name__}")
+                print(f"FAIL old_host={old_host} uuid={short(old.get('uuid'))} reason={type(exc).__name__}")
             except Exception as exc:
                 failed += 1
-                print(f"FAIL host={host} uuid={short(old.get('uuid'))} reason={type(exc).__name__}")
+                print(f"FAIL old_host={old_host} uuid={short(old.get('uuid'))} reason={type(exc).__name__}")
         print(f"repair complete: failed={failed} passed={len(panels) - failed}")
         return 1 if failed else 0
     finally:
