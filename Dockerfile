@@ -26,6 +26,7 @@ RUN pip install --no-cache-dir -r requirements.txt \
 
 COPY bot ./bot
 COPY worker ./worker
+COPY scripts ./scripts
 # CLEAN_IP_FILES defaults to endpoints/clean-ips.txt, so that directory has to
 # exist inside the image or the seed list silently comes back empty.
 COPY endpoints ./endpoints
