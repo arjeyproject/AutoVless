@@ -1,16 +1,15 @@
 #!/usr/bin/env python3
-"""Redeploy stored panels before probing them.
+"""Repair stale panels without rescanning the whole Cloudflare address space.
 
-A stale Worker can fail before fetch() with Cloudflare 1101. Probing it before
-uploading the current artifact can never repair it, so this utility first
-uploads the current source and bindings, then lets deploy.refresh apply the
-normal health and WebSocket/VLESS gates.
+The current panel endpoints are used for the first redeploy. Only after the
+current Worker is live and the real client-path gate fails do we fall back to a
+normal refresh/scan. This keeps repair bounded and prevents Ctrl-C from leaving
+an in-flight scan looking like a failed deployment.
 """
 from __future__ import annotations
 
 import asyncio
 import sys
-import time
 from pathlib import Path
 
 sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
@@ -25,27 +24,48 @@ def short(value: object) -> str:
 
 
 async def bootstrap(old: dict) -> None:
-    """Upload current code before refresh probes the existing hostname."""
+    """Upload the current artifact using the panel's existing endpoint set."""
     token = str(old.get("token") or "")
-    account_id = str(old["account_id"])
-    script = str(old["script_name"])
     uuid = str(old["uuid"])
-    host = str(old["host"])
-    code = deploy._read_worker()
-    endpoints = await deploy._select_endpoints(force_scan=True)
-    relays = await deploy._select_relays()
-    ai_relays, _ = await aipin.choose(relays, uuid)
+    endpoints = list(old.get("endpoints") or [])
+    if not endpoints:
+        raise deploy.DeployError("panel has no stored endpoints")
+    relays = list(old.get("relays") or [])
+    ai_relays, _ = await aipin.choose(relays, uuid) if relays else ([], "")
     async with CloudflareClient(token) as cf:
-        await cf.upload_script(account_id, script, code, deploy._bindings(uuid, host, endpoints, relays, ai_relays))
-        await cf.enable_workers_dev(account_id, script)
+        await cf.upload_script(
+            str(old["account_id"]),
+            str(old["script_name"]),
+            deploy._read_worker(),
+            deploy._bindings(uuid, str(old["host"]), endpoints, relays, ai_relays),
+        )
+        await cf.enable_workers_dev(str(old["account_id"]), str(old["script_name"]))
+
+
+async def repair_one(tg_id: int, old: dict) -> bool:
+    await bootstrap(old)
+    host = str(old["host"])
+    healthy, report = await deploy._health(host, str(old["uuid"]), attempts=3)
+    if report:
+        await deploy._demote_dead_relays(report)
+    if healthy:
+        accepted, rejected = await deploy._accept(host, list(old["endpoints"]))
+        if accepted and not rejected:
+            await db.mark_panel_synced(tg_id, accepted, old.get("relays") or [], healthy=True)
+            return True
+    # The artifact is now current. Only this fallback may scan for replacements.
+    fresh = await deploy.refresh(old, force_scan=False)
+    if not fresh.healthy or not fresh.endpoints:
+        return False
+    await db.mark_panel_synced(tg_id, fresh.endpoints, fresh.relays, healthy=True)
+    return True
 
 
 async def main() -> int:
     await db.init()
     try:
-        ids = await db.all_user_ids(include_banned=True)
         panels = []
-        for tg_id in ids:
+        for tg_id in await db.all_user_ids(include_banned=True):
             panel = await db.get_panel(tg_id)
             if panel and panel.get("token"):
                 panels.append((tg_id, panel))
@@ -54,14 +74,11 @@ async def main() -> int:
         for tg_id, old in panels:
             host = str(old.get("host") or "")
             try:
-                await bootstrap(old)
-                fresh = await deploy.refresh(old, force_scan=True)
-                if not fresh.healthy or not fresh.endpoints:
+                if await repair_one(tg_id, old):
+                    print(f"PASS host={host} uuid={short(old.get('uuid'))}")
+                else:
                     failed += 1
                     print(f"FAIL host={host} uuid={short(old.get('uuid'))} reason=health_gate")
-                    continue
-                await db.mark_panel_synced(tg_id, fresh.endpoints, fresh.relays, healthy=True)
-                print(f"PASS host={fresh.host} uuid={short(fresh.uuid)} endpoints={len(fresh.endpoints)}")
             except (CloudflareError, deploy.DeployError) as exc:
                 failed += 1
                 print(f"FAIL host={host} uuid={short(old.get('uuid'))} reason={type(exc).__name__}")
