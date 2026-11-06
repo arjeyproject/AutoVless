@@ -61,7 +61,12 @@ CREATE INDEX IF NOT EXISTS idx_referrals_inviter ON referrals (inviter);
 # Columns newer releases expect on tables ``db.py`` owns.
 EXTRA_COLUMNS: dict[str, dict[str, str]] = {
     "users": {"theme": "TEXT NOT NULL DEFAULT 'auto'"},
-    "panels": {"ai_relay": "TEXT", "ai_country": "TEXT"},
+    "panels": {
+        "ai_relay": "TEXT",
+        "ai_country": "TEXT",
+        "chain_relay": "TEXT",
+        "chain_country": "TEXT",
+    },
 }
 
 DEFAULTS: dict[str, str] = {
@@ -326,6 +331,32 @@ async def ai_pin_stats() -> dict:
         "pinned": int(await db.scalar("SELECT COUNT(*) FROM ai_pins")),
         "countries": [(str(row["code"]), int(row["hits"])) for row in rows],
     }
+
+
+# --------------------------------------------------------------------- #
+# the Proxy Chain pin - one steady exit for a panel's ordinary traffic
+# --------------------------------------------------------------------- #
+
+
+async def chain_pin(uuid: str) -> Optional[dict]:
+    """The stored chain pin for a panel uuid, ``None`` when there is none."""
+    await ensure()
+    row = await db.fetch_one(
+        "SELECT chain_relay, chain_country FROM panels WHERE uuid = ?", (str(uuid),)
+    )
+    if row is None or not row["chain_relay"]:
+        return None
+    return dict(row)
+
+
+async def set_chain_pin(uuid: str, relay: str, country: str = "") -> None:
+    """Record the pin on the panel row. The panel row is keyed by uuid here
+    because the pin outlives the conversation that built it."""
+    await ensure()
+    await db.execute(
+        "UPDATE panels SET chain_relay = ?, chain_country = ? WHERE uuid = ?",
+        (str(relay), str(country or "").upper()[:2], str(uuid)),
+    )
 
 
 # --------------------------------------------------------------------- #

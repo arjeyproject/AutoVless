@@ -66,6 +66,20 @@
  *   AI_PROXY_IP      relays reserved for AI destinations. Falls back to PROXY_IP.
  *   AI_DOMAINS       extra AI hostnames to route this way, comma separated
  *   AI_ROUTE         "false" turns the whole behaviour off
+ *
+ * Proxy Chain - the panel-wide static exit
+ * ----------------------------------------
+ * A Cloudflare datacentre egress IP rotates and is shared, which is exactly what
+ * sites that fingerprint logins (Gemini, ChatGPT, Google, banking, streaming)
+ * read as abuse. CHAIN_MODE="true" routes *every* ordinary destination through
+ * one relay pinned for this whole panel: stickyOrder() is seeded with the panel
+ * uuid instead of the destination hostname, so the head of the relay list is the
+ * same for every host and every hour - a static exit address per panel. The
+ * rest of the relay ladder and direct stay behind it as the fallback, and
+ * Iranian (.ir) destinations are exempt and go direct-first, because a foreign
+ * exit only breaks the sites that check for Iran.
+ *   CHAIN_MODE       "false" turns the chain off (default on)
+ *   CHAIN_PROXY_IP   the pinned chain relay(s). Falls back to PROXY_IP.
  *   SUB_HOST         hostname used inside generated configs (defaults to request host)
  *   BRAND            label used in config remarks
  *   WS_PATH          websocket path used inside generated configs
@@ -231,6 +245,8 @@ function readConfig(env, request) {
     aiProxies,
     aiDomains: aiDomainList(env.AI_DOMAINS),
     aiRoute: String(env.AI_ROUTE || "true").toLowerCase() !== "false",
+    chainMode: String(env.CHAIN_MODE || "true").toLowerCase() !== "false",
+    chainProxies: splitList(env.CHAIN_PROXY_IP || ""),
     dns: String(env.DNS_SERVER || "8.8.8.8").trim(),
     dnsPort: toInt(env.DNS_PORT, 53),
     brand: String(env.BRAND || "AutoVless").trim() || "AutoVless",
@@ -1058,29 +1074,56 @@ function relayTargets(raw, port) {
   return out;
 }
 
-/**
- * The ordered list of places to try for this destination. Normal traffic goes
- * direct first, then through the relays; AI traffic is relay-first and pinned.
- */
-function buildAttempts(cfg, head) {
-  const direct = { hostname: head.hostname, port: head.port, relay: false, source: "direct" };
-  const relays = relayTargets(cfg.proxies, head.port);
+/** Iranian destinations try direct first: a foreign exit would only break them. */
+function isIrHost(address) {
+  const host = String(address || "")
+    .toLowerCase()
+    .replace(/\.+$/, "");
+  return host.endsWith(".ir");
+}
 
-  if (!isAiHost(cfg, head.address)) return [direct, ...relays];
-
-  const pool = cfg.aiProxies.length ? cfg.aiProxies : cfg.proxies;
-  const pinned = stickyOrder(relayTargets(pool, head.port), head.address);
-  if (!pinned.length) return [direct, ...relays];
-
+/** Drop duplicate targets, keeping the first order of appearance. */
+function dedupeAttempts(items) {
   const seen = new Set();
   const out = [];
-  for (const item of [...pinned, ...relays, direct]) {
+  for (const item of items) {
     const key = item.hostname + ":" + item.port;
     if (seen.has(key)) continue;
     seen.add(key);
     out.push(item);
   }
   return out;
+}
+
+/**
+ * The ordered list of places to try for this destination.
+ *
+ *   AI traffic        pinned AI relay first, then the relay ladder, then direct
+ *   Iranian hosts     direct first - a foreign exit only breaks these
+ *   everything else   Proxy Chain: one relay pinned for the whole panel first
+ *                     (seeded by the panel uuid, so the exit address never
+ *                     rotates), then the relay ladder, then direct
+ */
+function buildAttempts(cfg, head) {
+  const direct = { hostname: head.hostname, port: head.port, relay: false, source: "direct" };
+  const relays = relayTargets(cfg.proxies, head.port);
+
+  if (isAiHost(cfg, head.address)) {
+    const pool = cfg.aiProxies.length ? cfg.aiProxies : cfg.proxies;
+    const pinned = stickyOrder(relayTargets(pool, head.port), head.address);
+    if (!pinned.length) return [direct, ...relays];
+    return dedupeAttempts([...pinned, ...relays, direct]);
+  }
+
+  if (isIrHost(head.address)) return [direct, ...relays];
+
+  if (cfg.chainMode) {
+    const pool = cfg.chainProxies.length ? cfg.chainProxies : cfg.proxies;
+    const pinned = stickyOrder(relayTargets(pool, head.port), "chain:" + cfg.uuid);
+    if (pinned.length) return dedupeAttempts([...pinned, ...relays, direct]);
+  }
+
+  return [direct, ...relays];
 }
 
 function splitHostPort(raw, defaultPort) {
@@ -1631,6 +1674,14 @@ function landing(cfg) {
   });
 }
 
+/** The chain pin this panel would use right now, or null. */
+function chainPinSource(cfg) {
+  if (!cfg.chainMode) return null;
+  const pool = cfg.chainProxies.length ? cfg.chainProxies : cfg.proxies;
+  const order = stickyOrder(relayTargets(pool, 443), "chain:" + cfg.uuid);
+  return order.length ? order[0].source : null;
+}
+
 /** Outbound reachability, measured from inside the worker. */
 async function probe(cfg) {
   let direct = { ok: false, error: "not attempted" };
@@ -1639,17 +1690,29 @@ async function probe(cfg) {
     if (direct.ok) break;
   }
 
+  // The pins ride first: a dead chain or AI pin is the finding that matters,
+  // and the bot demotes dead entries straight out of the report.
+  const pinned = [];
+  const chainSource = chainPinSource(cfg);
+  if (chainSource) pinned.push({ raw: chainSource, pin: "chain" });
+  if (cfg.aiProxies.length) pinned.push({ raw: cfg.aiProxies[0], pin: "ai" });
+
   const relays = [];
-  for (const raw of cfg.proxies.slice(0, 4)) {
+  const seen = new Set();
+  for (const item of [...pinned, ...cfg.proxies.slice(0, 4)]) {
+    const raw = String(item.raw || item);
+    if (seen.has(raw)) continue;
+    seen.add(raw);
     const target = splitHostPort(raw, 443);
     const result = await tcpProbe(target.hostname, target.port, "");
-    relays.push({ target: raw, ...result });
+    relays.push({ target: raw, ...(item.pin ? { pin: item.pin } : {}), ...result });
   }
 
   return {
     ok: Boolean(direct.ok),
     direct,
     relays,
+    chain_pin: chainSource,
     usable_relays: relays.filter((item) => item.ok).length
   };
 }
@@ -1678,7 +1741,12 @@ async function aiReport(cfg) {
     relays,
     usable_relays: relays.filter((item) => item.ok).length,
     domains: cfg.aiDomains.length,
-    pinning
+    pinning,
+    chain: {
+      enabled: cfg.chainMode,
+      dedicated: cfg.chainProxies.length > 0,
+      pin: chainPinSource(cfg)
+    }
   };
 }
 

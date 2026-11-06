@@ -152,11 +152,12 @@ def bindings(
     endpoints: list[dict],
     relays: list[str],
     ai_relays: list[str],
+    chain_relays: list[str] | None = None,
 ) -> dict[str, str]:
     """The env vars a Pages panel carries. Built once, shared with deploy."""
     from .deploy import _bindings  # the single source of the worker's var list
 
-    return _bindings(uuid, host, endpoints, relays, ai_relays)
+    return _bindings(uuid, host, endpoints, relays, ai_relays, chain_relays)
 
 
 def panel_vars(panel: dict, endpoints: list[dict], relays: list[str]) -> dict[str, str]:
@@ -167,6 +168,7 @@ def panel_vars(panel: dict, endpoints: list[dict], relays: list[str]) -> dict[st
         endpoints,
         relays,
         [str(panel.get("ai_relay") or "")] if panel.get("ai_relay") else [],
+        [str(panel.get("chain_relay") or "")] if panel.get("chain_relay") else [],
     )
 
 

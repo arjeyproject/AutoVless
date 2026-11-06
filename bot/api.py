@@ -675,6 +675,13 @@ async def _run_build(job_id: str, tg_id: int, token: str, reuse: Optional[dict])
         deploy_target=panel.target,
     )
     await db.log_event("miniapp_build", tg_id, panel.host)
+    # The chain pin was chosen before the row existed; write it now so refreshes
+    # reuse this exact relay until it dies. Same as the bot's own build path.
+    if panel.chain_relays:
+        try:
+            await store.set_chain_pin(panel.uuid, panel.chain_relays[0], panel.chain_country)
+        except Exception:  # noqa: BLE001
+            log.debug("could not record the chain pin after mini app build", exc_info=True)
     job.update(
         {
             "state": "done",

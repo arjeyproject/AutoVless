@@ -17,10 +17,14 @@ EN: dict[str, str] = {
     "btn.cf_signup": "☁️ Sign up at Cloudflare",
     "btn.cf_token": "🔑 Get Cloudflare token",
     "btn.qr": "📷 QR code",
-    "btn.sub": "🔗 Subscription link",
+    "btn.sub": "🔗 All-in-one subscription",
     "btn.clash": "🧩 Clash export",
     "btn.singbox": "📦 sing-box export",
     "btn.single": "📝 Individual configs",
+    "btn.copy_sub": "📋 Copy subscription link",
+    "btn.copy_mix": "📋 Copy mixed link",
+    "btn.copy_clash": "📋 Copy Clash link",
+    "btn.copy_singbox": "📋 Copy sing-box link",
     "btn.ping": "📡 Live ping test",
     "btn.apply": "⚡ Apply fresh clean IPs",
     "btn.rescan": "🔍 Rescan the network",
@@ -97,15 +101,18 @@ EN: dict[str, str] = {
         "\U0001f3c6 Best ping: <b>{best}</b>\n"
         "\U0001f680 Under 700 ms: <b>{fast}</b> endpoints\n"
         "\U0001f4e6 Configs: <b>{count}</b>\n"
-        "\U0001f9ea Protocol: <b>VLESS / WS</b>\n"
         "\U0001f50c Ports: <b>{ports}</b>\n"
         "\U0001f4f6 Operator: <b>{operator}</b>\n"
         "\U0001f310 Host: <code>{host}</code>\n"
         "{rule}\n"
-        "\U0001f916 Nothing left to do: the bot keeps mounting fresh clean IPs on this same\n"
-        "subscription link. Just hit Update in your client now and then.\n"
-        "\U0001f4a1 Run <b>Real Delay</b> and connect to the fastest entry.\n"
-        "\U0001f525 Turn <b>Fragment</b> on for a steadier connection."
+        "\U0001f517 <b>All-in-one subscription</b> — every config in one link:\n"
+        "<code>{sub}</code>\n"
+        "\U0001f4a5 Paste this single link into your client and hit Copy below.\n"
+        "\U0001f916 Nothing left to do: the bot keeps mounting fresh clean IPs on this\n"
+        "same subscription link. Just hit Update in your client now and then.\n"
+        "\u26a1 Proxy Chain is on: your exit IP is static, so AI sites like Gemini and\n"
+        "ChatGPT work without endless re-logins.\n"
+        "\U0001f4a1 Run <b>Real Delay</b> and connect to the fastest entry."
     ),
     "health_warn": (
         "\u26a0\ufe0f The Worker was created but is not answering yet. Cloudflare edge propagation can "
@@ -127,14 +134,20 @@ EN: dict[str, str] = {
     "panel_health_ok": "\u2705 healthy",
     "panel_health_bad": "\u26a0\ufe0f checking",
     "sub_links": (
-        "\U0001f517 <b>Subscription links</b>\n{rule}\n"
-        "<b>v2rayNG / Streisand / NekoBox</b>\n<code>{sub}</code>\n\n"
-        "<b>Clash / Mihomo</b>\n<code>{clash}</code>\n\n"
-        "<b>sing-box</b>\n<code>{singbox}</code>\n\n"
-        "\u267b\ufe0f The link is permanent. Every Update pulls the freshest clean IPs."
+        "\U0001f517 <b>All-in-one subscription</b> — everything in one link\n{rule}\n"
+        "This is the only link you need — every config, every port, every protocol:\n"
+        "<code>{sub}</code>\n\n"
+        "\u2705 Add it under Subscription in v2rayNG / Streisand / NekoBox / Hiddify and hit Update.\n"
+        "\u267b\ufe0f The link is permanent; what it serves refreshes on its own."
+    ),
+    "sub_extras": (
+        "\u2b07\ufe0f <b>Other formats</b> — only if your app insists:\n"
+        "\U0001f9e9 Clash / Mihomo:\n<code>{clash}</code>\n"
+        "\U0001f4e6 sing-box:\n<code>{singbox}</code>"
     ),
     "single_configs": (
-        "\U0001f4dd <b>Individual configs</b>\n{rule}\nTap a config to copy it.\n"
+        "\U0001f4dd <b>Individual configs</b>\n{rule}\nTap a config to copy it, or use the copy buttons below.\n"
+        "\U0001f4a1 The all-in-one subscription is still the better path: the best IPs mount themselves.\n"
         "\u26a1 port 443 \u00b7 \U0001f7e1 port 80 \u00b7 \U0001f300 self-healing hostname"
     ),
     "qr_caption": "\U0001f4f7 {brand} subscription QR code",

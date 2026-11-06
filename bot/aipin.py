@@ -121,14 +121,14 @@ def _label(host: str, port: int) -> str:
     return host if int(port) == 443 else f"{host}:{int(port)}"
 
 
-def _deterministic(rows: Sequence[dict], uuid: str) -> dict:
+def _deterministic(rows: Sequence[dict], uuid: str, tag: str = "ai") -> dict:
     """Same panel, same relay, every single build.
 
     Spreading users across the good relays matters - one address carrying every
     account is its own kind of suspicious - but the spread has to be stable, so
     it comes from the uuid rather than from anything that moves.
     """
-    seed = f"{settings.secret_key}:ai:{uuid}".encode("utf-8")
+    seed = f"{settings.secret_key}:{tag}:{uuid}".encode("utf-8")
     offset = hashlib.sha256(seed).digest()[0] % len(rows)
     return dict(rows[offset])
 
@@ -202,6 +202,59 @@ async def repin(uuid: str) -> tuple[list[str], str]:
     """Forget the stored pin and pick again. What the admin's re-pin button does."""
     await store.clear_ai_pin(uuid)
     return await choose([], uuid)
+
+
+async def choose_chain(relays: list[str], uuid: str) -> tuple[list[str], str]:
+    """The Proxy Chain pin: one steady exit for this panel's ordinary traffic.
+
+    Where the AI pin above only moves AI hosts, this one is handed to the worker
+    as ``CHAIN_PROXY_IP`` and the worker seeds its pin with the *panel* uuid, so
+    every destination the panel reaches exits through the same single relay for
+    as long as that relay lives. That is the static IP the whole panel presents
+    to the outside world - which is what Gemini, ChatGPT, Google and every site
+    that fingerprints logins need to stop reading a rotating datacentre address
+    as account abuse.
+
+    The pin is stored on the panel row and only moves when it actually dies, for
+    the same reason the AI pin is stored: the address has to be boring. Selection
+    prefers the fastest verified relays rather than a country, because ordinary
+    traffic cares about latency, not about where it leaves from.
+    """
+    if not settings.chain_mode:
+        return [], ""
+    if settings.chain_proxy_ip:
+        return list(settings.chain_proxy_ip), "ENV"
+
+    stored = await store.chain_pin(uuid)
+    if stored and stored.get("chain_relay"):
+        host, port = _split(str(stored["chain_relay"]))
+        row = await proxies.alive(host, port) if host else None
+        if row is not None:
+            country = str(row.get("country") or stored.get("chain_country") or "").upper()
+            return [_label(host, port)], country or "??"
+        log.info("chain pin %s for panel %s is gone, repinning", stored["chain_relay"], uuid[:8])
+
+    rows = await proxies.best(24, verified_only=True)
+    if not rows:
+        rows = await proxies.best(24, verified_only=False)
+    # A blocked-country relay would still work for ordinary traffic, but there
+    # is rarely a reason to pick one when the pool is deep enough.
+    usable = [row for row in rows if str(row.get("country") or "").upper() not in BLOCKED]
+    rows = usable or rows
+    if not rows:
+        if relays:
+            host, port = _split(relays[0])
+            return [_label(host, port)], "??"
+        return [], ""
+
+    chosen = _deterministic(rows[: max(1, min(8, len(rows)))], uuid, tag="chain")
+    host = str(chosen["host"])
+    port = int(chosen.get("port") or 443)
+    country = str(chosen.get("country") or "").upper() or "??"
+    label = _label(host, port)
+    await store.set_chain_pin(uuid, label, country)
+    log.info("panel %s pinned to %s (%s) for chained traffic", uuid[:8], label, country)
+    return [label], country
 
 
 async def report() -> dict:

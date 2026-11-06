@@ -88,6 +88,8 @@ class Panel:
     relays: list[str] = field(default_factory=list)
     ai_relays: list[str] = field(default_factory=list)
     ai_country: str = ""
+    chain_relays: list[str] = field(default_factory=list)
+    chain_country: str = ""
     build_ms: int = 0
     healthy: bool = False
     probe: dict = field(default_factory=dict)
@@ -163,14 +165,22 @@ def _bindings(
     endpoints: list[dict],
     relays: list[str],
     ai_relays: Optional[list[str]] = None,
+    chain_relays: Optional[list[str]] = None,
 ) -> dict[str, str]:
-    """Plain text vars handed to the worker. Shared by build and refresh."""
+    """Plain text vars handed to the worker. Shared by build and refresh.
+
+    The chain pin rides along with everything else: with CHAIN_MODE on, the
+    worker routes every ordinary destination through this one relay first, so
+    the whole panel presents a static exit address to the outside world.
+    """
     return {
         "UUID": uuid,
         "PROXY_IP": ",".join(relays),
         "AI_ROUTE": "true" if settings.ai_route else "false",
         "AI_PROXY_IP": ",".join(ai_relays or []),
         "AI_DOMAINS": ",".join(aipin.ai_domains()),
+        "CHAIN_MODE": "true" if settings.chain_mode else "false",
+        "CHAIN_PROXY_IP": ",".join(chain_relays or []),
         "SUB_HOST": host,
         "BRAND": settings.brand,
         "WS_PATH": vless.WS_PATH,
@@ -376,6 +386,19 @@ async def _record_pin(uuid: str, relays: list[str], country: str) -> None:
         log.debug("could not record the ai pin on the panel row", exc_info=True)
 
 
+async def _record_chain_pin(uuid: str, relays: list[str], country: str) -> None:
+    """Same as the ai pin, one column pair over: the Proxy Chain pin."""
+    if not relays:
+        return
+    try:
+        await db.execute(
+            "UPDATE panels SET chain_relay = ?, chain_country = ? WHERE uuid = ?",
+            (relays[0], country, uuid),
+        )
+    except Exception:  # noqa: BLE001
+        log.debug("could not record the chain pin on the panel row", exc_info=True)
+
+
 async def _record_host(uuid: str, host: str) -> None:
     """The panel moved front doors: every screen and the gateway follow the row."""
     try:
@@ -455,6 +478,7 @@ async def build(
             endpoints = await _select_endpoints(force_scan)
             relays = await _select_relays()
             ai_relays, ai_country = await aipin.choose(relays, panel_uuid)
+            chain_relays, chain_country = await aipin.choose_chain(relays, panel_uuid)
 
             await _announce(progress, 3)
             if target == "pages":
@@ -463,7 +487,7 @@ async def build(
                     account_id,
                     project,
                     code,
-                    pages.bindings(panel_uuid, dev_host, endpoints, relays, ai_relays),
+                    pages.bindings(panel_uuid, dev_host, endpoints, relays, ai_relays, chain_relays),
                 )
                 custom = await pages.attach_domain(cf, account_id, project)
             else:
@@ -471,7 +495,7 @@ async def build(
                     account_id,
                     script,
                     code,
-                    _bindings(panel_uuid, dev_host, endpoints, relays, ai_relays),
+                    _bindings(panel_uuid, dev_host, endpoints, relays, ai_relays, chain_relays),
                 )
                 await cf.enable_workers_dev(account_id, script)
                 # The script has to exist before a domain can point at it.
@@ -515,7 +539,7 @@ async def build(
                     account_id,
                     project,
                     code,
-                    pages.bindings(panel_uuid, host, endpoints, relays, ai_relays),
+                    pages.bindings(panel_uuid, host, endpoints, relays, ai_relays, chain_relays),
                 )
             else:
                 async with CloudflareClient(token) as cf:
@@ -523,15 +547,16 @@ async def build(
                         account_id,
                         script,
                         code,
-                        _bindings(panel_uuid, host, endpoints, relays, ai_relays),
+                        _bindings(panel_uuid, host, endpoints, relays, ai_relays, chain_relays),
                     )
         except (CloudflareError, pages.PagesError) as error:
             log.warning("could not re-upload the final bindings: %s", error)
 
     await _record_pin(panel_uuid, ai_relays, ai_country)
+    await _record_chain_pin(panel_uuid, chain_relays, chain_country)
     build_ms = int((time.perf_counter() - started) * 1000)
     log.info(
-        "panel built target=%s host=%s custom=%s endpoints=%s rejected=%s relays=%s ai=%s(%s) healthy=%s in %sms",
+        "panel built target=%s host=%s custom=%s endpoints=%s rejected=%s relays=%s ai=%s(%s) chain=%s(%s) healthy=%s in %sms",
         target,
         host,
         host != dev_host,
@@ -540,6 +565,8 @@ async def build(
         len(relays),
         ",".join(ai_relays) or "none",
         ai_country or "??",
+        ",".join(chain_relays) or "none",
+        chain_country or "??",
         healthy,
         build_ms,
     )
@@ -553,6 +580,8 @@ async def build(
         relays=relays,
         ai_relays=ai_relays,
         ai_country=ai_country,
+        chain_relays=chain_relays,
+        chain_country=chain_country,
         build_ms=build_ms,
         healthy=healthy,
         probe=report,
@@ -592,6 +621,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     candidates = await _select_endpoints(force_scan)
     relays = await _select_relays()
     ai_relays, ai_country = await aipin.choose(relays, panel_uuid)
+    chain_relays, chain_country = await aipin.choose_chain(relays, panel_uuid)
 
     endpoints, rejected = await _ship(host, candidates)
     if not endpoints:
@@ -604,7 +634,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
                 account_id,
                 project,
                 code,
-                pages.bindings(panel_uuid, host, endpoints, relays, ai_relays),
+                pages.bindings(panel_uuid, host, endpoints, relays, ai_relays, chain_relays),
             )
         else:
             async with CloudflareClient(str(token)) as cf:
@@ -612,7 +642,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
                     account_id,
                     script,
                     code,
-                    _bindings(panel_uuid, host, endpoints, relays, ai_relays),
+                    _bindings(panel_uuid, host, endpoints, relays, ai_relays, chain_relays),
                 )
                 await cf.enable_workers_dev(account_id, script)
     except (CloudflareError, pages.PagesError) as error:
@@ -624,6 +654,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     if healthy:
         await _remember_reference(host)
     await _record_pin(panel_uuid, ai_relays, ai_country)
+    await _record_chain_pin(panel_uuid, chain_relays, chain_country)
 
     return Panel(
         account_id=account_id,
@@ -634,6 +665,8 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
         relays=relays,
         ai_relays=ai_relays,
         ai_country=ai_country,
+        chain_relays=chain_relays,
+        chain_country=chain_country,
         build_ms=int((time.perf_counter() - started) * 1000),
         healthy=healthy,
         probe=report,

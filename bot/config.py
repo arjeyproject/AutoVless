@@ -89,6 +89,7 @@ class Settings:
     proxy_ip: str; proxy_seeds: tuple[str, ...]; proxy_sources: tuple[str, ...]; proxy_ports: tuple[int, ...]
     proxy_scan_interval: int; proxy_scan_limit: int; proxy_pool_size: int; proxy_per_panel: int; relay_strikes: int
     ai_route: bool; ai_proxy_ip: tuple[str, ...]; ai_domains: tuple[str, ...]; ai_relays: int
+    chain_mode: bool; chain_proxy_ip: tuple[str, ...]
     dns_server: str; fallback_host: str; health_attempts: int; sub_sources: tuple[str, ...]; sub_refresh: int
     autopilot: bool; autopilot_interval: int; autopilot_batch: int; autopilot_max_age: int
     curator: bool; curator_interval: int; curator_batch: int; curator_rounds: int; curator_required: int
@@ -158,6 +159,15 @@ def load_settings() -> Settings:
         # relay chain, which is stable for as long as the chosen relay lives.
         ai_route=_bool("AI_ROUTE", True), ai_proxy_ip=_list("AI_PROXY_IP"),
         ai_domains=_list("AI_DOMAINS", DEFAULT_AI_DOMAINS), ai_relays=max(1, min(4, _int("AI_RELAYS", 2))),
+        # Proxy Chain. When on (the default), every ordinary destination a panel
+        # reaches exits through one relay pinned for that whole panel, so the
+        # whole world sees a static address instead of a rotating datacentre
+        # one - which is what Gemini, ChatGPT and every login-fingerprinting
+        # site want to see. CHAIN_PROXY_IP forces a literal pin; left blank the
+        # bot picks the fastest verified relay, stores it on the panel row and
+        # keeps it until it dies. Iranian (.ir) destinations are exempt in the
+        # worker: they go direct first, because a foreign exit only breaks them.
+        chain_mode=_bool("CHAIN_MODE", True), chain_proxy_ip=_list("CHAIN_PROXY_IP"),
         dns_server=_str("DNS_SERVER", "8.8.8.8"), fallback_host=_str("FALLBACK_HOST", "www.wikipedia.org"), health_attempts=max(2, _int("HEALTH_ATTEMPTS", 8)), sub_sources=_list("SUB_SOURCES", clean), sub_refresh=max(60, _int("SUB_REFRESH", 180)),
         autopilot=_bool("AUTOPILOT", True), autopilot_interval=max(120, _int("AUTOPILOT_INTERVAL", 600)), autopilot_batch=max(1, _int("AUTOPILOT_BATCH", 8)), autopilot_max_age=max(600, _int("AUTOPILOT_MAX_AGE", 10800)),
         # The curator rechecks stored addresses on the client's own path and

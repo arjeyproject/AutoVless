@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
-from .. import db, deploy, edge, keyboards, operators, pages, screens
+from .. import db, deploy, edge, keyboards, operators, pages, screens, store, subgw, vless
 from ..cloudflare import token_looks_valid
 from ..i18n import num, t
 from ..utils import edit, esc, ping_label
@@ -154,12 +154,29 @@ async def run_build(
     )
     await db.log_event("build_ok", tg_id, panel.host)
 
+    # The chain pin was chosen before the panel row existed, so the UPDATE in
+    # store.set_chain_pin silently hit nothing. The row is here now: write it
+    # so every refresh reuses this exact relay until it actually dies.
+    if panel.chain_relays:
+        try:
+            await store.set_chain_pin(panel.uuid, panel.chain_relays[0], panel.chain_country)
+        except Exception:  # noqa: BLE001
+            log.debug("could not record the chain pin after save", exc_info=True)
+
     user = await db.get_user(tg_id)
     operator = operators.label(user["operator"] if user else None, lang) or (
         "all operators" if lang == "en" else "\u0647\u0645\u0647 \u0627\u067e\u0631\u0627\u062a\u0648\u0631\u0647\u0627"
     )
     latencies = [e.get("latency") or 0 for e in panel.endpoints]
     ports = sorted({int(e["port"]) for e in panel.endpoints})
+
+    # The one link the user actually needs: every endpoint, every protocol,
+    # served from our own domain and refreshed by Update alone. The gateway
+    # link when it exists - workers.dev does not resolve in Iran.
+    if subgw.enabled():
+        sub = subgw.link(tg_id, panel.uuid)
+    else:
+        sub = vless.sub_url(panel.uuid, panel.host)
 
     body = t(
         lang,
@@ -171,12 +188,13 @@ async def run_build(
         ports=" \u00b7 ".join(num(p, lang) for p in ports),
         operator=esc(operator),
         host=esc(panel.host),
+        sub=esc(sub),
     )
     if not panel.healthy:
         body = f"{body}\n\n{t(lang, 'health_warn')}"
     body += _domain_note(lang, panel.host)
 
-    await progress_message.edit_text(body, reply_markup=keyboards.panel_menu(lang))
+    await progress_message.edit_text(body, reply_markup=keyboards.panel_ready_menu(lang, sub))
 
 
 @router.callback_query(F.data == "nav:panel")

@@ -33,7 +33,7 @@ import logging
 import httpx
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
-from aiogram.types import BufferedInputFile, CallbackQuery
+from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardMarkup
 
 from .. import db, deploy, fragment, keyboards, profiles, qrimg, screens, subgw, trojan, vless
 from ..autopilot import autopilot
@@ -106,24 +106,64 @@ def _gateway_note(lang: str) -> str:
     )
 
 
+def _copy_rows(labels_and_links: list[tuple[str, str]], per_row: int = 2) -> list[list]:
+    """Copy buttons, two per row. The payload rides inside the button, so the
+    grid position of the link in the text does not matter."""
+    rows: list[list] = []
+    row: list = []
+    for label, payload in labels_and_links:
+        row.append(keyboards.copy_button(label, payload))
+        if len(row) == per_row:
+            rows.append(row)
+            row = []
+    if row:
+        rows.append(row)
+    return rows
+
+
 @router.callback_query(F.data == "panel:sub")
 async def on_sub(call: CallbackQuery, lang: str) -> None:
+    """The one screen a user actually needs.
+
+    The all-in-one subscription link leads, with a copy button under it. The
+    client app pulls the list, keeps whichever protocol answers, and every
+    Update re-fetches the freshest clean IPs. Nothing else on this screen is
+    required - the extra formats exist only for apps that insist on their own
+    shape, and each of them copies with one tap too.
+    """
     panel = await _require_panel(call, lang)
     if panel is None:
         return
     links = _sub_links(call.from_user.id, panel)
-    text = t(
-        lang,
-        "sub_links",
-        sub=esc(links["sub"]),
-        clash=esc(links["clash"]),
-        singbox=esc(links["singbox"]),
-    )
+    text = t(lang, "sub_links", sub=esc(links["sub"]))
     # The mixed subscription is the one worth knowing about: one link, every
     # protocol, and the client keeps whichever one answers.
     text += "\n\n" + t(lang, "sub_mixed", mix=esc(links["mix"]))
+    text += "\n\n" + t(
+        lang,
+        "sub_extras",
+        clash=esc(links["clash"]),
+        singbox=esc(links["singbox"]),
+    )
     text += _gateway_note(lang)
-    await edit(call, text, keyboards.simple_back(lang, "nav:panel"))
+
+    markup = InlineKeyboardMarkup(
+        inline_keyboard=[
+            *(
+                _copy_rows(
+                    [
+                        (t(lang, "btn.copy_sub"), links["sub"]),
+                        (t(lang, "btn.copy_mix"), links["mix"]),
+                        (t(lang, "btn.copy_clash"), links["clash"]),
+                        (t(lang, "btn.copy_singbox"), links["singbox"]),
+                    ]
+                )
+            ),
+            [keyboards._c(t(lang, "btn.qr"), "panel:qr", keyboards.checker(0))],
+            keyboards.back_row(lang, "nav:panel"),
+        ]
+    )
+    await edit(call, text, markup)
     await call.answer()
 
 
@@ -143,6 +183,11 @@ async def on_qr(call: CallbackQuery, lang: str) -> None:
 
 @router.callback_query(F.data == "panel:single")
 async def on_single(call: CallbackQuery, lang: str) -> None:
+    """Every link in its own code block, plus a copy button per link.
+
+    Tapping a code block copies on mobile, but the copy_text buttons make it
+    work everywhere and make the mapping between number and link explicit:
+    button N always copies link N, wherever the buttons happen to sit."""
     panel = await _require_panel(call, lang)
     if panel is None:
         return
@@ -151,12 +196,21 @@ async def on_single(call: CallbackQuery, lang: str) -> None:
         f"<b>#{num(index, lang)}</b>\n<code>{esc(link)}</code>"
         for index, link in enumerate(links, start=1)
     )
+    copy_rows = _copy_rows(
+        [(f"\U0001f4cb #{num(index, lang)}", link) for index, link in enumerate(links, start=1)]
+    )
     parts = chunked(body)
     for position, part in enumerate(parts):
         last = position == len(parts) - 1
+        if last:
+            markup = InlineKeyboardMarkup(
+                inline_keyboard=[*copy_rows, keyboards.back_row(lang, "nav:panel")]
+            )
+        else:
+            markup = None
         await call.message.answer(
             part,
-            reply_markup=keyboards.simple_back(lang, "nav:panel") if last else None,
+            reply_markup=markup,
             disable_web_page_preview=True,
         )
     await call.answer()
@@ -200,12 +254,21 @@ async def on_trojan(call: CallbackQuery, lang: str) -> None:
         for index, link in enumerate(links, start=1)
     )
 
+    copy_rows = _copy_rows(
+        [(f"\U0001f4cb #{num(index, lang)}", link) for index, link in enumerate(links, start=1)]
+    )
     parts = chunked(body)
     for position, part in enumerate(parts):
         last = position == len(parts) - 1
+        if last:
+            markup = InlineKeyboardMarkup(
+                inline_keyboard=[*copy_rows, keyboards.back_row(lang, "nav:panel")]
+            )
+        else:
+            markup = None
         await call.message.answer(
             part,
-            reply_markup=keyboards.panel_menu(lang) if last else None,
+            reply_markup=markup,
             disable_web_page_preview=True,
         )
     await db.log_event("trojan", call.from_user.id, f"links={len(links)}")
@@ -357,6 +420,17 @@ async def on_ai(call: CallbackQuery, lang: str) -> None:
         lines.append(f"\u2022 <code>{esc(host)}</code> \u2192 <code>{esc(relay or '-')}</code>")
     if lines:
         body += "\n\n" + "\n".join(lines)
+
+    # The Proxy Chain pin: the static exit every ordinary destination leaves
+    # through. Shown here because it is the answer to "is my IP still steady?".
+    chain = report.get("chain") or {}
+    if chain:
+        body += t(
+            lang,
+            "panel.chain_line",
+            pin=esc(str(chain.get("pin") or "-")),
+            state=t(lang, "admin.on" if chain.get("enabled") else "admin.off"),
+        )
 
     await edit(call, body, keyboards.panel_menu(lang))
 
