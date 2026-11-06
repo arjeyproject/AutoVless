@@ -40,13 +40,20 @@ from ..autopilot import autopilot
 from ..config import settings
 from ..i18n import num, t
 from ..scanner import scanner
-from ..utils import chunked, edit, esc, ping_label, tcp_latency
+from ..utils import edit, esc, ping_label, tcp_latency
 from .build import BuildFlow, run_build
 
 log = logging.getLogger("autovless.panel")
 router = Router(name="panel")
 
 _applying: set[int] = set()
+
+# Telegram's copy_text button accepts at most 256 characters of payload. A
+# single vless:// link runs 300-400 characters, so a copy button carrying a
+# whole link gets the ENTIRE message rejected with BUTTON_DATA_INVALID - and
+# the user saw a dead button, not an error. Anything longer than this rides in
+# a tap-to-copy code block (or the txt file) instead of inside a button.
+COPY_LIMIT = 250
 
 # Background jobs, held so the event loop cannot collect them mid-scan.
 _jobs: set[asyncio.Task] = set()
@@ -121,6 +128,44 @@ def _copy_rows(labels_and_links: list[tuple[str, str]], per_row: int = 2) -> lis
     return rows
 
 
+def _copy_rows_safe(labels_and_links: list[tuple[str, str]], per_row: int = 2) -> list[list]:
+    """``_copy_rows`` that respects Telegram's 256-character copy payload cap.
+
+    Longer payloads are skipped silently: their link is already on screen in a
+    tap-to-copy code block, and the txt file below carries the same text for
+    desktop clients. Skipping one button beats losing the whole message."""
+    return _copy_rows(
+        [(label, payload) for label, payload in labels_and_links if len(payload) <= COPY_LIMIT],
+        per_row,
+    )
+
+
+def _links_file(links: list[str], filename: str) -> BufferedInputFile:
+    """Every link, one per line, as a plain txt file.
+
+    A file has no 4096-character message cap and no button payload cap, so it
+    is the one delivery route that cannot fail on capacity - and every Telegram
+    client can open it and copy from it."""
+    return BufferedInputFile("\n".join(links).encode("utf-8"), filename=filename)
+
+
+def _link_pairs(links: list[str], lang: str) -> list[str]:
+    """The links laid out two per message, each in a tap-to-copy code block.
+
+    Two per message keeps every text far under Telegram's 4096 cap even when a
+    panel holds a dozen endpoints, and the ``<pre>`` block copies with one tap
+    on every mobile client - which is what the oversized copy buttons used to
+    be for."""
+    parts: list[str] = []
+    for start in range(0, len(links), 2):
+        group = links[start : start + 2]
+        lines = []
+        for offset, link in enumerate(group):
+            lines.append(f"\u200f<b>{num(start + offset + 1, lang)}</b>\n<pre>{esc(link)}</pre>")
+        parts.append("\n\n".join(lines))
+    return parts
+
+
 @router.callback_query(F.data == "panel:sub")
 async def on_sub(call: CallbackQuery, lang: str) -> None:
     """The one screen a user actually needs.
@@ -150,7 +195,7 @@ async def on_sub(call: CallbackQuery, lang: str) -> None:
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
             *(
-                _copy_rows(
+                _copy_rows_safe(
                     [
                         (t(lang, "btn.copy_sub"), links["sub"]),
                         (t(lang, "btn.copy_mix"), links["mix"]),
@@ -159,7 +204,7 @@ async def on_sub(call: CallbackQuery, lang: str) -> None:
                     ]
                 )
             ),
-            [keyboards._c(t(lang, "btn.qr"), "panel:qr", keyboards.checker(0))],
+            [keyboards._c(t(lang, "btn.qr"), "panel:qr", keyboards.GO)],
             keyboards.back_row(lang, "nav:panel"),
         ]
     )
@@ -183,37 +228,42 @@ async def on_qr(call: CallbackQuery, lang: str) -> None:
 
 @router.callback_query(F.data == "panel:single")
 async def on_single(call: CallbackQuery, lang: str) -> None:
-    """Every link in its own code block, plus a copy button per link.
+    """The singles screen, built to survive Telegram's own limits.
 
-    Tapping a code block copies on mobile, but the copy_text buttons make it
-    work everywhere and make the mapping between number and link explicit:
-    button N always copies link N, wherever the buttons happen to sit."""
+    Three delivery routes run together, because each one covers a case the
+    others miss:
+
+    1. a txt file with every link - no message cap, no button cap, works on
+       desktop and mobile, and it is what the user asked for by name;
+    2. the links themselves, two per message inside tap-to-copy code blocks -
+       a single link runs 300-400 characters and Telegram caps a copy button
+       at 256, so the buttons used to get the whole message rejected and the
+       screen came back empty. Two per message keeps each text small and the
+       code block still copies with one tap;
+    3. a copy button under each link, but only for links short enough to fit
+       the payload cap - which, for real panels, means the file and the blocks
+       carry the weight.
+    """
     panel = await _require_panel(call, lang)
     if panel is None:
         return
     links = vless.build_links(panel["uuid"], panel["host"], panel["endpoints"])
-    body = t(lang, "single_configs") + "\n\n" + "\n\n".join(
-        f"<b>#{num(index, lang)}</b>\n<code>{esc(link)}</code>"
-        for index, link in enumerate(links, start=1)
-    )
-    copy_rows = _copy_rows(
-        [(f"\U0001f4cb #{num(index, lang)}", link) for index, link in enumerate(links, start=1)]
-    )
-    parts = chunked(body)
-    for position, part in enumerate(parts):
-        last = position == len(parts) - 1
-        if last:
-            markup = InlineKeyboardMarkup(
-                inline_keyboard=[*copy_rows, keyboards.back_row(lang, "nav:panel")]
-            )
-        else:
-            markup = None
-        await call.message.answer(
-            part,
-            reply_markup=markup,
-            disable_web_page_preview=True,
-        )
+    if not links:
+        await edit(call, t(lang, "fragment_none"), keyboards.panel_menu(lang))
+        await call.answer()
+        return
     await call.answer()
+
+    await call.message.answer_document(
+        _links_file(links, "autovless-configs.txt"),
+        caption=t(lang, "single_file_caption", count=num(len(links), lang)),
+    )
+
+    groups = _link_pairs(links, lang)
+    for position, group_text in enumerate(groups):
+        header = t(lang, "single_group_header") if position == 0 else ""
+        body = f"{header}\n\n{group_text}" if header else group_text
+        await call.message.answer(body, disable_web_page_preview=True)
 
 
 # --------------------------------------------------------------------- #
@@ -242,35 +292,23 @@ async def on_trojan(call: CallbackQuery, lang: str) -> None:
         return
 
     await call.answer()
-    body = t(
+    header = t(
         lang,
         "trojan_configs",
         count=num(len(links), lang),
         sub=esc(_sub_links(call.from_user.id, panel)["trojan"]),
         password=esc(trojan.password_for(panel["uuid"])),
     )
-    body += "\n\n" + "\n\n".join(
-        f"<b>#{num(index, lang)}</b>\n<code>{esc(link)}</code>"
-        for index, link in enumerate(links, start=1)
+    await call.message.answer(header, disable_web_page_preview=True)
+    # The txt file: same capacity argument as the singles screen. Trojan
+    # links run 300+ characters, so per-link copy buttons used to get the whole
+    # message - header, links and all - rejected with BUTTON_DATA_INVALID.
+    await call.message.answer_document(
+        _links_file(links, "autovless-trojan.txt"),
+        caption=t(lang, "single_file_caption", count=num(len(links), lang)),
     )
-
-    copy_rows = _copy_rows(
-        [(f"\U0001f4cb #{num(index, lang)}", link) for index, link in enumerate(links, start=1)]
-    )
-    parts = chunked(body)
-    for position, part in enumerate(parts):
-        last = position == len(parts) - 1
-        if last:
-            markup = InlineKeyboardMarkup(
-                inline_keyboard=[*copy_rows, keyboards.back_row(lang, "nav:panel")]
-            )
-        else:
-            markup = None
-        await call.message.answer(
-            part,
-            reply_markup=markup,
-            disable_web_page_preview=True,
-        )
+    for position, group_text in enumerate(_link_pairs(links, lang)):
+        await call.message.answer(group_text, disable_web_page_preview=True)
     await db.log_event("trojan", call.from_user.id, f"links={len(links)}")
 
 

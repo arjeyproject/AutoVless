@@ -146,9 +146,17 @@ EN: dict[str, str] = {
         "\U0001f4e6 sing-box:\n<code>{singbox}</code>"
     ),
     "single_configs": (
-        "\U0001f4dd <b>Individual configs</b>\n{rule}\nTap a config to copy it, or use the copy buttons below.\n"
-        "\U0001f4a1 The all-in-one subscription is still the better path: the best IPs mount themselves.\n"
+        "\U0001f4dd <b>Individual configs</b>\n{rule}\n"
+        "\U0001f4c4 Everything arrives as one txt file and is shown two links per message.\n"
+        "\U0001f4a1 Tap any code block to copy the whole link. The all-in-one subscription is still the better path.\n"
         "\u26a1 port 443 \u00b7 \U0001f7e1 port 80 \u00b7 \U0001f300 self-healing hostname"
+    ),
+    "single_file_caption": (
+        "\U0001f4c4 <b>{count} individual configs</b> \u2014 one file\n"
+        "\u2705 Open it, copy the link you need, import it into your client."
+    ),
+    "single_group_header": (
+        "\U0001f4dd <b>Individual configs</b> \u2014 tap a block to copy it"
     ),
     "qr_caption": "\U0001f4f7 {brand} subscription QR code",
     "ping_result": (

@@ -15,7 +15,7 @@ TURBO: dict[str, dict[str, str]] = {
     "fa": {
         # ------------------------------------------------------------ buttons
         "btn.trojan": "\U0001f3af کانفیگ تروجان",
-        "btn.fragment": "\U0001f9e9 تبدیل همه به فرگمنت",
+        "btn.fragment": "\U0001f9f1 کانفیگ فرگمنت (Xray)",
         # ------------------------------------------------------------- trojan
         "sub_mixed": (
             "\u200f\U0001f3af <b>لینک ترکیبی (VLESS + Trojan)</b>\n"
@@ -61,7 +61,7 @@ TURBO: dict[str, dict[str, str]] = {
     },
     "en": {
         "btn.trojan": "\U0001f3af Trojan configs",
-        "btn.fragment": "\U0001f9e9 Convert all to Fragment",
+        "btn.fragment": "\U0001f9f1 Fragment config (Xray)",
         "sub_mixed": (
             "\U0001f3af <b>Mixed link (VLESS + Trojan)</b>\n"
             "<code>{mix}</code>\n\n"

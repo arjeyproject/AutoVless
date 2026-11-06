@@ -25,10 +25,9 @@ def _button(label: str, data: str) -> InlineKeyboardButton:
 async def _extra_rows(lang: str) -> list[list[InlineKeyboardButton]]:
     """The optional rows the main menu inserts above the language row.
 
-    They continue the main menu's checkerboard: the four fixed rows end on
-    grid row 3, so free (produce) lands on row 4 green and invite (view) on
-    row 4 blue."""
-    free = keyboards.OK if await store.flag("free_enabled", True) else None
+    Both optional actions sit in the blue rank: the main menu keeps exactly
+    one green leader (build the panel), no matter which extras are enabled."""
+    free = keyboards.GO if await store.flag("free_enabled", True) else None
     rows: list[list[InlineKeyboardButton]] = []
     pair: list[InlineKeyboardButton] = []
     if free:
