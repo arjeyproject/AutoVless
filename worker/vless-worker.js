@@ -180,6 +180,12 @@ export default {
         }
         return handleTunnel(request, cfg);
       }
+      // XHTTP stream-one: one POST carries the whole session. The request body
+      // is the client -> destination stream, the response body the reverse. No
+      // session state is needed, so it runs on the free plan.
+      if (request.method === "POST" && cfg.xhttpActive && isXhttpPath(new URL(request.url).pathname, cfg)) {
+        return handleXhttpStream(request, cfg);
+      }
       return await handleHttp(request, cfg);
     } catch (err) {
       return textResponse("bad request", 400);
@@ -215,6 +221,12 @@ function readConfig(env, request) {
     ssPath: String(env.SS_PATH || "/ss"),
     ssMethod: String(env.SS_METHOD || "aes-256-gcm").trim() || "aes-256-gcm",
     ssPassword: String(env.SS_PASSWORD || "").trim(),
+    // Free transports. HTTPUpgrade is served by the same WebSocket code path
+    // (an httpupgrade client sends a plain Upgrade: websocket handshake), so
+    // only the link builders differ. XHTTP stream-one is its own inbound.
+    httpupgradeActive: String(env.HTTPUPGRADE || "true").toLowerCase() !== "false",
+    xhttpActive: String(env.XHTTP || "true").toLowerCase() !== "false",
+    xhttpPath: String(env.XHTTP_PATH || "").trim(),
     proxies,
     aiProxies,
     aiDomains: aiDomainList(env.AI_DOMAINS),
@@ -652,6 +664,101 @@ function handleTunnel(request, cfg) {
     .catch(() => shutdown(state));
 
   return new Response(null, { status: 101, webSocket: client });
+}
+
+/* ------------------------------------------------------- xhttp stream-one */
+
+function isXhttpPath(pathname, cfg) {
+  const clean = String(pathname || "").replace(/\/+$/, "") || "/";
+  if (cfg.xhttpPath) {
+    if (clean === cfg.xhttpPath) return true;
+    return clean === cfg.xhttpPath + "/" + cfg.uuid;
+  }
+  return clean === "/" + cfg.uuid;
+}
+
+/**
+ * XHTTP in stream-one mode: a single POST whose request body carries the
+ * client->destination bytes and whose response body carries the reverse.
+ *
+ * This is the one XHTTP mode a stateless edge runtime can serve: no session
+ * store is needed, because the entire session lives in one request. The same
+ * state machine that drives the WebSocket tunnel does the work here; only the
+ * sink differs, so a small object with ``readyState``, ``send`` and ``close``
+ * stands in for the WebSocket. VLESS, and - as with the WS path - Trojan on
+ * top, are sniffed from the first bytes exactly as before.
+ */
+function handleXhttpStream(request, cfg) {
+  const state = {
+    cfg,
+    socket: null,
+    write: null,
+    header: null,
+    mode: "",
+    prefix: null,
+    encode: null,
+    spoke: false,
+    done: false,
+    out: null,
+    // Stand-in for the WebSocket: pumpRemote sends through it, shutdown
+    // closes it. The VLESS response header rides on the first chunk like on
+    // a WS session, so the client sees an identical byte stream.
+    ws: {
+      readyState: WS_OPEN,
+      send(bytes) {
+        if (state.out) state.out.enqueue(toBytes(bytes));
+      },
+      close() {
+        if (state.out) {
+          try {
+            state.out.close();
+          } catch (err) {
+            /* already closed */
+          }
+          state.out = null;
+        }
+      }
+    }
+  };
+
+  const out = new ReadableStream({
+    start(controller) {
+      state.out = controller;
+    },
+    cancel() {
+      state.done = true;
+      closeSocket(state.socket);
+    }
+  });
+
+  request.body
+    .pipeTo(
+      new WritableStream({
+        async write(chunk) {
+          await onClientChunk(state, chunk);
+        },
+        close() {
+          shutdown(state);
+        },
+        abort() {
+          shutdown(state);
+        }
+      })
+    )
+    .catch(() => shutdown(state));
+
+  // The gRPC content type is deliberate: it keeps the request looking like
+  // ordinary HTTP/2 service traffic at the edge and changes nothing for the
+  // client, which only reads bytes.
+  return new Response(out, {
+    status: 200,
+    headers: {
+      "content-type": "application/grpc",
+      "x-accel-buffering": "no",
+      "cache-control": "no-store",
+      ...corsHeaders()
+    }
+  });
 }
 
 function wsReadable(ws, earlyHeader) {
@@ -1416,6 +1523,8 @@ async function handleHttp(request, cfg) {
 
   if (kind === "health") {
     const protocols = ["vless"];
+    if (cfg.httpupgradeActive) protocols.push("httpupgrade");
+    if (cfg.xhttpActive) protocols.push("xhttp");
     if (cfg.trojan) protocols.push("trojan");
     if (cfg.ssActive) protocols.push("shadowsocks");
     return jsonResponse({
@@ -1434,6 +1543,8 @@ async function handleHttp(request, cfg) {
       protocols,
       trojan: cfg.trojan,
       shadowsocks: cfg.ssActive,
+      httpupgrade: cfg.httpupgradeActive,
+      xhttp: cfg.xhttpActive,
       ss_path: cfg.ssActive ? cfg.ssPath : null,
       tls_ports: cfg.tlsPorts,
       http_ports: cfg.httpPorts,
@@ -1470,9 +1581,15 @@ async function handleHttp(request, cfg) {
     links = buildTrojanLinks(cfg, endpoints);
   } else if (kind === "ss" || kind === "shadowsocks") {
     links = buildSsLinks(cfg, endpoints);
+  } else if (kind === "httpup" || kind === "httpupgrade") {
+    links = buildHttpUpgradeLinks(cfg, endpoints);
+  } else if (kind === "xhttp") {
+    links = buildXhttpLinks(cfg, endpoints);
   } else if (kind === "mix" || kind === "all") {
     links = [
       ...buildLinks(cfg, endpoints),
+      ...buildHttpUpgradeLinks(cfg, endpoints),
+      ...buildXhttpLinks(cfg, endpoints),
       ...buildTrojanLinks(cfg, endpoints),
       ...buildSsLinks(cfg, endpoints)
     ];
@@ -1616,6 +1733,8 @@ function remark(cfg, endpoint, index, protocol) {
   if (endpoint.kind === "live") badge = "\ud83d\udd04";
   if (protocol === "trojan") badge = endpoint.kind === "domain" ? "\ud83c\udf00" : "\ud83c\udfaf";
   if (protocol === "ss") badge = endpoint.kind === "domain" ? "\ud83c\udf00" : "\ud83d\udee1";
+  if (protocol === "httpup") badge = "\ud83d\udcf6";
+  if (protocol === "xhttp") badge = "\ud83d\ude80";
   const ping = endpoint.latency ? Math.round(Number(endpoint.latency)) + "ms" : "auto";
   const tail = secure ? "" : " | \ud83d\udd0c" + endpoint.port;
   const lock = secure && Number(endpoint.port) !== 443 ? " | \ud83d\udd12" + endpoint.port : "";
@@ -1670,6 +1789,87 @@ function buildLinks(cfg, endpoints) {
         label
     );
   });
+  return links;
+}
+
+/**
+ * HTTPUpgrade links. The wire handshake is a plain Upgrade: websocket
+ * request, so the same server code path serves both transports and only the
+ * client side differs: no websocket framing after the handshake, which costs
+ * a few percent less CPU on the phone and sometimes passes DPI shapes that
+ * have learned to look for websocket framing.
+ */
+function buildHttpUpgradeLinks(cfg, endpoints) {
+  if (!cfg.httpupgradeActive) return [];
+  const links = [];
+  endpoints.forEach((endpoint, position) => {
+    const secure = isTls(endpoint.port, cfg);
+    const params = new URLSearchParams({
+      encryption: "none",
+      security: secure ? "tls" : "none",
+      type: "httpupgrade",
+      host: cfg.host,
+      path: cfg.wsPath
+    });
+    if (secure) {
+      params.set("sni", cfg.host);
+      params.set("fp", "chrome");
+      params.set("alpn", "http/1.1");
+    }
+    const label = encodeURIComponent(remark(cfg, endpoint, position + 1, "httpup"));
+    links.push(
+      "vless://" +
+        cfg.uuid +
+        "@" +
+        endpoint.ip +
+        ":" +
+        endpoint.port +
+        "?" +
+        params.toString() +
+        "#" +
+        label
+    );
+  });
+  return links;
+}
+
+/**
+ * XHTTP stream-one links, TLS endpoints only: the mode needs one full-duplex
+ * HTTP/2 request, and plaintext HTTP/1.1 on port 80 cannot promise that. The
+ * path carries the panel uuid; the VLESS uuid rides in the header as usual.
+ */
+function buildXhttpLinks(cfg, endpoints) {
+  if (!cfg.xhttpActive) return [];
+  const links = [];
+  let index = 0;
+  const path = "/" + cfg.uuid;
+  for (const endpoint of endpoints) {
+    if (!isTls(endpoint.port, cfg)) continue;
+    index += 1;
+    const params = new URLSearchParams({
+      encryption: "none",
+      security: "tls",
+      type: "xhttp",
+      mode: "stream-one",
+      host: cfg.host,
+      path: path,
+      sni: cfg.host,
+      fp: "chrome"
+    });
+    const label = encodeURIComponent(remark(cfg, endpoint, index, "xhttp"));
+    links.push(
+      "vless://" +
+        cfg.uuid +
+        "@" +
+        endpoint.ip +
+        ":" +
+        endpoint.port +
+        "?" +
+        params.toString() +
+        "#" +
+        label
+    );
+  }
   return links;
 }
 
