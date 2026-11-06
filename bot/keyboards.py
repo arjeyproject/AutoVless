@@ -13,14 +13,39 @@ from .platforms import ORDER as PLATFORM_ORDER
 from .platforms import label_key, normalise_platform, should_include_amnezia_keys
 
 CF_SIGNUP_URL = "https://dash.cloudflare.com/sign-up"
+# The pre-filled token template. Pages panels need Cloudflare Pages: Edit on
+# top of the Workers permissions (the worker path stays as the fallback), so
+# both permission sets ride along and the same token serves both targets.
 CF_TOKEN_URL = (
     "https://dash.cloudflare.com/profile/api-tokens"
-    "?permissionGroupKeys=%5B%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C"
+    "?permissionGroupKeys=%5B%7B%22key%22%3A%22page%22%2C%22type%22%3A%22edit%22%7D%2C"
+    "%7B%22key%22%3A%22workers_scripts%22%2C%22type%22%3A%22edit%22%7D%2C"
     "%7B%22key%22%3A%22account_settings%22%2C%22type%22%3A%22read%22%7D%2C"
     "%7B%22key%22%3A%22zone%22%2C%22type%22%3A%22read%22%7D%2C"
+    "%7B%22key%22%3A%22workers_routes%22%2C%22type%22%3A%22edit%22%7D%2C"
     "%7B%22key%22%3A%22dns%22%2C%22type%22%3A%22edit%22%7D%5D"
     "&accountId=*&zoneId=all&name=AutoVless"
 )
+
+# Telegram inline keyboards have no colour API - only text. The colour system
+# is a real one, not decoration: every button on every screen carries the
+# colour of its action, so the same colour always means the same thing.
+GREEN = "\U0001f7e2"    # create, build, confirm, apply something
+BLUE = "\U0001f535"     # open or view something
+PURPLE = "\U0001f7eb"   # WARP / WireGuard
+ORANGE = "\U0001f7e0"   # apps, free stuff, the catalogue
+YELLOW = "\U0001f7e1"   # settings, conversions, diagnostics
+RED = "\U0001f534"      # destructive actions only
+WHITE = "\u26aa\ufe0f"  # navigation and secondary actions
+
+
+def _paint(text: str, *colour: str) -> str:
+    """Prefix the action colour unless the label already carries a mark."""
+    if not colour:
+        return text
+    if text.startswith((GREEN, BLUE, PURPLE, ORANGE, YELLOW, RED, WHITE, "\U0001f7e2", "\u2705", "\u274c")):
+        return text
+    return f"{colour[0]} {text}"
 
 AMNEZIA_PLAY_URL = "https://play.google.com/store/apps/details?id=org.amnezia.vpn"
 AMNEZIA_WIN_URL = "https://github.com/amnezia-vpn/amnezia-client/releases/latest"
@@ -39,6 +64,15 @@ def _b(text: str, data: str) -> InlineKeyboardButton:
 
 def _u(text: str, url: str) -> InlineKeyboardButton:
     return InlineKeyboardButton(text=text, url=url)
+
+
+def _c(text: str, data: str, colour: str) -> InlineKeyboardButton:
+    """A coloured action button."""
+    return _b(_paint(text, colour), data)
+
+
+def _cu(text: str, url: str, colour: str) -> InlineKeyboardButton:
+    return _u(_paint(text, colour), url)
 
 
 def glass_button(text: str, callback: str) -> InlineKeyboardButton:
@@ -62,7 +96,7 @@ def device_picker(lang: str, flow: str = "", back: str = "nav:warp") -> InlineKe
     """
     tail = f":{flow}" if flow else ""
     rows = [
-        [glass_button(t(lang, label_key(name)), f"wg:dev:{name}{tail}")]
+        [_c(t(lang, label_key(name)), f"wg:dev:{name}{tail}", PURPLE)]
         for name in PLATFORM_ORDER
     ]
     rows.append(back_row(lang, back))
@@ -89,30 +123,30 @@ def ticket_mark(status: object) -> str:
 
 
 def back_row(lang: str, target: str = "nav:menu") -> list[InlineKeyboardButton]:
-    return [_b(t(lang, "btn.back"), target)]
+    return [_c(t(lang, "btn.back"), target, WHITE)]
 
 
 def main_menu(lang: str, is_admin: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
-        [_b(t(lang, "btn.build"), "nav:build")],
-        [_b(t(lang, "btn.panel"), "nav:panel")],
-        [_b(t(lang, "btn.warp"), "nav:warp")],
-        [_b(t(lang, "btn.apps"), "nav:apps")],
-        [_b(t(lang, "btn.guide"), "nav:guide"), _b(t(lang, "btn.convert"), "nav:convert")],
-        [_b(t(lang, "btn.status"), "nav:status"), _b(t(lang, "btn.operator"), "nav:operator")],
-        [_b(t(lang, "btn.support"), "nav:support"), _b(t(lang, "btn.donate"), "nav:donate")],
-        [_b(t(lang, "btn.lang"), "nav:lang")],
+        [_c(t(lang, "btn.build"), "nav:build", GREEN)],
+        [_c(t(lang, "btn.panel"), "nav:panel", BLUE)],
+        [_c(t(lang, "btn.warp"), "nav:warp", PURPLE)],
+        [_c(t(lang, "btn.apps"), "nav:apps", ORANGE)],
+        [_c(t(lang, "btn.guide"), "nav:guide", WHITE), _c(t(lang, "btn.convert"), "nav:convert", YELLOW)],
+        [_c(t(lang, "btn.status"), "nav:status", YELLOW), _c(t(lang, "btn.operator"), "nav:operator", YELLOW)],
+        [_c(t(lang, "btn.support"), "nav:support", BLUE), _c(t(lang, "btn.donate"), "nav:donate", ORANGE)],
+        [_c(t(lang, "btn.lang"), "nav:lang", WHITE)],
     ]
     if is_admin:
-        rows.append([_b(t(lang, "btn.admin"), "adm:menu")])
+        rows.append([_c(t(lang, "btn.admin"), "adm:menu", RED)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def token_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_u(t(lang, "btn.cf_signup"), CF_SIGNUP_URL)],
-            [_u(t(lang, "btn.cf_token"), CF_TOKEN_URL)],
+            [_cu(t(lang, "btn.cf_signup"), CF_SIGNUP_URL, BLUE)],
+            [_cu(t(lang, "btn.cf_token"), CF_TOKEN_URL, GREEN)],
             back_row(lang),
         ]
     )
@@ -125,21 +159,17 @@ def panel_menu(lang: str) -> InlineKeyboardMarkup:
     the most common complaint on Iranian mobile networks: the config connects on
     wifi and dies on the handshake behind DPI. Trojan sits next to the single
     configs, since both are "give me links I can paste somewhere else".
-
-    The screen used to be eleven stacked rows and read like a settings page. It is
-    now paired down the middle: fewer taps to reach anything, and considerably
-    less to look at.
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_b(t(lang, "btn.qr"), "panel:qr"), _b(t(lang, "btn.sub"), "panel:sub")],
-            [_b(t(lang, "btn.fragment"), "panel:fragment")],
-            [_b(t(lang, "btn.trojan"), "panel:trojan"), _b(t(lang, "btn.single"), "panel:single")],
-            [_b(t(lang, "btn.clash"), "panel:clash"), _b(t(lang, "btn.singbox"), "panel:singbox")],
-            [_b(t(lang, "btn.ping"), "panel:ping"), _b(t(lang, "btn.ai"), "panel:ai")],
-            [_b(t(lang, "btn.apply"), "panel:apply"), _b(t(lang, "btn.rescan"), "panel:rescan")],
-            [_b(t(lang, "btn.rebuild"), "panel:rebuild"), _b(t(lang, "btn.apps"), "nav:apps")],
-            [_b(t(lang, "btn.delete"), "panel:delete")],
+            [_c(t(lang, "btn.qr"), "panel:qr", BLUE), _c(t(lang, "btn.sub"), "panel:sub", BLUE)],
+            [_c(t(lang, "btn.fragment"), "panel:fragment", PURPLE)],
+            [_c(t(lang, "btn.trojan"), "panel:trojan", YELLOW), _c(t(lang, "btn.single"), "panel:single", YELLOW)],
+            [_c(t(lang, "btn.clash"), "panel:clash", YELLOW), _c(t(lang, "btn.singbox"), "panel:singbox", YELLOW)],
+            [_c(t(lang, "btn.ping"), "panel:ping", WHITE), _c(t(lang, "btn.ai"), "panel:ai", WHITE)],
+            [_c(t(lang, "btn.apply"), "panel:apply", GREEN), _c(t(lang, "btn.rescan"), "panel:rescan", GREEN)],
+            [_c(t(lang, "btn.rebuild"), "panel:rebuild", GREEN), _c(t(lang, "btn.apps"), "nav:apps", ORANGE)],
+            [_c(t(lang, "btn.delete"), "panel:delete", RED)],
             back_row(lang),
         ]
     )
@@ -147,7 +177,9 @@ def panel_menu(lang: str) -> InlineKeyboardMarkup:
 
 def confirm_menu(lang: str, yes: str, no: str = "nav:panel") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
-        inline_keyboard=[[_b(t(lang, "btn.confirm"), yes), _b(t(lang, "btn.cancel"), no)]]
+        inline_keyboard=[
+            [_c(t(lang, "btn.confirm"), yes, GREEN), _c(t(lang, "btn.cancel"), no, WHITE)]
+        ]
     )
 
 
@@ -286,7 +318,7 @@ def warp_menu(lang: str, has_identity: bool = False) -> InlineKeyboardMarkup:
     existing caller keeps working.
     """
     rows: list[list[InlineKeyboardButton]] = [
-        [glass_button(t(lang, "btn.warp_build"), "wg:net")],
+        [glass_button(f"{PURPLE} {t(lang, 'btn.warp_build')}", "wg:net")],
         back_row(lang),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -300,11 +332,11 @@ def warp_network(lang: str, platform: str = "") -> InlineKeyboardMarkup:
     """
     tail = f":{normalise_platform(platform)}" if platform else ""
     rows = [
-        [glass_button(t(lang, "btn.wg_irancell"), f"wg:net:mtn{tail}")],
-        [glass_button(t(lang, "btn.wg_other"), f"wg:net:other{tail}")],
+        [glass_button(f"{PURPLE} {t(lang, 'btn.wg_irancell')}", f"wg:net:mtn{tail}")],
+        [glass_button(f"{PURPLE} {t(lang, 'btn.wg_other')}", f"wg:net:other{tail}")],
     ]
     if platform:
-        rows.append([_b(t(lang, "btn.wg_change_device"), "wg:net")])
+        rows.append([_c(t(lang, "btn.wg_change_device"), "wg:net", WHITE)])
     rows.append(back_row(lang, "nav:warp"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -497,15 +529,15 @@ def support_ticket(
 def admin_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_b(t(lang, "btn.stats"), "adm:stats"), _b(t(lang, "btn.users"), "adm:users")],
+            [_c(t(lang, "btn.stats"), "adm:stats", YELLOW), _c(t(lang, "btn.users"), "adm:users", BLUE)],
             [
-                _b(t(lang, "btn.broadcast"), "adm:broadcast"),
-                _b(t(lang, "btn.channels"), "adm:channels"),
+                _c(t(lang, "btn.broadcast"), "adm:broadcast", ORANGE),
+                _c(t(lang, "btn.channels"), "adm:channels", YELLOW),
             ],
-            [_b(t(lang, "btn.engine"), "adm:engine"), _b(t(lang, "btn.options"), "adm:options")],
-            [_b(t(lang, "btn.pool"), "pool:home")],
-            [_b(t(lang, "btn.panels"), "adm:panels"), _b(t(lang, "btn.logs"), "adm:logs")],
-            [_b(t(lang, "btn.tickets"), "sup:list:open"), _b(t(lang, "btn.backup"), "adm:backup")],
+            [_c(t(lang, "btn.engine"), "adm:engine", GREEN), _c(t(lang, "btn.options"), "adm:options", YELLOW)],
+            [_c(t(lang, "btn.pool"), "pool:home", PURPLE)],
+            [_c(t(lang, "btn.panels"), "adm:panels", BLUE), _c(t(lang, "btn.logs"), "adm:logs", BLUE)],
+            [_c(t(lang, "btn.tickets"), "sup:list:open", BLUE), _c(t(lang, "btn.backup"), "adm:backup", YELLOW)],
             back_row(lang),
         ]
     )

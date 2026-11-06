@@ -38,21 +38,35 @@ on purpose:
 - **Glass panel UI**: every screen is an inline keyboard, fully bilingual (فارسی / English),
   right-to-left correct on every client
 - **Two-step Cloudflare onboarding**: sign-up button, then a token button with the exact
-  permissions pre-selected (Workers Scripts edit, Account read, Zone read, DNS edit)
+  permissions pre-selected (Cloudflare Pages edit, Workers Scripts edit, Account read,
+  Zone read, Workers Routes edit, DNS edit)
 - **Clean IP engine**: curated lists, self-healing hostnames and a weighted random sweep of
-  Cloudflare's prefixes, all verified with real requests that also reveal the edge colo
+  Cloudflare's prefixes, all verified with real requests that also reveal the edge colo.
+  Configs are mounted range-first: the best verified address per /24 leads, so the set a
+  user holds spans different Cloudflare neighbourhoods instead of one
 - **proxyIP scanner**: finds relays that forward TCP to the Cloudflare edge, rejects anything
   resolving into a Cloudflare prefix (a Worker cannot dial those), and keeps a self-healing
   pool. Every panel ships with an ordered failover chain of relays
-- **Automatic Worker deploy**: uploads a real VLESS-over-WebSocket Worker to the user's
-  account, enables `workers.dev`, mounts the fastest clean IPs onto the configs
-- **Health gate**: a panel is reported ready once the Worker proves it can open an outbound
-  socket. Dead relays are demoted automatically
-- **Subscription served by the Worker itself**: base64, raw, Clash / Mihomo, sing-box
+- **Pages-first deploy**: builds the panel as a Cloudflare Pages project (advanced mode
+  `_worker.js`) on `<project>.pages.dev` with a custom domain attached automatically.
+  `DEPLOY_TARGET=workers` keeps the classic workers.dev script path. Same code, same
+  protocols, same subscription either way
+- **Three free transports on every endpoint**: VLESS over WebSocket, VLESS over HTTPUpgrade
+  (same handshake, no websocket framing) and VLESS over XHTTP stream-one on TLS ports
+  (one full-duplex HTTP/2 POST - the stateless XHTTP mode, no Durable Objects needed).
+  Trojan over WebSocket and Shadowsocks ride along on TLS ports. Every transport gets its
+  own subscription path (`/uuid`, `/uuid/httpup`, `/uuid/xhttp`, `/uuid/trojan`, `/uuid/ss`,
+  `/uuid/mix`) and appears in the Clash and sing-box exports where the core supports it
+- **Health gate**: a panel is reported ready once the deployment proves it can open an
+  outbound socket. Dead relays are demoted automatically
+- **Subscription served by the Worker itself**: base64, raw, Clash / Mihomo, sing-box -
+  blending fresh addresses on every fetch, so pressing Update in the client is enough
 - **Apps and downloads**: a platform picker where every app name is a tappable link to
   Google Play, the App Store or the project's release page
 - **Panel management**: QR code, subscription links, individual configs, live ping test that
   demotes dead entries, one-tap clean IP apply, rescan, rebuild, delete
+- **Coloured keyboards**: every inline button carries the colour of its action - green to
+  build, blue to view, purple for WARP, orange for apps, yellow for settings, red to destroy
 - **WARP / WireGuard generator** with AmneziaWG obfuscation, and a vless link converter
 - **Advanced admin panel**: stats, user search with ban controls, broadcast, forced-channel
   lock, scan engine and autopilot controls, feature toggles, event log, database backup

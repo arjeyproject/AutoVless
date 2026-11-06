@@ -25,6 +25,7 @@ from aiogram.types import (
 from .. import db, freepool, keyboards, referral, screens, store
 from ..config import settings
 from ..i18n import num, t
+from ..keyboards import BLUE, GREEN, ORANGE, PURPLE, WHITE, YELLOW, _c, back_row
 from ..utils import chunked, edit, esc, ping_label
 from ..webapp import build_webapp_url
 from .webapp import miniapp_keyboard
@@ -32,8 +33,20 @@ from .webapp import miniapp_keyboard
 log = logging.getLogger("autovless.handlers.growth")
 router = Router(name="growth")
 
-TIPS = {"vless": "free.tip_vless", "trojan": "free.tip_trojan", "mix": "free.tip_mix"}
-TITLES = {"vless": "btn.free_vless", "trojan": "btn.free_trojan", "mix": "btn.free_mix"}
+TIPS = {
+    "vless": "free.tip_vless",
+    "trojan": "free.tip_trojan",
+    "httpupgrade": "free.tip_httpupgrade",
+    "xhttp": "free.tip_xhttp",
+    "mix": "free.tip_mix",
+}
+TITLES = {
+    "vless": "btn.free_vless",
+    "trojan": "btn.free_trojan",
+    "httpupgrade": "btn.free_httpup",
+    "xhttp": "btn.free_xhttp",
+    "mix": "btn.free_mix",
+}
 
 
 def _b(label: str, data: str) -> InlineKeyboardButton:
@@ -43,11 +56,12 @@ def _b(label: str, data: str) -> InlineKeyboardButton:
 def free_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_b(t(lang, "btn.free_vless"), "free:vless"), _b(t(lang, "btn.free_trojan"), "free:trojan")],
-            [_b(t(lang, "btn.free_mix"), "free:mix")],
-            [_b(t(lang, "btn.free_warp"), "nav:warp")],
-            [_b(t(lang, "btn.apps"), "nav:apps")],
-            [_b(t(lang, "btn.back"), "nav:menu")],
+            [_c(t(lang, "btn.free_vless"), "free:vless", GREEN), _c(t(lang, "btn.free_trojan"), "free:trojan", YELLOW)],
+            [_c(t(lang, "btn.free_httpup"), "free:httpupgrade", BLUE), _c(t(lang, "btn.free_xhttp"), "free:xhttp", PURPLE)],
+            [_c(t(lang, "btn.free_mix"), "free:mix", ORANGE)],
+            [_c(t(lang, "btn.free_warp"), "nav:warp", WHITE)],
+            [_c(t(lang, "btn.apps"), "nav:apps", ORANGE)],
+            back_row(lang),
         ]
     )
 
