@@ -134,13 +134,19 @@ async def run() -> None:
     middlewares.register(dispatcher)
     handlers.register(dispatcher)
 
-    await scanner.start()
-    await proxy_scanner.start()
-    await warp_scanner.start()
-    # After the scanner: the pool agent borrows its probing identity.
-    await warp_pool.start()
-    await autopilot.start()
-    await curator.start()
+    if settings.endpoint_scan_enabled:
+        await scanner.start()
+        await proxy_scanner.start()
+        # After the scanner: the pool agent borrows its probing identity.
+        await warp_pool.start()
+        await autopilot.start()
+        await curator.start()
+    else:
+        log.warning("endpoint scanners are disabled; configure owner-controlled endpoints before enabling them")
+    if settings.warp_scan_enabled:
+        await warp_scanner.start()
+    else:
+        log.warning("WARP endpoint scanning is disabled")
     # The invite link is built from the bot's own username, and the API has no Bot
     # handle of its own, so it is resolved once here.
     await referral.bot_username(bot)
@@ -162,12 +168,14 @@ async def run() -> None:
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
     finally:
         await api_server.stop()
-        await curator.stop()
-        await autopilot.stop()
-        await warp_pool.stop()
-        await warp_scanner.stop()
-        await proxy_scanner.stop()
-        await scanner.stop()
+        if settings.endpoint_scan_enabled:
+            await curator.stop()
+            await autopilot.stop()
+            await warp_pool.stop()
+            await proxy_scanner.stop()
+            await scanner.stop()
+        if settings.warp_scan_enabled:
+            await warp_scanner.stop()
         await db.close()
         await bot.session.close()
         log.info("shutdown complete")

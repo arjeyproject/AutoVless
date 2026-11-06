@@ -122,8 +122,14 @@ def verify_init_data(raw: str) -> Optional[dict]:
         issued = int(pairs.get("auth_date") or 0)
     except ValueError:
         issued = 0
-    if INIT_DATA_TTL and issued and time.time() - issued > INIT_DATA_TTL:
-        return None
+    if issued:
+        age = time.time() - issued
+        # Reject timestamps from the future as well as stale launches. Without
+        # this check a clock-skewed or replayed payload could bypass the TTL.
+        if age < -settings.init_data_future_skew:
+            return None
+        if INIT_DATA_TTL and age > INIT_DATA_TTL:
+            return None
 
     try:
         user = json.loads(pairs.get("user") or "{}")
@@ -843,6 +849,8 @@ async def ping_handler(request: web.Request, body: dict, user: dict) -> web.Stre
 
 async def rescan_handler(request: web.Request, body: dict, user: dict) -> web.StreamResponse:
     """A clean-IP sweep. Rate limited: it used to be one tap per full scan, for anyone."""
+    if not settings.endpoint_scan_enabled:
+        return _json({"ok": False, "error": "endpoint scanning is disabled"}, status=403)
     tg_id = user["id"]
     if not settings.is_admin(tg_id):
         now = time.monotonic()

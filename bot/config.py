@@ -98,6 +98,7 @@ class Settings:
     warp_scan_interval: int; warp_scan_sample: int; warp_scan_concurrency: int; warp_scan_timeout: float
     warp_scan_attempts: int; warp_verify_top: int; warp_pool_size: int; warp_per_config: int
     store_tokens: bool; request_timeout: float; log_level: str
+    endpoint_scan_enabled: bool; warp_scan_enabled: bool; init_data_future_skew: int
     compatibility_date: str = "2024-11-01"; languages: tuple[str, ...] = field(default=("fa", "en"))
     @property
     def config_count(self) -> int: return self.tls_config_count + self.http_config_count
@@ -170,7 +171,12 @@ def load_settings() -> Settings:
         curator_stale=max(1800, _int("CURATOR_STALE", 14400)), curator_abort_ratio=min(1.0, max(0.5, _float("CURATOR_ABORT", 0.85))),
         curator_push=_bool("CURATOR_PUSH", True), curator_push_batch=max(1, _int("CURATOR_PUSH_BATCH", 6)),
         warp_enabled=_bool("WARP_ENABLED", True), warp_amnezia=_bool("WARP_AMNEZIA", True), warp_mtu=max(1000, min(1420, _int("WARP_MTU", 1280))), warp_dns=_str("WARP_DNS", "1.1.1.1, 1.0.0.1"), warp_license=_str("WARP_LICENSE"), warp_ports=_int_list("WARP_PORTS"), warp_scan_interval=max(300, _int("WARP_SCAN_INTERVAL", 1200)), warp_scan_sample=max(2, _int("WARP_SCAN_SAMPLE", 10)), warp_scan_concurrency=max(8, _int("WARP_SCAN_CONCURRENCY", 80)), warp_scan_timeout=max(.5, _int("WARP_SCAN_TIMEOUT_MS", 2500) / 1000), warp_scan_attempts=max(2, min(5, _int("WARP_SCAN_ATTEMPTS", 3))), warp_verify_top=max(4, _int("WARP_VERIFY_TOP", 24)), warp_pool_size=max(8, _int("WARP_POOL_SIZE", 100)), warp_per_config=max(1, _int("WARP_PER_CONFIG", 6)),
-        store_tokens=_bool("STORE_TOKENS", True), request_timeout=max(5.0, float(_int("REQUEST_TIMEOUT", 30))), log_level=_str("LOG_LEVEL", "INFO").upper(),
+        store_tokens=_bool("STORE_TOKENS", False), request_timeout=max(5.0, float(_int("REQUEST_TIMEOUT", 30))), log_level=_str("LOG_LEVEL", "INFO").upper(),
+        # Public internet scanning is deliberately opt-in. Production deployments
+        # should use an explicit owner-controlled endpoint allowlist instead.
+        endpoint_scan_enabled=_bool("ENDPOINT_SCAN_ENABLED", False),
+        warp_scan_enabled=_bool("WARP_SCAN_ENABLED", False),
+        init_data_future_skew=max(0, _int("INIT_DATA_FUTURE_SKEW", 60)),
     )
 
 settings = load_settings()
