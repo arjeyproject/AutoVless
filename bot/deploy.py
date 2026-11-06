@@ -43,7 +43,7 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 
-from . import aipin, db, edge, proxies, shadowsocks, vless
+from . import aipin, db, edge, pages, proxies, shadowsocks, vless
 from .cloudflare import CloudflareClient, CloudflareError, script_name
 from .config import settings
 from .probe import measure
@@ -93,6 +93,7 @@ class Panel:
     probe: dict = field(default_factory=dict)
     rejected: int = 0
     custom_domain: bool = False
+    target: str = "workers"
 
 
 def render_steps(lang: str, index: int, translate) -> str:
@@ -183,6 +184,8 @@ def _bindings(
         "HTTP_COUNT": str(settings.http_config_count),
         "DNS_SERVER": settings.dns_server,
         "FALLBACK_HOST": settings.fallback_host,
+        "HTTPUPGRADE": "true" if settings.httpupgrade else "false",
+        "XHTTP": "true" if settings.xhttp else "false",
         "BUILD_ID": str(int(time.time())),
         **shadowsocks.bindings(uuid),
     }
@@ -359,11 +362,14 @@ async def _record_host(uuid: str, host: str) -> None:
         log.warning("could not record the new host %s for %s", host, uuid, exc_info=True)
 
 
-async def _move_to_domain(token: str, account_id: str, script: str, uuid: str) -> str:
-    """Attach a custom domain to a live workers.dev panel. ``""`` if none."""
+async def _move_to_domain(token: str, account_id: str, script: str, uuid: str, target: str) -> str:
+    """Attach a custom domain to a live panel. ``""`` if none."""
     try:
         async with CloudflareClient(token) as cf:
-            hostname = await edge.attach(cf, account_id, script)
+            if target == "pages":
+                hostname = await pages.attach_domain(cf, account_id, script)
+            else:
+                hostname = await edge.attach(cf, account_id, script)
     except CloudflareError as error:
         log.info("custom domain move skipped for %s: %s", script, error.message)
         return ""
@@ -392,11 +398,13 @@ async def build(
     reuse: Optional[dict] = None,
     progress: Progress = None,
     force_scan: bool = False,
+    target: Optional[str] = None,
 ) -> Panel:
     started = time.perf_counter()
     reuse = reuse or {}
     code = _read_worker()
     custom = ""
+    target = (target or settings.deploy_target).lower()
 
     await _announce(progress, 0)
     try:
@@ -405,32 +413,47 @@ async def build(
             account_id = reuse.get("account_id") or str((await cf.first_account())["id"])
 
             await _announce(progress, 1)
-            subdomain = await cf.ensure_subdomain(account_id)
-            if not subdomain:
-                raise DeployError(
-                    "the token cannot reserve a workers.dev subdomain; "
-                    "add the Workers Scripts: Edit permission"
-                )
+            script = reuse.get("script_name") or script_name()
+            panel_uuid = reuse.get("uuid") or vless.new_uuid()
+
+            if target == "pages":
+                project = pages.project_name(script)
+                dev_host = pages.host_for(project)
+                await pages._ensure_project(cf, account_id, project)
+            else:
+                subdomain = await cf.ensure_subdomain(account_id)
+                if not subdomain:
+                    raise DeployError(
+                        "the token cannot reserve a workers.dev subdomain; "
+                        "add the Workers Scripts: Edit permission"
+                    )
+                dev_host = f"{script}.{subdomain}.workers.dev"
 
             await _announce(progress, 2)
             endpoints = await _select_endpoints(force_scan)
             relays = await _select_relays()
-
-            script = reuse.get("script_name") or script_name()
-            panel_uuid = reuse.get("uuid") or vless.new_uuid()
-            dev_host = f"{script}.{subdomain}.workers.dev"
             ai_relays, ai_country = await aipin.choose(relays, panel_uuid)
 
             await _announce(progress, 3)
-            await cf.upload_script(
-                account_id,
-                script,
-                code,
-                _bindings(panel_uuid, dev_host, endpoints, relays, ai_relays),
-            )
-            await cf.enable_workers_dev(account_id, script)
-            # The script has to exist before a domain can point at it.
-            custom = await edge.attach(cf, account_id, script)
+            if target == "pages":
+                await pages.push(
+                    token,
+                    account_id,
+                    project,
+                    code,
+                    pages.bindings(panel_uuid, dev_host, endpoints, relays, ai_relays),
+                )
+                custom = await pages.attach_domain(cf, account_id, project)
+            else:
+                await cf.upload_script(
+                    account_id,
+                    script,
+                    code,
+                    _bindings(panel_uuid, dev_host, endpoints, relays, ai_relays),
+                )
+                await cf.enable_workers_dev(account_id, script)
+                # The script has to exist before a domain can point at it.
+                custom = await edge.attach(cf, account_id, script)
     except CloudflareError as error:
         raise DeployError(error.message) from error
 
@@ -450,23 +473,33 @@ async def build(
     if endpoints:
         await _remember_reference(host)
     if rejected or host != dev_host:
-        # The worker serves its own subscription from ENDPOINTS and SUB_HOST, so
+        # The bundle serves its own subscription from ENDPOINTS and SUB_HOST, so
         # the healed list and the final hostname have to go back up.
         try:
-            async with CloudflareClient(token) as cf:
-                await cf.upload_script(
+            if target == "pages":
+                await pages.push(
+                    token,
                     account_id,
-                    script,
+                    project,
                     code,
-                    _bindings(panel_uuid, host, endpoints, relays, ai_relays),
+                    pages.bindings(panel_uuid, host, endpoints, relays, ai_relays),
                 )
-        except CloudflareError as error:
-            log.warning("could not re-upload the final bindings: %s", error.message)
+            else:
+                async with CloudflareClient(token) as cf:
+                    await cf.upload_script(
+                        account_id,
+                        script,
+                        code,
+                        _bindings(panel_uuid, host, endpoints, relays, ai_relays),
+                    )
+        except (CloudflareError, pages.PagesError) as error:
+            log.warning("could not re-upload the final bindings: %s", error)
 
     await _record_pin(panel_uuid, ai_relays, ai_country)
     build_ms = int((time.perf_counter() - started) * 1000)
     log.info(
-        "panel built host=%s custom=%s endpoints=%s rejected=%s relays=%s ai=%s(%s) healthy=%s in %sms",
+        "panel built target=%s host=%s custom=%s endpoints=%s rejected=%s relays=%s ai=%s(%s) healthy=%s in %sms",
+        target,
         host,
         host != dev_host,
         len(endpoints),
@@ -492,6 +525,7 @@ async def build(
         probe=report,
         rejected=len(rejected),
         custom_domain=host != dev_host,
+        target=target,
     )
 
 
@@ -511,9 +545,12 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     script = str(panel["script_name"])
     host = str(panel["host"])
     panel_uuid = str(panel["uuid"])
+    target = str(panel.get("deploy_target") or "workers").lower()
 
-    if edge.enabled() and edge.is_dev_host(host):
-        moved = await _move_to_domain(str(token), account_id, script, panel_uuid)
+    if target == "pages":
+        project = pages.project_name(script)
+    if edge.enabled() and (edge.is_dev_host(host) or pages.is_pages_host(host)):
+        moved = await _move_to_domain(str(token), account_id, script, panel_uuid, target)
         if moved:
             log.info("panel %s moved from %s to %s", panel_uuid, host, moved)
             host = moved
@@ -528,16 +565,25 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
         raise DeployError("no endpoint could complete a websocket upgrade")
 
     try:
-        async with CloudflareClient(str(token)) as cf:
-            await cf.upload_script(
+        if target == "pages":
+            await pages.push(
+                str(token),
                 account_id,
-                script,
+                project,
                 code,
-                _bindings(panel_uuid, host, endpoints, relays, ai_relays),
+                pages.bindings(panel_uuid, host, endpoints, relays, ai_relays),
             )
-            await cf.enable_workers_dev(account_id, script)
-    except CloudflareError as error:
-        raise DeployError(error.message) from error
+        else:
+            async with CloudflareClient(str(token)) as cf:
+                await cf.upload_script(
+                    account_id,
+                    script,
+                    code,
+                    _bindings(panel_uuid, host, endpoints, relays, ai_relays),
+                )
+                await cf.enable_workers_dev(account_id, script)
+    except (CloudflareError, pages.PagesError) as error:
+        raise DeployError(getattr(error, "message", str(error))) from error
 
     healthy, report = await _health(host, panel_uuid, attempts=3)
     if report:
@@ -559,13 +605,18 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
         healthy=healthy,
         probe=report,
         rejected=len(rejected),
-        custom_domain=not edge.is_dev_host(host),
+        custom_domain=not (edge.is_dev_host(host) or pages.is_pages_host(host)),
+        target=target,
     )
 
 
-async def destroy(token: str, account_id: str, script: str) -> None:
+async def destroy(token: str, account_id: str, script: str, target: str = "workers") -> None:
+    target = str(target or "workers").lower()
     try:
-        async with CloudflareClient(token) as cf:
-            await cf.delete_script(account_id, script)
-    except CloudflareError as error:
-        raise DeployError(error.message) from error
+        if target == "pages":
+            await pages.destroy(token, account_id, pages.project_name(script))
+        else:
+            async with CloudflareClient(token) as cf:
+                await cf.delete_script(account_id, script)
+    except (CloudflareError, pages.PagesError) as error:
+        raise DeployError(getattr(error, "message", str(error))) from error

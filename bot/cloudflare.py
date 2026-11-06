@@ -3,6 +3,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import random
 import secrets
@@ -15,11 +16,17 @@ from .config import settings
 API = "https://api.cloudflare.com/client/v4"
 
 REQUIRED_HINTS = (
+    "Cloudflare Pages: Edit",
     "Workers Scripts: Edit",
     "Account Settings: Read",
     "Zone: Read",
     "Workers Routes: Edit",
 )
+
+# The Pages asset upload endpoints sit outside /accounts and authenticate with
+# the short-lived upload token instead of the caller's API token.
+PAGES_ASSET_UPLOAD = "/pages/assets/upload"
+PAGES_ASSET_UPSERT = "/pages/assets/upsert-hashes"
 
 
 class CloudflareError(Exception):
@@ -277,6 +284,125 @@ class CloudflareClient:
                 "DELETE",
                 f"/accounts/{account_id}/workers/scripts/{script_name}",
                 params={"force": "true"},
+            )
+        except CloudflareError as exc:
+            if exc.status == 404:
+                return
+            raise
+
+    # ------------------------------------------------------------------ #
+    # pages projects
+    # ------------------------------------------------------------------ #
+
+    async def get_pages_project(self, account_id: str, project: str) -> Optional[dict]:
+        try:
+            result = await self._call(
+                "GET", f"/accounts/{account_id}/pages/projects/{project}"
+            )
+        except CloudflareError as exc:
+            if exc.status == 404:
+                return None
+            raise
+        return result or {}
+
+    async def create_pages_project(self, account_id: str, project: str) -> dict:
+        result = await self._call(
+            "POST",
+            f"/accounts/{account_id}/pages/projects",
+            json={"name": project, "production_branch": "main"},
+        )
+        return result or {}
+
+    async def update_pages_env(
+        self, account_id: str, project: str, variables: dict[str, str]
+    ) -> None:
+        """Project-level production env vars. Deployments inherit them at build time."""
+        await self._call(
+            "PATCH",
+            f"/accounts/{account_id}/pages/projects/{project}",
+            json={
+                "deployment_configs": {
+                    "production": {
+                        "env_vars": {
+                            name: {"type": "plain_text", "value": str(value)}
+                            for name, value in variables.items()
+                        }
+                    }
+                }
+            },
+        )
+
+    async def upload_pages_assets(
+        self, account_id: str, project: str, files: list[dict]
+    ) -> None:
+        """Direct upload: token, payload buckets, hash upsert.
+
+        ``files`` is a list of {"path", "contents" (bytes), "contentType"}.
+        The JWT from the upload-token endpoint authenticates the two asset
+        calls; upsert-hashes is what flips them to reusable.
+        """
+        token_result = await self._call(
+            "GET", f"/accounts/{account_id}/pages/projects/{project}/upload-token"
+        )
+        jwt = str((token_result or {}).get("jwt") or "")
+
+        payloads = [
+            {
+                "key": item["hash"],
+                "value": base64.b64encode(item["contents"]).decode("ascii"),
+                "metadata": {"contentType": item["contentType"]},
+                "base64": True,
+            }
+            for item in files
+        ]
+        if payloads:
+            await self._call(
+                "POST",
+                PAGES_ASSET_UPLOAD,
+                json=payloads,
+                headers={"Authorization": f"Bearer {jwt}"},
+            )
+        await self._call(
+            "POST",
+            PAGES_ASSET_UPSERT,
+            json={"hashes": [item["hash"] for item in files]},
+            headers={"Authorization": f"Bearer {jwt}"},
+        )
+
+    async def create_pages_deployment(
+        self,
+        account_id: str,
+        project: str,
+        manifest: dict[str, str],
+    ) -> dict:
+        """One deployment of an advanced-mode (``_worker.js``) Pages project.
+
+        ``manifest`` maps bundle paths with a leading slash to the hashes
+        produced by :func:`bot.blake3pure.file_hash`.
+        """
+        form = {
+            "manifest": (None, json.dumps(manifest), "application/json"),
+            "branch": (None, "main"),
+        }
+        result = await self._call(
+            "POST",
+            f"/accounts/{account_id}/pages/projects/{project}/deployments",
+            files=form,
+        )
+        return result or {}
+
+    async def attach_pages_domain(self, account_id: str, project: str, hostname: str) -> dict:
+        result = await self._call(
+            "POST",
+            f"/accounts/{account_id}/pages/projects/{project}/domains",
+            json={"name": hostname},
+        )
+        return result or {}
+
+    async def delete_pages_project(self, account_id: str, project: str) -> None:
+        try:
+            await self._call(
+                "DELETE", f"/accounts/{account_id}/pages/projects/{project}"
             )
         except CloudflareError as exc:
             if exc.status == 404:

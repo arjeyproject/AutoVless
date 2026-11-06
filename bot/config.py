@@ -99,6 +99,8 @@ class Settings:
     warp_scan_attempts: int; warp_verify_top: int; warp_pool_size: int; warp_per_config: int
     store_tokens: bool; request_timeout: float; log_level: str
     endpoint_scan_enabled: bool; warp_scan_enabled: bool; init_data_future_skew: int
+    deploy_target: str
+    httpupgrade: bool; xhttp: bool; pages_autopilot_max_age: int
     compatibility_date: str = "2024-11-01"; languages: tuple[str, ...] = field(default=("fa", "en"))
     @property
     def config_count(self) -> int: return self.tls_config_count + self.http_config_count
@@ -119,7 +121,8 @@ def load_settings() -> Settings:
     return Settings(
         bot_token=_str("BOT_TOKEN"), admin_ids=_ids("ADMIN_IDS"), secret_key=secret, data_dir=data,
         db_path=Path(_str("DB_PATH", str(data / "autovless.db"))),
-        # vless-worker.js is the stable, battle-tested bundle. v2 remains in the repo for comparison.
+        # The one worker bundle, deployed as a Pages project (default) or a
+        # classic Worker script, depending on DEPLOY_TARGET.
         worker_file=Path(_str("WORKER_FILE", str(BASE_DIR / "worker" / "vless-worker.js"))),
         sweep_state=Path(_str("SWEEP_STATE", str(data / "clean-sweep.json"))), brand=_str("BRAND", "AutoVless"),
         support_url=_str("SUPPORT_URL", "https://t.me/AutoVless"), channel_url=_str("CHANNEL_URL", "https://t.me/AutoVless"),
@@ -177,6 +180,21 @@ def load_settings() -> Settings:
         endpoint_scan_enabled=_bool("ENDPOINT_SCAN_ENABLED", False),
         warp_scan_enabled=_bool("WARP_SCAN_ENABLED", False),
         init_data_future_skew=max(0, _int("INIT_DATA_FUTURE_SKEW", 60)),
+        # Panels deploy as Cloudflare Pages projects by default; "workers"
+        # keeps the previous workers.dev behaviour. The Pages project runs the
+        # same worker module through advanced mode (_worker.js).
+        deploy_target=(lambda v: v if v in {"pages", "workers"} else "pages")(_str("DEPLOY_TARGET", "pages").lower()),
+        # Free-transport switches. HTTPUpgrade rides the same WebSocket
+        # handshake, so it is served by the same worker with no code path of
+        # its own. XHTTP stream-one is a real single-request full-duplex
+        # tunnel; both are opt-out.
+        httpupgrade=_bool("HTTPUPGRADE", True),
+        xhttp=_bool("XHTTP", True),
+        # Pages deployments are monthly-budgeted (500/month on the free plan),
+        # so their autopilot cadence is deliberately slower than Workers'.
+        # The worker still blends live clean-IP sources on every subscription
+        # fetch, so configs stay fresh in between.
+        pages_autopilot_max_age=max(3600, _int("PAGES_AUTOPILOT_MAX_AGE", 604800)),
     )
 
 settings = load_settings()

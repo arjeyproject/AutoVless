@@ -494,9 +494,9 @@ async def on_delete(call: CallbackQuery, lang: str) -> None:
     token = panel.get("token")
     if token:
         try:
-            await deploy.destroy(token, panel["account_id"], panel["script_name"])
+            await deploy.destroy(token, panel["account_id"], panel["script_name"], panel.get("deploy_target"))
         except deploy.DeployError as error:
-            log.warning("worker delete failed: %s", error.reason)
+            log.warning("panel delete failed: %s", error.reason)
 
     await db.delete_panel(call.from_user.id)
     await db.log_event("panel_deleted", call.from_user.id, panel["host"])

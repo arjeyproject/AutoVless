@@ -305,6 +305,8 @@ async def _panel_payload(tg_id: int, request: Optional[web.Request] = None) -> O
         "sub": vless.sub_url(uuid, host),
         "raw": vless.sub_url(uuid, host, "raw"),
         "mix": vless.sub_url(uuid, host, "mix"),
+        "httpup": vless.sub_url(uuid, host, "httpup") if settings.httpupgrade else "",
+        "xhttp": vless.sub_url(uuid, host, "xhttp") if settings.xhttp else "",
         "trojan": trojan.sub_url(uuid, host),
         "clash": vless.sub_url(uuid, host, "clash"),
         "singbox": vless.sub_url(uuid, host, "singbox"),
@@ -332,6 +334,8 @@ async def _panel_payload(tg_id: int, request: Optional[web.Request] = None) -> O
         "links": links,
         "direct": direct,
         "vless": vless.build_links(uuid, host, endpoints, settings.brand),
+        "httpupgrade": vless.build_links(uuid, host, endpoints, settings.brand, "httpupgrade") if settings.httpupgrade else [],
+        "xhttp": vless.build_links(uuid, host, endpoints, settings.brand, "xhttp") if settings.xhttp else [],
         "trojan": trojan.build_links(uuid, host, endpoints),
     }
     if shadowsocks.enabled():
@@ -340,7 +344,7 @@ async def _panel_payload(tg_id: int, request: Optional[web.Request] = None) -> O
     if request is not None:
         payload["downloads"] = {
             kind: _download_url(request, tg_id, kind)
-            for kind in ("sub", "raw", "mix", "clash", "singbox", "fragment", "noise")
+            for kind in ("sub", "raw", "mix", "httpup", "xhttp", "clash", "singbox", "fragment", "noise")
         }
     return payload
 
@@ -418,6 +422,8 @@ async def state_handler(request: web.Request, body: dict, user: dict) -> web.Str
             },
             "protocols": {
                 "vless": True,
+                "httpupgrade": settings.httpupgrade,
+                "xhttp": settings.xhttp,
                 "trojan": True,
                 "shadowsocks": shadowsocks.enabled(),
             },
@@ -663,6 +669,7 @@ async def _run_build(job_id: str, tg_id: int, token: str, reuse: Optional[dict])
         panel.build_ms,
         relays=panel.relays,
         healthy=panel.healthy,
+        deploy_target=panel.target,
     )
     await db.log_event("miniapp_build", tg_id, panel.host)
     job.update(
@@ -746,9 +753,9 @@ async def delete_handler(request: web.Request, body: dict, user: dict) -> web.St
     token = panel.get("token")
     if token:
         try:
-            await deploy.destroy(token, panel["account_id"], panel["script_name"])
+            await deploy.destroy(token, panel["account_id"], panel["script_name"], panel.get("deploy_target"))
         except deploy.DeployError as error:
-            log.warning("worker delete from mini app failed: %s", error.reason)
+            log.warning("panel delete from mini app failed: %s", error.reason)
     await db.delete_panel(tg_id)
     await db.log_event("panel_deleted", tg_id, str(panel["host"]))
     return _json({"ok": True})
@@ -771,13 +778,23 @@ def _render_export(panel: dict, kind: str) -> tuple[str, str]:
         return fragment.xray_config(uuid, host, endpoints, brand), fragment.filename(brand)
     if kind == "trojan":
         return "\n".join(trojan.build_links(uuid, host, endpoints)), "autovless-trojan.txt"
+    if kind == "httpup" or kind == "httpupgrade":
+        return (
+            "\n".join(vless.build_links(uuid, host, endpoints, brand, "httpupgrade")),
+            "autovless-httpupgrade.txt",
+        )
+    if kind == "xhttp":
+        return (
+            "\n".join(vless.build_links(uuid, host, endpoints, brand, "xhttp")),
+            "autovless-xhttp.txt",
+        )
     if kind == "ss":
         return (
             "\n".join(shadowsocks.build_links(uuid, host, endpoints, brand)),
             "autovless-shadowsocks.txt",
         )
     if kind == "mix":
-        rows = vless.build_links(uuid, host, endpoints, brand)
+        rows = vless.all_links(uuid, host, endpoints, brand)
         rows += trojan.build_links(uuid, host, endpoints)
         rows += shadowsocks.build_links(uuid, host, endpoints, brand)
         return "\n".join(rows), "autovless-mix.txt"
@@ -1172,7 +1189,7 @@ async def free_sub_handler(request: web.Request) -> web.StreamResponse:
     uuid = str(server["uuid"])
     host = str(server["host"])
     fmt = (request.query.get("format") or "sub").lower()
-    rows = vless.build_links(uuid, host, endpoints, settings.brand)
+    rows = vless.all_links(uuid, host, endpoints, settings.brand)
     rows += trojan.build_links(uuid, host, endpoints)
     body = "\n".join(rows)
     if fmt != "raw":

@@ -142,6 +142,7 @@ MIGRATIONS: dict[str, dict[str, str]] = {
         "healthy": "INTEGER NOT NULL DEFAULT 0",
         "synced_at": "INTEGER NOT NULL DEFAULT 0",
         "syncs": "INTEGER NOT NULL DEFAULT 0",
+        "deploy_target": "TEXT NOT NULL DEFAULT 'workers'",
     },
     "warp_endpoints": {
         "fails": "INTEGER NOT NULL DEFAULT 0",
@@ -371,6 +372,7 @@ async def save_panel(
     build_ms: int,
     relays: Optional[list[str]] = None,
     healthy: bool = False,
+    deploy_target: str = "workers",
 ) -> None:
     ts = now()
     token_enc = encrypt(token) if (token and settings.store_tokens) else None
@@ -378,8 +380,8 @@ async def save_panel(
         """
         INSERT INTO panels (tg_id, account_id, script_name, host, uuid, token_enc,
                             endpoints, relays, healthy, build_ms, rebuilds,
-                            synced_at, syncs, created_at, updated_at)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, 0, ?, ?)
+                            deploy_target, synced_at, syncs, created_at, updated_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 0, ?, ?, 0, ?, ?)
         ON CONFLICT(tg_id) DO UPDATE SET
             account_id  = excluded.account_id,
             script_name = excluded.script_name,
@@ -391,6 +393,7 @@ async def save_panel(
             healthy     = excluded.healthy,
             build_ms    = excluded.build_ms,
             rebuilds    = panels.rebuilds + 1,
+            deploy_target = excluded.deploy_target,
             synced_at   = excluded.synced_at,
             updated_at  = excluded.updated_at
         """,
@@ -405,6 +408,7 @@ async def save_panel(
             json.dumps(relays or [], ensure_ascii=False),
             1 if healthy else 0,
             build_ms,
+            deploy_target,
             ts,
             ts,
             ts,
@@ -423,6 +427,9 @@ def _panel_row(row: aiosqlite.Row) -> dict:
         panel["relays"] = json.loads(panel.get("relays") or "[]")
     except ValueError:
         panel["relays"] = []
+    # Rows written before the Pages migration ran have no column value yet.
+    if not panel.get("deploy_target"):
+        panel["deploy_target"] = "workers"
     panel["token"] = decrypt(panel["token_enc"]) if panel.get("token_enc") else None
     return panel
 
@@ -441,29 +448,45 @@ async def panels_due(limit: int, max_age: int) -> list[dict]:
 
     Only panels with a stored token can be refreshed silently, and the oldest
     sync goes first so a large user base rotates evenly.
-    
+
+    Pages panels carry their own cadence: the free plan budgets a fixed number
+    of deployments per month, so they only queue up once ``pages_max_age`` has
+    passed, which is far less often than a Workers panel. The worker's live
+    subscription blending keeps their configs fresh in between.
+
     Panels marked healthy=0 (failed) are only retried once per HEALTHY_COOLDOWN
     seconds to avoid infinite redeploy loops when endpoints are temporarily unreachable.
     """
     cutoff = now() - max(60, max_age)
+    pages_cutoff = now() - max(60, settings.pages_autopilot_max_age)
     # Don't retry failed panels more than once per 5 minutes
-    healthy_cooldown = now() - 300  
+    healthy_cooldown = now() - 300
     rows = await fetch_all(
         "SELECT * FROM panels WHERE token_enc IS NOT NULL "
-        "AND (synced_at <= ? OR (healthy = 0 AND updated_at <= ?)) "
+        "AND ("
+        "(COALESCE(deploy_target, 'workers') = 'workers' AND synced_at <= ?) "
+        "OR (COALESCE(deploy_target, 'workers') = 'workers' AND healthy = 0 AND updated_at <= ?) "
+        "OR (deploy_target = 'pages' AND synced_at <= ?) "
+        "OR (deploy_target = 'pages' AND healthy = 0 AND updated_at <= ?)"
+        ") "
         "ORDER BY synced_at ASC LIMIT ?",
-        (cutoff, healthy_cooldown, limit),
+        (cutoff, healthy_cooldown, pages_cutoff, healthy_cooldown, limit),
     )
     return [_panel_row(row) for row in rows]
 
 
 async def due_count(max_age: int) -> int:
     cutoff = now() - max(60, max_age)
+    pages_cutoff = now() - max(60, settings.pages_autopilot_max_age)
     return int(
         await scalar(
             "SELECT COUNT(*) FROM panels WHERE token_enc IS NOT NULL "
-            "AND (synced_at <= ? OR healthy = 0)",
-            (cutoff,),
+            "AND ("
+            "(COALESCE(deploy_target, 'workers') = 'workers' AND synced_at <= ?) "
+            "OR (COALESCE(deploy_target, 'workers') = 'workers' AND healthy = 0) "
+            "OR (deploy_target = 'pages' AND (synced_at <= ? OR healthy = 0))"
+            ")",
+            (cutoff, pages_cutoff),
         )
     )
 
