@@ -184,8 +184,12 @@ def render(panel: dict, fmt: str = "sub") -> tuple[str, str, str]:
         body = "\n".join(trojan.build_links(uuid, host, endpoints, brand))
     elif fmt == "ss":
         body = "\n".join(shadowsocks.build_links(uuid, host, endpoints, brand))
+    elif fmt == "httpup" or fmt == "httpupgrade":
+        body = "\n".join(vless.build_links(uuid, host, endpoints, brand, "httpupgrade"))
+    elif fmt == "xhttp":
+        body = "\n".join(vless.build_links(uuid, host, endpoints, brand, "xhttp"))
     elif fmt in {"mix", "all"}:
-        rows = vless.build_links(uuid, host, endpoints, brand)
+        rows = vless.all_links(uuid, host, endpoints, brand)
         rows += trojan.build_links(uuid, host, endpoints, brand)
         if shadowsocks.enabled():
             rows += shadowsocks.build_links(uuid, host, endpoints, brand)

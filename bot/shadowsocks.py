@@ -52,7 +52,7 @@ from typing import Sequence
 from urllib.parse import quote, urlencode
 
 from .config import settings
-from .vless import is_tls
+from .vless import bracket_ipv6, is_tls
 
 METHOD = "aes-256-gcm"
 KEY_BYTES = 32
@@ -153,7 +153,7 @@ def build_link(uuid: str, host: str, endpoint: dict, index: int, brand: str = ""
     ).decode("ascii").rstrip("=")
     query = urlencode({"plugin": _plugin_opts(host)}, quote_via=quote)
     label = quote(_remark(endpoint, index, brand), safe="")
-    return f"ss://{userinfo}@{endpoint['ip']}:{endpoint['port']}?{query}#{label}"
+    return f"ss://{userinfo}@{bracket_ipv6(endpoint['ip'])}:{endpoint['port']}?{query}#{label}"
 
 
 def build_links(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") -> list[str]:

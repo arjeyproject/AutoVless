@@ -31,7 +31,7 @@ from typing import Optional
 from urllib.parse import quote, urlencode
 
 from .config import settings
-from .vless import WS_PATH, is_tls
+from .vless import bracket_ipv6, WS_PATH, is_tls
 
 
 def password_for(uuid: str) -> str:
@@ -69,7 +69,7 @@ def build_link(uuid: str, host: str, endpoint: dict, index: int, brand: str = ""
     query = urlencode(params, quote_via=quote, safe="")
     label = quote(remark(endpoint, index, brand), safe="")
     secret = quote(password_for(uuid), safe="")
-    return f"trojan://{secret}@{endpoint['ip']}:{endpoint['port']}?{query}#{label}"
+    return f"trojan://{secret}@{bracket_ipv6(endpoint['ip'])}:{endpoint['port']}?{query}#{label}"
 
 
 def build_links(uuid: str, host: str, endpoints: list[dict], brand: str = "") -> list[str]:

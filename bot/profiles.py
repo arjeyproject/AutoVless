@@ -71,6 +71,35 @@ def clash(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") -> s
         ]
         if secure:
             lines += [f"    servername: {host}", "    client-fingerprint: chrome"]
+        if settings.httpupgrade:
+            # HTTPUpgrade rides next to the ws entry of the same address: the
+            # mihomo core supports it natively and it survives DPI shapes that
+            # learned websocket framing.
+            up_name = vless.remark(endpoint, index, brand, "httpupgrade").replace('"', "'")
+            blocks.append(
+                "\n".join(
+                    [
+                        f'  - name: "{up_name}"',
+                        "    type: vless",
+                        f"    server: {endpoint['ip']}",
+                        f"    port: {endpoint['port']}",
+                        f"    uuid: {uuid}",
+                        "    udp: true",
+                        f"    tls: {'true' if secure else 'false'}",
+                        *(
+                            [f"    servername: {host}", "    client-fingerprint: chrome"]
+                            if secure
+                            else []
+                        ),
+                        "    network: httpupgrade",
+                        "    httpupgrade-opts:",
+                        f'      path: "{vless.WS_PATH}"',
+                        "      headers:",
+                        f"        Host: {host}",
+                    ]
+                )
+            )
+            names.append(up_name)
         lines += [
             "    network: ws",
             "    ws-opts:",
@@ -158,6 +187,12 @@ def singbox(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") ->
     rows = list(endpoints)
 
     outbounds: list[dict] = json.loads(vless.build_singbox(uuid, host, rows, brand))["outbounds"]
+    if settings.httpupgrade:
+        # sing-box has supported the httpupgrade transport since 1.5, so the
+        # same address ships twice here too, once per transport.
+        outbounds += json.loads(
+            vless.build_singbox(uuid, host, rows, brand, "httpupgrade")
+        )["outbounds"]
     outbounds += json.loads(trojan.build_singbox(uuid, host, rows, brand))["outbounds"]
     if shadowsocks.enabled():
         outbounds += shadowsocks.singbox_outbounds(uuid, host, rows, brand)

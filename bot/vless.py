@@ -1,8 +1,22 @@
-"""Config assembly: endpoints, VLESS links, Clash and sing-box exports."""
+"""Config assembly: endpoints, VLESS links, Clash and sing-box exports.
+
+Every endpoint ships in three free transports: plain WebSocket, HTTPUpgrade
+and - on TLS ports - XHTTP in stream-one mode. All three are served by the
+same worker: the first two share the WebSocket handshake (an httpupgrade
+client sends a plain Upgrade request), and XHTTP stream-one is one full-
+duplex POST. Clients differ in what they tolerate, so every subscription
+blends the three and dedicated ``/httpup`` and ``/xhttp`` paths serve each
+transport alone.
+
+Endpoints are also mounted range-first: within one port the best verified
+address per /24 wins, so the configs a user holds do not all sit in one
+neighbourhood. One filtered subnet then takes down one config, not the set.
+"""
 
 from __future__ import annotations
 
 import base64
+import ipaddress
 import json
 import logging
 import uuid as uuid_lib
@@ -28,15 +42,49 @@ def group_of(port: int) -> str:
     return "tls" if is_tls(port) else "http"
 
 
+def bracket_ipv6(ip: str) -> str:
+    """Bracket an IPv6 literal for a URI authority. Everything else passes through."""
+    ip = str(ip or "").strip()
+    if ":" in ip and not ip.startswith("["):
+        return f"[{ip}]"
+    return ip
+
+
+def subnet_of(ip: str) -> str:
+    """The /24 (v4) or /64 (v6) an address belongs to. "" for hostnames."""
+    try:
+        address = ipaddress.ip_address(str(ip))
+    except ValueError:
+        return ""
+    if address.version == 4:
+        return str(ipaddress.ip_network(f"{ip}/24", strict=False))
+    return str(ipaddress.ip_network(f"{ip}/64", strict=False))
+
+
+def range_label(ip: str) -> str:
+    """A compact range tag for the config remark: ``104.16.x.x`` or ``2606:4700:e8::/64``."""
+    try:
+        address = ipaddress.ip_address(str(ip))
+    except ValueError:
+        return ""
+    if address.version == 4:
+        parts = str(address).split(".")
+        return f"{parts[0]}.{parts[1]}.x.x"
+    groups = str(address).split(":")
+    return ":".join(groups[:3]) + "::/64"
+
+
 def _normalise(row: dict, kind: str = "") -> dict:
+    ip = str(row["ip"])
     return {
-        "ip": str(row["ip"]),
+        "ip": ip,
         "port": int(row["port"]),
         "latency": round(float(row.get("latency") or 0), 1),
         "jitter": round(float(row.get("jitter") or 0), 1),
         "colo": row.get("colo") or "CF",
         "kind": kind or str(row.get("kind") or "ip"),
         "verified": bool(row.get("verified", True)),
+        "range": subnet_of(ip),
     }
 
 
@@ -44,8 +92,31 @@ def _rank(row: dict) -> float:
     return float(row["latency"]) + float(row["jitter"]) * 2
 
 
+def _diversify(rows: list[dict]) -> list[dict]:
+    """Re-order a ranked bucket so one address per /24 leads.
+
+    The pool is already capped per subnet, but a bucket still naturally holds
+    neighbours, and the round-robin filler below walks rows in order. Leading
+    with one address per range is what turns a port group into a spread
+    across Cloudflare's neighbourhoods instead of a cluster in one of them.
+    Rows past the first per range keep their rank order and stay available as
+    filler, so depth is never wasted on thin pools.
+    """
+    seen: set[str] = set()
+    lead: list[dict] = []
+    rest: list[dict] = []
+    for row in rows:
+        subnet = row.get("range") or ""
+        if subnet and subnet not in seen:
+            seen.add(subnet)
+            lead.append(row)
+        else:
+            rest.append(row)
+    return lead + rest
+
+
 async def _buckets(scanner, ports: Iterable[int], depth: int) -> dict[int, list[dict]]:
-    """Verified rows per port, best first.
+    """Verified rows per port, best first, range-diverse.
 
     Unverified rows are dropped here and nowhere else, so no later step has to
     remember not to ship them.
@@ -55,6 +126,7 @@ async def _buckets(scanner, ports: Iterable[int], depth: int) -> dict[int, list[
         rows = [_normalise(row) for row in await scanner.pick(int(port), depth)]
         rows = [row for row in rows if row["verified"] and int(row["port"]) == int(port)]
         rows.sort(key=_rank)
+        rows = _diversify(rows)
         if rows:
             out[int(port)] = rows
     return out
@@ -186,44 +258,98 @@ async def spare_endpoints(
     return _spread(buckets, count, used)
 
 
-def remark(endpoint: dict, index: int, brand: str = "") -> str:
+def remark(endpoint: dict, index: int, brand: str = "", transport: str = "") -> str:
     brand = brand or settings.brand
     secure = is_tls(endpoint["port"])
     if endpoint.get("kind") == "domain":
         badge = "\U0001f300"
+    elif transport == "xhttp":
+        badge = "\U0001f680"
+    elif transport == "httpupgrade":
+        badge = "\U0001f4f6"
     else:
         badge = "\u26a1" if secure else "\U0001f7e1"
     ping = f"{round(float(endpoint.get('latency') or 0))}ms" if endpoint.get("latency") else "auto"
     tail = "" if secure else f" | \U0001f50c{endpoint['port']}"
     port_tag = f" | \U0001f512{endpoint['port']}" if secure and int(endpoint["port"]) != 443 else ""
+    range_tag = f" | \U0001f4cd{range_label(endpoint['ip'])}" if endpoint.get("ip") else ""
     return (
         f"@{brand} | {badge} VLESS | \U0001f30d GLOBAL | {ping} | "
-        f"{endpoint.get('colo') or 'CF'}{port_tag}{tail} | #{index}"
+        f"{endpoint.get('colo') or 'CF'}{range_tag}{port_tag}{tail} | #{index}"
     )
 
 
-def build_link(uuid: str, host: str, endpoint: dict, index: int, brand: str = "") -> str:
+def build_link(
+    uuid: str,
+    host: str,
+    endpoint: dict,
+    index: int,
+    brand: str = "",
+    transport: str = "ws",
+) -> str:
+    """One vless:// link. ``transport`` is ``ws``, ``httpupgrade`` or ``xhttp``.
+
+    ws and httpupgrade carry the same path and reach the same worker code
+    path. xhttp in stream-one mode is TLS-only: one full-duplex POST to the
+    panel uuid path, with the uuid itself riding in the header.
+    """
     secure = is_tls(endpoint["port"])
+    transport = transport or "ws"
     params = {
         "encryption": "none",
         "security": "tls" if secure else "none",
-        "type": "ws",
+        "type": transport,
         "host": host,
-        "path": WS_PATH,
     }
+    if transport == "xhttp":
+        if not secure:
+            return ""
+        params["mode"] = "stream-one"
+        params["path"] = f"/{uuid}"
+    else:
+        params["path"] = WS_PATH
     if secure:
         params.update({"sni": host, "fp": "chrome", "alpn": "http/1.1"})
     query = urlencode(params, quote_via=quote, safe="")
-    label = quote(remark(endpoint, index, brand), safe="")
-    return f"vless://{uuid}@{endpoint['ip']}:{endpoint['port']}?{query}#{label}"
+    label = quote(remark(endpoint, index, brand, transport), safe="")
+    return f"vless://{uuid}@{bracket_ipv6(endpoint['ip'])}:{endpoint['port']}?{query}#{label}"
 
 
-def build_links(uuid: str, host: str, endpoints: list[dict], brand: str = "") -> list[str]:
-    return [build_link(uuid, host, ep, i + 1, brand) for i, ep in enumerate(endpoints)]
+def build_links(
+    uuid: str,
+    host: str,
+    endpoints: list[dict],
+    brand: str = "",
+    transport: str = "ws",
+) -> list[str]:
+    links = [
+        build_link(uuid, host, ep, i + 1, brand, transport)
+        for i, ep in enumerate(endpoints)
+    ]
+    return [link for link in links if link]
 
 
-def build_subscription(uuid: str, host: str, endpoints: list[dict], brand: str = "") -> str:
-    payload = "\n".join(build_links(uuid, host, endpoints, brand))
+def all_links(uuid: str, host: str, endpoints: list[dict], brand: str = "") -> list[str]:
+    """Every free transport in one list: ws, httpupgrade, xhttp.
+
+    Used by the free-server feed and anything that wants the whole menu.
+    """
+    out = build_links(uuid, host, endpoints, brand, "ws")
+    if settings.httpupgrade:
+        out += build_links(uuid, host, endpoints, brand, "httpupgrade")
+    if settings.xhttp:
+        out += build_links(uuid, host, endpoints, brand, "xhttp")
+    return out
+
+
+def build_subscription(
+    uuid: str,
+    host: str,
+    endpoints: list[dict],
+    brand: str = "",
+    transport: str = "ws",
+) -> str:
+    payload = "\n".join(build_links(uuid, host, endpoints, brand, transport))
     return base64.b64encode(payload.encode("utf-8")).decode("ascii")
 
 
@@ -232,14 +358,25 @@ def sub_url(uuid: str, host: str, fmt: str = "") -> str:
     return f"https://{host}/{uuid}{suffix}"
 
 
-def build_clash(uuid: str, host: str, endpoints: list[dict], brand: str = "") -> str:
+def build_clash(
+    uuid: str,
+    host: str,
+    endpoints: list[dict],
+    brand: str = "",
+    transport: str = "ws",
+) -> str:
+    """Clash (mihomo) export. ws and httpupgrade are supported by the core;
+    xhttp is left out on purpose - mihomo's xhttp support is too uneven across
+    releases to ship in a config that must always load."""
     brand = brand or settings.brand
+    if transport == "xhttp":
+        transport = "ws"
     proxies: list[str] = []
     names: list[str] = []
 
     for index, endpoint in enumerate(endpoints, start=1):
         secure = is_tls(endpoint["port"])
-        name = remark(endpoint, index, brand).replace('"', "'")
+        name = remark(endpoint, index, brand, transport).replace('"', "'")
         names.append(f'      - "{name}"')
         lines = [
             f'  - name: "{name}"',
@@ -252,13 +389,22 @@ def build_clash(uuid: str, host: str, endpoints: list[dict], brand: str = "") ->
         ]
         if secure:
             lines += [f"    servername: {host}", "    client-fingerprint: chrome"]
-        lines += [
-            "    network: ws",
-            "    ws-opts:",
-            f'      path: "{WS_PATH}"',
-            "      headers:",
-            f"        Host: {host}",
-        ]
+        if transport == "httpupgrade":
+            lines += [
+                "    network: httpupgrade",
+                "    httpupgrade-opts:",
+                f'      path: "{WS_PATH}"',
+                "      headers:",
+                f"        Host: {host}",
+            ]
+        else:
+            lines += [
+                "    network: ws",
+                "    ws-opts:",
+                f'      path: "{WS_PATH}"',
+                "      headers:",
+                f"        Host: {host}",
+            ]
         proxies.append("\n".join(lines))
 
     return "\n".join(
@@ -285,23 +431,36 @@ def build_clash(uuid: str, host: str, endpoints: list[dict], brand: str = "") ->
     )
 
 
-def build_singbox(uuid: str, host: str, endpoints: list[dict], brand: str = "") -> str:
+def build_singbox(
+    uuid: str,
+    host: str,
+    endpoints: list[dict],
+    brand: str = "",
+    transport: str = "ws",
+) -> str:
+    """sing-box export. httpupgrade is a supported v2ray transport there;
+    xhttp is not, so those entries fall back to ws to keep every file valid."""
+    brand = brand or settings.brand
+    if transport == "xhttp":
+        transport = "ws"
     outbounds = []
     for index, endpoint in enumerate(endpoints, start=1):
         secure = is_tls(endpoint["port"])
+        transport_block: dict = {
+            "type": transport,
+            "path": WS_PATH,
+            "headers": {"Host": host},
+        }
+        if transport == "ws":
+            transport_block["early_data_header_name"] = "Sec-WebSocket-Protocol"
         item: dict = {
             "type": "vless",
-            "tag": remark(endpoint, index, brand),
+            "tag": remark(endpoint, index, brand, transport),
             "server": endpoint["ip"],
             "server_port": int(endpoint["port"]),
             "uuid": uuid,
             "packet_encoding": "xudp",
-            "transport": {
-                "type": "ws",
-                "path": WS_PATH,
-                "headers": {"Host": host},
-                "early_data_header_name": "Sec-WebSocket-Protocol",
-            },
+            "transport": transport_block,
         }
         if secure:
             item["tls"] = {
@@ -332,9 +491,12 @@ def parse_vless(link: str) -> dict:
         "host": query.get("host") or query.get("sni") or parsed.hostname,
         "path": unquote(query.get("path") or WS_PATH),
         "security": query.get("security") or "none",
+        "transport": query.get("type") or "ws",
+        "mode": query.get("mode") or "",
         "name": unquote(parsed.fragment or "config"),
         "latency": 0,
         "jitter": 0,
         "kind": "ip",
         "colo": "CF",
+        "range": subnet_of(parsed.hostname),
     }
