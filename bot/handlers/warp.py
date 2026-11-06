@@ -29,7 +29,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from .. import db, keyboards, wgpro, warpconf, warpstore
+from .. import db, keyboards, qrimg, wgpro, warpconf, warpstore
 from .. import warp as warpcore
 from ..config import settings
 from ..i18n import num, t
@@ -293,6 +293,29 @@ async def on_links(call: CallbackQuery, lang: str) -> None:
             reply_markup=keyboards.warp_menu(lang, True) if index == len(parts) - 1 else None,
             disable_web_page_preview=True,
         )
+
+
+@router.callback_query(F.data == "wg:qr")
+async def on_warp_qr(call: CallbackQuery, lang: str) -> None:
+    """QR of the WARP link, so a phone can import without copy-pasting."""
+    record = await db.get_warp_user(call.from_user.id)
+    if record is None:
+        await call.answer(t(lang, "warp.none"), show_alert=True)
+        return
+
+    await call.answer()
+    endpoints = record.get("endpoints") or []
+    links = warpcore.links(record["identity"], endpoints)
+    if not links:
+        await call.message.answer(
+            t(lang, "proto.qr_empty"), reply_markup=keyboards.simple_back(lang, "nav:warp")
+        )
+        return
+    await call.message.answer_photo(
+        qrimg.file_photo(links[0], filename="autovless-warp.png"),
+        caption=t(lang, "proto.qr_caption", name="WARP / WireGuard"),
+        reply_markup=keyboards.simple_back(lang, "nav:warp"),
+    )
 
 
 @router.callback_query(F.data == "wg:apps")

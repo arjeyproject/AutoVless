@@ -49,8 +49,9 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from .. import db, keyboards, operators, warpconf, warpep, warpmanual, warpstore
+from .. import db, keyboards, operators, warpconf, warpep, warpmanual, warpops, warpstore
 from .. import warp as warpcore
+from .. import wgpro
 from ..config import settings
 from ..i18n import device_label, num, t
 from ..locales.payment import AMNEZIAWG_IOS_URL
@@ -64,7 +65,15 @@ log = logging.getLogger("autovless.handlers.pool")
 router = Router(name="pool")
 
 CHOICES: dict[str, dict[str, str]] = {
+    # Every operator gets its own button now, and each button answers with the
+    # endpoint family that operator's network reaches best: Irancell's path
+    # leaves IPv6 alone, everyone else rides IPv4. The ranking inside the family
+    # pool is ``warpops``'s job - port priors plus learned benchmark wins.
+    "mci": {"family": V4, "operator": "mci"},
     "mtn": {"family": V6, "operator": "mtn"},
+    "rightel": {"family": V4, "operator": "rightel"},
+    "shatel": {"family": V4, "operator": "shatel"},
+    "adsl": {"family": V4, "operator": "adsl"},
     "other": {"family": V4, "operator": "other"},
 }
 
@@ -160,15 +169,29 @@ async def show_device(event: CallbackQuery | Message, lang: str) -> None:
 
 
 async def show_network(event: CallbackQuery | Message, lang: str, platform: str) -> None:
-    """Step two: which operator. Shows how full each pool is."""
+    """Step two: which operator. Shows how full each pool is, and what evidence
+    the operator leaderboard holds."""
     v4 = await warpstore.counts(V4)
     v6 = await warpstore.counts(V6)
+    evidence = await warpops.counts()
+    ops = " \u00b7 ".join(
+        t(
+            lang,
+            "wg.ops_count",
+            op=esc(operators.label(code, lang) or code),
+            proven=num(item["proven"], lang),
+            known=num(item["known"], lang),
+        )
+        for code, item in evidence.items()
+        if item["known"]
+    ) or "\u2014"
     body = t(
         lang,
         "wg.pick_net",
         v4=num(v4["healthy"], lang),
         v6=num(v6["healthy"], lang),
         target=num(TUNE.pool_target, lang),
+        ops=ops,
     )
     body += "\n\n" + t(lang, "wg.device_picked", device=device_label(platform, lang))
     await edit(event, body, keyboards.warp_network(lang, platform))
@@ -208,7 +231,7 @@ async def on_network_chosen(call: CallbackQuery, lang: str) -> None:
         await call.answer(t(lang, "warp.off"), show_alert=True)
         return
 
-    tail = (call.data or "").split(":")[2:]
+    tail = (call.data or ":").split(":")[2:]
     rotate = bool(tail and tail[0] == "next")
     if rotate:
         family = warpep.normalise_family(tail[1] if len(tail) > 1 else V4)
@@ -245,7 +268,7 @@ async def _deliver(
             await notice.edit_text(t(lang, "wg.identity_failed", reason=esc(error)))
             return
 
-    endpoints = await warp_pool.pick(family, count=settings.warp_per_config)
+    endpoints = await warpops.pick(family, operator, count=settings.warp_per_config)
     if rotate and len(endpoints) > 1:
         endpoints = endpoints[1:] + endpoints[:1]
 
@@ -258,10 +281,18 @@ async def _deliver(
         return
 
     await db.save_warp_user(call.from_user.id, identity, endpoints)
+    # The operator the user just built for is the operator their future builds
+    # and benchmark results are tagged with - no reason to ask twice.
+    await db.set_operator(call.from_user.id, operator)
     await db.log_event("warp_build", call.from_user.id, f"{operator}/{family}/{platform}")
 
+    # MTU: the pro settings win when the user set them; on auto, the operator's
+    # own profile decides (Rightel 1280, Irancell 1380, the rest 1420).
+    prefs = await wgpro.prefs_of(call.from_user.id)
+    mtu = wgpro.mtu_for(prefs) or int(operators.wg_profile(operator)["mtu"])
+
     try:
-        await _send_config(call, notice, lang, family, operator, platform, identity, endpoints)
+        await _send_config(call, notice, lang, family, operator, platform, identity, endpoints, mtu)
     except asyncio.CancelledError:
         raise
     except Exception as error:  # noqa: BLE001
@@ -284,6 +315,7 @@ async def _send_config(
     platform: str,
     identity: dict,
     endpoints: list[dict],
+    mtu: int | None = None,
 ) -> None:
     """Render for this exact platform, send the file(s), then the instructions."""
     clean = warpconf.is_clean_for(platform)
@@ -307,7 +339,7 @@ async def _send_config(
             ),
             caption=t(lang, "wg.ios_awg_caption"),
         )
-        plain_body = warpconf.plain_conf(identity, endpoints, platform=platform)
+        plain_body = warpconf.plain_conf(identity, endpoints, platform=platform, mtu=mtu)
         await call.message.answer_document(
             BufferedInputFile(
                 plain_body.encode("utf-8"),
@@ -316,7 +348,13 @@ async def _send_config(
             caption=t(lang, "wg.ios_plain_caption"),
         )
     else:
-        body = warpconf.conf_for(identity, endpoints, platform=platform, profile=profile)
+        body = warpconf.conf_for(
+            identity,
+            endpoints,
+            platform=platform,
+            profile=profile,
+            mtu=mtu,
+        )
         caption_key = "wg.caption_clean" if clean else "wg.caption"
         await call.message.answer_document(
             BufferedInputFile(
@@ -338,7 +376,8 @@ async def _send_config(
         "ping": ping_label(head.get("latency"), lang),
         "health": _out_of(head.get("health"), lang),
         "spares": num(max(0, len(endpoints) - 1), lang),
-        "mtu": num(settings.warp_mtu, lang),
+        # The MTU the file actually carries: pro override, else the operator's.
+        "mtu": num(mtu or settings.warp_mtu, lang),
     }
     if clean and not apple:
         text = t(lang, "wg.sent_clean", device=device, **common)
@@ -351,6 +390,15 @@ async def _send_config(
             jmax=num(profile["jmax"], lang),
             app=_app_link(platform),
             **common,
+        )
+    # The one line of carrier-specific advice, straight from the profile.
+    op_tip = operators.tip(operator, lang)
+    if op_tip:
+        text += "\n\n" + t(
+            lang,
+            "wg.operator_tip",
+            operator=esc(operators.label(operator, lang) or operator),
+            tip=esc(op_tip),
         )
 
     try:
@@ -463,6 +511,61 @@ async def on_pool_list(call: CallbackQuery, state: FSMContext, lang: str, is_adm
     if len(listing) > 3600:
         listing = listing[:3600].rsplit("\n", 1)[0] + "\n\u2026"
     await edit(call, t(lang, "pool.list", list=listing), keyboards.pool_menu(lang))
+    await call.answer()
+
+
+@router.callback_query(F.data == "pool:ops")
+async def on_pool_ops(call: CallbackQuery, state: FSMContext, lang: str, is_admin: bool) -> None:
+    """The operator leaderboard: which endpoints actually answered for which network.
+
+    Built from the learned wins in ``warpops`` - real benchmarks, tagged with
+    the operator of the user who ran them. An operator with no evidence is
+    printed as such, because an empty table is an honest table.
+    """
+    if not _guard(is_admin):
+        await call.answer(t(lang, "admin.denied"), show_alert=True)
+        return
+    await state.clear()
+
+    evidence = await warpops.counts()
+    v4 = await warpstore.counts(V4)
+    v6 = await warpstore.counts(V6)
+
+    blocks: list[str] = []
+    for code in operators.OPERATORS:
+        item = evidence.get(code) or {"known": 0, "proven": 0}
+        blocks.append(
+            t(
+                lang,
+                "pool.ops_section",
+                op=esc(operators.label(code, lang) or code),
+                known=num(item["known"], lang),
+                proven=num(item["proven"], lang),
+            )
+        )
+        if not item["known"]:
+            blocks.append(t(lang, "pool.ops_empty"))
+            continue
+        for row in await warpops.leaderboard(code, limit=4):
+            blocks.append(
+                t(
+                    lang,
+                    "pool.ops_line",
+                    endpoint=esc(warpconf.host_port(row["ip"], row["port"])),
+                    wins=num(int(row["wins"]), lang),
+                    tests=num(int(row["tests"]), lang),
+                    ping=ping_label(row["latency"], lang),
+                )
+            )
+
+    body = t(
+        lang,
+        "pool.ops_screen",
+        body="\n".join(blocks),
+        v4=num(v4["healthy"], lang),
+        v6=num(v6["healthy"], lang),
+    )
+    await edit(call, body, keyboards.pool_back(lang))
     await call.answer()
 
 

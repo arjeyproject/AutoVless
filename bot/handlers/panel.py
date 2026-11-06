@@ -28,16 +28,14 @@ fallback for an operator who has not set ``PUBLIC_URL`` yet.
 from __future__ import annotations
 
 import asyncio
-import io
 import logging
 
 import httpx
-import qrcode
 from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery
 
-from .. import db, deploy, fragment, keyboards, profiles, screens, subgw, trojan, vless
+from .. import db, deploy, fragment, keyboards, profiles, qrimg, screens, subgw, trojan, vless
 from ..autopilot import autopilot
 from ..config import settings
 from ..i18n import num, t
@@ -135,11 +133,8 @@ async def on_qr(call: CallbackQuery, lang: str) -> None:
     if panel is None:
         return
     url = _sub_links(call.from_user.id, panel)["sub"]
-    image = qrcode.make(url, box_size=8, border=2)
-    buffer = io.BytesIO()
-    image.save(buffer, format="PNG")
     await call.message.answer_photo(
-        BufferedInputFile(buffer.getvalue(), filename="autovless-sub.png"),
+        qrimg.file_photo(url, filename="autovless-sub.png"),
         caption=t(lang, "qr_caption", brand=esc(settings.brand)),
         reply_markup=keyboards.simple_back(lang, "nav:panel"),
     )

@@ -68,7 +68,9 @@ from . import (
     warp,
     warpconf,
     wgpro,
+    warpops,
 )
+from .operators import OPERATORS as WARP_OPERATORS
 from .autopilot import autopilot
 from .config import BASE_DIR, settings
 from .i18n import t
@@ -924,12 +926,23 @@ async def warp_handler(request: web.Request, body: dict, user: dict) -> web.Stre
     platform = normalise_platform(body.get("platform"))
     family = str(body.get("family") or "v4").lower()
     kind = str(body.get("kind") or "").lower() or None
+    operator = str(body.get("operator") or "").lower()
 
     identity, error = await _warp_identity(tg_id, bool(body.get("fresh")))
     if identity is None:
         return _json({"ok": False, "error": error or "warp registration failed"}, status=502)
 
-    rows = await _warp_endpoints(family)
+    # Operator-aware ranking when the app says which network this is: same
+    # engine the bot uses, port priors plus that network's learned wins.
+    rows: list[dict] = []
+    if operator in WARP_OPERATORS:
+        rows = await warpops.pick(family, operator, count=6)
+        if family == "v6":
+            rows = [row for row in rows if ":" in str(row.get("ip"))] or rows
+        else:
+            rows = [row for row in rows if ":" not in str(row.get("ip"))] or rows
+    if not rows:
+        rows = await _warp_endpoints(family)
     await db.update_warp_endpoints(tg_id, rows[:6])
     # The user's pro tuning applies here too: same intensity, MTU and DNS the
     # bot exports produce, so the mini app and the bot never disagree.
@@ -950,6 +963,7 @@ async def warp_handler(request: web.Request, body: dict, user: dict) -> web.Stre
         "ok": True,
         "platform": platform,
         "family": family,
+        "operator": operator or None,
         "clean": warpconf.is_clean_for(platform),
         "endpoint": warpconf.label(rows, 0, platform),
         "routes": warpconf.allowed_ips(identity, platform),

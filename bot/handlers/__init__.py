@@ -15,6 +15,7 @@ from . import (
     payment,
     pool,
     proconsole,
+    protocols,
     support,
     user,
     warp,
@@ -38,6 +39,11 @@ def register(dispatcher: Dispatcher) -> None:
     dispatcher.include_router(admin.router)
     dispatcher.include_router(build.router)
     dispatcher.include_router(panel.router)
+    # ``protocols`` owns the ``proto:`` namespace (the selectable protocol menu,
+    # per-protocol QR codes and the everything-at-once bundle). Its callbacks are
+    # unique, so its place in the order only matters for the ``nav:protocols``
+    # screen - registered early so no broader router can swallow it.
+    dispatcher.include_router(protocols.router)
     # ``wgpro`` and ``pool`` sit ahead of ``warp`` on purpose: the 3.0 layer owns
     # ``wg:set``, ``wg:backup``, ``wg:restore`` and ``wg:bench``, and the operator
     # picker owns ``wg:net`` - both have to be seen before the generic WARP router.

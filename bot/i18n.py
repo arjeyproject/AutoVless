@@ -14,6 +14,7 @@ from .locales.fa import FA
 from .locales.growth import GROWTH
 from .locales.payment import PAYMENT
 from .locales.pro import PRO
+from .locales.proto import PROTO
 from .locales.proton import PROTON_STRINGS
 from .locales.support import SUPPORT
 from .locales.turbo import TURBO
@@ -53,6 +54,10 @@ CATALOG: dict[str, dict[str, str]] = {
         **GROWTH["fa"],
         **PAYMENT["fa"],
         **PRO["fa"],
+        # PROTO goes last of all: the protocol picker and the operator-aware
+        # WARP screens own every key they name, including their overrides of
+        # wg.pick_net and the new protocol buttons.
+        **PROTO["fa"],
     },
     "en": {
         **EN,
@@ -70,6 +75,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **GROWTH["en"],
         **PAYMENT["en"],
         **PRO["en"],
+        **PROTO["en"],
     },
 }
 

@@ -130,6 +130,7 @@ def main_menu(lang: str, is_admin: bool = False) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = [
         [_c(t(lang, "btn.build"), "nav:build", GREEN)],
         [_c(t(lang, "btn.panel"), "nav:panel", BLUE)],
+        [_c(t(lang, "btn.protocols"), "nav:protocols", ORANGE)],
         [_c(t(lang, "btn.warp"), "nav:warp", PURPLE)],
         [_c(t(lang, "btn.apps"), "nav:apps", ORANGE)],
         [_c(t(lang, "btn.guide"), "nav:guide", WHITE), _c(t(lang, "btn.convert"), "nav:convert", YELLOW)],
@@ -163,6 +164,7 @@ def panel_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_c(t(lang, "btn.qr"), "panel:qr", BLUE), _c(t(lang, "btn.sub"), "panel:sub", BLUE)],
+            [_c(t(lang, "btn.protocols"), "nav:protocols", ORANGE)],
             [_c(t(lang, "btn.fragment"), "panel:fragment", PURPLE)],
             [_c(t(lang, "btn.trojan"), "panel:trojan", YELLOW), _c(t(lang, "btn.single"), "panel:single", YELLOW)],
             [_c(t(lang, "btn.clash"), "panel:clash", YELLOW), _c(t(lang, "btn.singbox"), "panel:singbox", YELLOW)],
@@ -190,6 +192,65 @@ def operator_menu(lang: str) -> InlineKeyboardMarkup:
     builder.adjust(2)
     builder.row(*back_row(lang))
     return builder.as_markup()
+
+
+def protocols_menu(lang: str, has_ss: bool, back: str = "nav:panel") -> InlineKeyboardMarkup:
+    """The protocol picker: one tap per protocol, or the whole bundle at once.
+
+    ``has_ss`` only controls the Shadowsocks row - the button exists or it does
+    not, exactly like the AmneziaWG rows on a platform that cannot read them.
+    """
+    rows: list[list[InlineKeyboardButton]] = [
+        [
+            _c(t(lang, "btn.proto_vless"), "proto:vless", GREEN),
+            _c(t(lang, "btn.proto_httpup"), "proto:httpupgrade", BLUE),
+        ],
+        [
+            _c(t(lang, "btn.proto_xhttp"), "proto:xhttp", PURPLE),
+            _c(t(lang, "btn.proto_trojan"), "proto:trojan", YELLOW),
+        ],
+    ]
+    if has_ss:
+        rows.append([_c(t(lang, "btn.proto_ss"), "proto:ss", ORANGE)])
+    rows += [
+        [
+            _c(t(lang, "btn.clash"), "proto:clash", YELLOW),
+            _c(t(lang, "btn.singbox"), "proto:singbox", YELLOW),
+        ],
+        [_c(t(lang, "btn.fragment"), "proto:fragment", PURPLE)],
+        [_c(t(lang, "btn.warp"), "nav:warp", PURPLE)],
+        [_c(t(lang, "btn.proto_qr"), "proto:qr", BLUE)],
+        [_c(t(lang, "btn.proto_all"), "proto:all", GREEN)],
+        back_row(lang, back),
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def protocols_qr(lang: str, has_ss: bool) -> InlineKeyboardMarkup:
+    """Per-protocol QR codes, two per row so the labels stay readable."""
+    kinds = [
+        (t(lang, "btn.proto_vless"), "proto:qr:vless"),
+        (t(lang, "btn.proto_httpup"), "proto:qr:httpupgrade"),
+        (t(lang, "btn.proto_xhttp"), "proto:qr:xhttp"),
+        (t(lang, "btn.proto_trojan"), "proto:qr:trojan"),
+    ]
+    if has_ss:
+        kinds.append((t(lang, "btn.proto_ss"), "proto:qr:ss"))
+    kinds.append((t(lang, "btn.sub"), "proto:qr:sub"))
+    rows = [[_b(label, data) for label, data in kinds[i : i + 2]] for i in range(0, len(kinds), 2)]
+    rows.append(back_row(lang, "nav:protocols"))
+    return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def free_hint_menu(lang: str) -> InlineKeyboardMarkup:
+    """Shown when the protocol menu is opened with no panel: build, or go free."""
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_c(t(lang, "btn.build"), "nav:build", GREEN)],
+            [_c(t(lang, "btn.free"), "nav:free", ORANGE)],
+            back_row(lang),
+        ]
+    )
 
 
 def join_menu(lang: str, channels: list[dict]) -> InlineKeyboardMarkup:
@@ -279,8 +340,12 @@ def _warp_export_rows(lang: str, platform: str = "") -> list[list[InlineKeyboard
             ]
         )
     rows.append(
-        [_b(t(lang, "btn.warp_link"), "wg:link"), _b(t(lang, "btn.warp_plain"), target("plain"))]
+        [
+            _b(t(lang, "btn.warp_link"), "wg:link"),
+            _b(t(lang, "btn.warp_qr"), "wg:qr"),
+        ]
     )
+    rows.append([_b(t(lang, "btn.warp_plain"), target("plain"))])
     rows.append(
         [
             _b(t(lang, "btn.warp_singbox"), target("singbox")),
@@ -338,16 +403,24 @@ def warp_menu(lang: str, has_identity: bool = False) -> InlineKeyboardMarkup:
 
 
 def warp_network(lang: str, platform: str = "") -> InlineKeyboardMarkup:
-    """The two operator buttons: Irancell takes IPv6, everyone else takes IPv4.
+    """Every operator, one button each, two per row.
 
-    The device picked a moment ago rides along in the callback data so the config
-    is rendered for the right client without any state to lose.
+    Used to be a two-button question (Irancell vs everything else). Clean IPs
+    are now ranked per operator - port priors plus the learned wins of that
+    network's own users - so each of the six gets a real button of its own. The
+    device picked a moment ago still rides along in the callback data so the
+    config is rendered for the right client without any state to lose.
     """
     tail = f":{normalise_platform(platform)}" if platform else ""
-    rows = [
-        [glass_button(f"{PURPLE} {t(lang, 'btn.wg_irancell')}", f"wg:net:mtn{tail}")],
-        [glass_button(f"{PURPLE} {t(lang, 'btn.wg_other')}", f"wg:net:other{tail}")],
-    ]
+    rows: list[list[InlineKeyboardButton]] = []
+    pair: list[InlineKeyboardButton] = []
+    for code, profile in OPERATORS.items():
+        pair.append(_c(profile["en" if lang == "en" else "fa"], f"wg:net:{code}{tail}", PURPLE))
+        if len(pair) == 2:
+            rows.append(pair)
+            pair = []
+    if pair:
+        rows.append(pair)
     if platform:
         rows.append([_c(t(lang, "btn.wg_change_device"), "wg:net", WHITE)])
     rows.append(back_row(lang, "nav:warp"))
@@ -398,7 +471,7 @@ def warp_endpoints(lang: str) -> InlineKeyboardMarkup:
 
 
 def pool_menu(lang: str) -> InlineKeyboardMarkup:
-    """Admin controls for the two family pools."""
+    """Admin controls for the two family pools, plus the operator leaderboard."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_b(t(lang, "btn.pool_refresh"), "pool:refresh")],
@@ -412,6 +485,7 @@ def pool_menu(lang: str) -> InlineKeyboardMarkup:
             ],
             [_b(t(lang, "btn.pool_manual"), "pool:manual")],
             [_b(t(lang, "btn.pool_audit"), "pool:audit")],
+            [_b(t(lang, "btn.pool_ops"), "pool:ops")],
             [_b(t(lang, "btn.pool_list"), "pool:list")],
             back_row(lang, "adm:menu"),
         ]

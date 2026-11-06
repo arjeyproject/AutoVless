@@ -22,7 +22,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardButton, Message
 
-from .. import db, keyboards, warpconf, wgpro
+from .. import db, keyboards, warpconf, wgpro, warpops
 from ..i18n import num, t
 from ..utils import edit, esc, ping_label
 from ..warpstore import best as best_endpoints
@@ -291,6 +291,16 @@ async def _run_benchmark(
     merged = measured + untouched
     await db.update_warp_endpoints(notice.chat.id, merged[: max(len(saved), len(measured))])
     await db.log_event("warp_bench", notice.chat.id, f"best={measured[0]['ip']}:{measured[0]['port']}")
+
+    # Feed the operator leaderboard. The user's own network is the tag, so the
+    # wins land on the operator that can actually use them - and the next person
+    # on the same carrier gets endpoints this network has already proven.
+    try:
+        user = await db.get_user(notice.chat.id)
+        operator = (user or {}).get("operator") if user else None
+        await warpops.record(str(operator or "other"), measured)
+    except Exception:  # noqa: BLE001
+        log.debug("could not record benchmark into warp_ops", exc_info=True)
 
     body = t(lang, "pro.bench_done", table=_bench_table(lang, measured))
     try:
