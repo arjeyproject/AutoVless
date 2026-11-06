@@ -36,6 +36,7 @@ OPTION_KEYS = (
     "support_enabled",
     "autopilot",
     "curator",
+    "digest",
 )
 
 

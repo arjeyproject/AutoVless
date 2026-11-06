@@ -13,6 +13,7 @@ from .locales.en import EN
 from .locales.fa import FA
 from .locales.growth import GROWTH
 from .locales.payment import PAYMENT
+from .locales.pro import PRO
 from .locales.proton import PROTON_STRINGS
 from .locales.support import SUPPORT
 from .locales.turbo import TURBO
@@ -32,6 +33,9 @@ RULE = "\u2501" * 14
 # fragment screens own their copy outright, and GROWTH follows because the invite
 # lock, the free pool and the AI exit screen own every key they name. PAYMENT is
 # last: the paid entry gate and the iPhone WARP delivery are the newest screens.
+# PRO is merged after PAYMENT and owns every key it names, so the 3.0 pro layer
+# (WARP tuning, identity backup, benchmark, pro console, digest) can override
+# anything without touching the older catalogues.
 CATALOG: dict[str, dict[str, str]] = {
     "fa": {
         **FA,
@@ -48,6 +52,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **TURBO["fa"],
         **GROWTH["fa"],
         **PAYMENT["fa"],
+        **PRO["fa"],
     },
     "en": {
         **EN,
@@ -64,6 +69,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **TURBO["en"],
         **GROWTH["en"],
         **PAYMENT["en"],
+        **PRO["en"],
     },
 }
 

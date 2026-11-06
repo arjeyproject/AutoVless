@@ -268,6 +268,7 @@ DEFAULT_OPTIONS: dict[str, str] = {
     "warp_enabled": "1",
     "autopilot": "1",
     "curator": "1",
+    "digest": "0",
     "welcome_extra": "",
     "support_note": "",
 }

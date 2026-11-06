@@ -17,6 +17,7 @@ from .api import api_server
 from .autopilot import autopilot
 from .config import settings
 from .curator import curator
+from .digest import digest
 from .scanner import proxy_scanner, scanner
 from .warppool import warp_pool
 from .warpscan import warp_scanner
@@ -151,6 +152,9 @@ async def run() -> None:
     # handle of its own, so it is resolved once here.
     await referral.bot_username(bot)
     await api_server.start()
+    # The digest rides its own clock: on means every admin gets the monitor
+    # numbers once a day without pressing anything.
+    await digest.start(bot)
 
     try:
         # Neither of these is worth the bot's life. A rejected command list or a
@@ -167,6 +171,7 @@ async def run() -> None:
         log.info("%s is polling", settings.brand)
         await dispatcher.start_polling(bot, allowed_updates=dispatcher.resolve_used_update_types())
     finally:
+        await digest.stop()
         await api_server.stop()
         if settings.endpoint_scan_enabled:
             await curator.stop()

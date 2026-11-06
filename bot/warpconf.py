@@ -183,11 +183,16 @@ def label(
 
 
 def addresses(identity: dict, platform: object = "") -> list[str]:
+    # Cloudflare's own registration returns the address WITH its prefix
+    # ("172.16.0.2/32"), the probing identity builder returns it without -
+    # normalise both instead of ever emitting the nonsense "…/32/32".
     out: list[str] = []
     if identity.get("v4"):
-        out.append(f"{identity['v4']}/32")
+        v4 = str(identity["v4"]).split("/")[0]
+        out.append(f"{v4}/32")
     if identity.get("v6") and platform_profile(platform).supports_ipv6:
-        out.append(f"{identity['v6']}/128")
+        v6 = str(identity["v6"]).split("/")[0]
+        out.append(f"{v6}/128")
     return out or ["172.16.0.2/32"]
 
 
@@ -391,23 +396,31 @@ def conf_for(
     kind: str = "",
     profile: Optional[dict] = None,
     index: int = 0,
+    mtu: Optional[int] = None,
+    dns: Optional[object] = None,
+    signature: bool = False,
 ) -> str:
     """Render whichever flavour this platform and export kind imply.
 
     ``amnezia`` asks for the obfuscated file on any platform, which is how the
-    Apple platforms get their AmneziaWG-app file.
+    Apple platforms get their AmneziaWG-app file. ``mtu``/``dns`` carry a
+    user's pro-settings override through to the renderer; ``signature`` is
+    the ultra-intensity I1 decoy, OR'd with the explicit ``awg2`` kind so the
+    older request path keeps working unchanged.
     """
     name = normalise_platform(platform)
     kind = (kind or "").strip().lower()
     if kind == "amnezia":
         return apple_amnezia_conf(identity, endpoints, profile, platform=name, index=index)
     if kind == "plain" or not should_include_amnezia_keys(name):
-        return plain_conf(identity, endpoints, platform=name, index=index)
+        return plain_conf(identity, endpoints, platform=name, index=index, mtu=mtu, dns=dns)
     return amnezia_conf(
         identity,
         endpoints,
         profile,
-        signature=kind == "awg2",
+        mtu=mtu,
+        dns=dns,
+        signature=signature or kind == "awg2",
         platform=name,
         index=index,
     )

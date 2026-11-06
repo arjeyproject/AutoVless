@@ -29,7 +29,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import BufferedInputFile, CallbackQuery, Message
 
-from .. import db, keyboards, warpconf, warpstore
+from .. import db, keyboards, wgpro, warpconf, warpstore
 from .. import warp as warpcore
 from ..config import settings
 from ..i18n import num, t
@@ -226,7 +226,10 @@ async def _deliver_export(
 
     identity = record["identity"]
     endpoints = record.get("endpoints") or []
-    profile = _profile(identity)
+    # The 3.0 pro layer: intensity, MTU and tunnel DNS ride along on every
+    # export, exactly as the settings screen promises.
+    params = await wgpro.export_params(call.from_user.id, identity)
+    profile = params["profile"]
 
     await call.answer()
 
@@ -239,7 +242,14 @@ async def _deliver_export(
             body = warpconf.apple_amnezia_conf(identity, endpoints, profile, platform=platform)
         else:
             body = warpconf.conf_for(
-                identity, endpoints, platform=platform, kind=kind, profile=profile
+                identity,
+                endpoints,
+                platform=platform,
+                kind=kind,
+                profile=profile,
+                mtu=params["mtu"],
+                dns=params["dns"],
+                signature=params["signature"],
             )
     except Exception as error:  # noqa: BLE001
         log.exception("could not render the %s export for %s", kind, platform)

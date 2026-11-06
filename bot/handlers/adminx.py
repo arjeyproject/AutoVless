@@ -48,6 +48,7 @@ def admin_home(lang: str) -> InlineKeyboardMarkup:
     markup = keyboards.admin_menu(lang)
     rows = list(markup.inline_keyboard)
     extra = [
+        [_b(t(lang, "btn.pro_console"), "adm:pro")],
         [_b(t(lang, "btn.pay_admin"), "adm:pay")],
         [_b(t(lang, "btn.ref_lock"), "adm:ref"), _b(t(lang, "btn.free_admin"), "adm:free")],
         [_b(t(lang, "btn.ai_relays"), "adm:ai")],

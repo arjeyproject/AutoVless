@@ -308,11 +308,13 @@ def obfuscation(seed: object) -> dict:
 
 
 def _addresses(identity: dict) -> list[str]:
+    # Same normalisation as warpconf.addresses: Cloudflare hands the address
+    # with its prefix, the probe builder without it - never "/32/32".
     out = []
     if identity.get("v4"):
-        out.append(f"{identity['v4']}/32")
+        out.append(f"{str(identity['v4']).split('/')[0]}/32")
     if identity.get("v6"):
-        out.append(f"{identity['v6']}/128")
+        out.append(f"{str(identity['v6']).split('/')[0]}/128")
     return out
 
 

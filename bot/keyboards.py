@@ -291,9 +291,22 @@ def _warp_export_rows(lang: str, platform: str = "") -> list[list[InlineKeyboard
 
 
 def _warp_identity_rows(lang: str) -> list[list[InlineKeyboardButton]]:
-    """The actions that only mean anything once a user owns a WARP identity."""
+    """The actions that only mean anything once a user owns a WARP identity.
+
+    The 3.0 pro layer rides along here: tuning and the backup pair sit with the
+    other identity actions, so a user who already holds a config finds them
+    without hunting through menus.
+    """
     return [
         [_b(t(lang, "btn.warp_rebuild"), "wg:rebuild")],
+        [
+            _b(t(lang, "btn.wg_set"), "wg:set"),
+            _b(t(lang, "btn.wg_bench"), "wg:bench"),
+        ],
+        [
+            _b(t(lang, "btn.wg_backup"), "wg:backup"),
+            _b(t(lang, "btn.wg_restore"), "wg:restore"),
+        ],
         [
             _b(t(lang, "btn.warp_license"), "wg:license"),
             _b(t(lang, "btn.warp_delete"), "wg:del"),

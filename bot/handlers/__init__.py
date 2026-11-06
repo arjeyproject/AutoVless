@@ -14,10 +14,12 @@ from . import (
     panel,
     payment,
     pool,
+    proconsole,
     support,
     user,
     warp,
     webapp,
+    wgpro,
 )
 
 
@@ -26,16 +28,20 @@ def register(dispatcher: Dispatcher) -> None:
     # the pre-checkout query and ``successful_payment``, and a payment update that
     # fell through to a broader router would be a payment nobody recorded.
     dispatcher.include_router(payment.router)
-    # ``adminx`` and ``growth`` go next because they claim specific callbacks that
-    # the older, broader routers would otherwise swallow: ``admin`` owns every
-    # ``adm:`` callback and ``user`` owns the ``nav:`` ones.
+    # ``adminx``, ``proconsole`` and ``growth`` go next because they claim specific
+    # callbacks that the older, broader routers would otherwise swallow:
+    # ``proconsole`` owns the whole ``adm:pro`` namespace, ``admin`` owns every
+    # other ``adm:`` callback and ``user`` owns the ``nav:`` ones.
     dispatcher.include_router(adminx.router)
+    dispatcher.include_router(proconsole.router)
     dispatcher.include_router(growth.router)
     dispatcher.include_router(admin.router)
     dispatcher.include_router(build.router)
     dispatcher.include_router(panel.router)
-    # Ahead of ``warp`` on purpose: the operator picker owns ``wg:net`` and has to
-    # see it before the generic WARP router does.
+    # ``wgpro`` and ``pool`` sit ahead of ``warp`` on purpose: the 3.0 layer owns
+    # ``wg:set``, ``wg:backup``, ``wg:restore`` and ``wg:bench``, and the operator
+    # picker owns ``wg:net`` - both have to be seen before the generic WARP router.
+    dispatcher.include_router(wgpro.router)
     dispatcher.include_router(pool.router)
     dispatcher.include_router(warp.router)
     dispatcher.include_router(apps.router)

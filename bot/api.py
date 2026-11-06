@@ -67,6 +67,7 @@ from . import (
     vless,
     warp,
     warpconf,
+    wgpro,
 )
 from .autopilot import autopilot
 from .config import BASE_DIR, settings
@@ -930,8 +931,19 @@ async def warp_handler(request: web.Request, body: dict, user: dict) -> web.Stre
 
     rows = await _warp_endpoints(family)
     await db.update_warp_endpoints(tg_id, rows[:6])
-    profile = warp.obfuscation(identity.get("private_key", ""))
-    conf = warpconf.conf_for(identity, rows, platform=platform, kind=kind or "", profile=profile)
+    # The user's pro tuning applies here too: same intensity, MTU and DNS the
+    # bot exports produce, so the mini app and the bot never disagree.
+    params = await wgpro.export_params(tg_id, identity)
+    conf = warpconf.conf_for(
+        identity,
+        rows,
+        platform=platform,
+        kind=kind or "",
+        profile=params["profile"],
+        mtu=params["mtu"],
+        dns=params["dns"],
+        signature=params["signature"],
+    )
     ordered = warpconf.order_for(rows, platform)
 
     payload = {
@@ -952,7 +964,7 @@ async def warp_handler(request: web.Request, body: dict, user: dict) -> web.Stre
         "clash": warp.clash_yaml(identity, rows),
     }
     if platform in APPLE:
-        awg = warpconf.apple_amnezia_conf(identity, rows, profile, platform=platform)
+        awg = warpconf.apple_amnezia_conf(identity, rows, params["profile"], platform=platform)
         payload.update(
             {
                 "awg": awg,
@@ -1220,15 +1232,22 @@ async def download_handler(request: web.Request) -> web.StreamResponse:
         rows = [dict(item) for item in (row.get("endpoints") or [])]
         if not rows:
             rows = await _warp_endpoints("v4")
-        profile = warp.obfuscation(identity.get("private_key", ""))
+        params = await wgpro.export_params(tg_id, identity)
         if kind == "warpawg":
             body = warpconf.apple_amnezia_conf(
-                identity, rows, profile, platform=platform, index=int(ticket.get("i") or 0)
+                identity, rows, params["profile"], platform=platform, index=int(ticket.get("i") or 0)
             )
             name = warpconf.filename("", "amnezia", platform)
         else:
             body = warpconf.conf_for(
-                identity, rows, platform=platform, profile=profile, index=int(ticket.get("i") or 0)
+                identity,
+                rows,
+                platform=platform,
+                profile=params["profile"],
+                index=int(ticket.get("i") or 0),
+                mtu=params["mtu"],
+                dns=params["dns"],
+                signature=params["signature"],
             )
             name = warpconf.filename("", "conf", platform)
     else:
