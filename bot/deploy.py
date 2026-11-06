@@ -197,22 +197,32 @@ def _bindings(
 
 
 async def _accept(host: str, endpoints: list[dict]) -> tuple[list[dict], list[dict]]:
-    """Run the client's own handshake against this panel for every endpoint."""
+    """Run the client's own handshake against this panel for every endpoint.
+
+    Sequential was the quiet tax on every build: eight endpoints at up to three
+    rounds each could hold the last step for minutes. They race now, six at a
+    time, so the acceptance pass costs one round's worth of time, not eight.
+    """
     keep: list[dict] = []
     dead: list[dict] = []
+    gate = asyncio.Semaphore(6)
 
-    for endpoint in endpoints:
+    async def one(endpoint: dict) -> tuple[dict, Optional[dict]]:
+        async with gate:
+            result = await measure(
+                str(endpoint["ip"]),
+                int(endpoint["port"]),
+                tls=vless.is_tls(int(endpoint["port"])),
+                host=host,
+                path=vless.WS_PATH,
+                rounds=ACCEPT_ROUNDS,
+                required=ACCEPT_REQUIRED,
+                timeout=settings.accept_timeout,
+            )
+        return endpoint, result
+
+    for endpoint, result in await asyncio.gather(*(one(item) for item in endpoints)):
         port = int(endpoint["port"])
-        result = await measure(
-            str(endpoint["ip"]),
-            port,
-            tls=vless.is_tls(port),
-            host=host,
-            path=vless.WS_PATH,
-            rounds=ACCEPT_ROUNDS,
-            required=ACCEPT_REQUIRED,
-            timeout=settings.accept_timeout,
-        )
         if result is None:
             log.info("rejected %s:%s for %s, no websocket upgrade", endpoint["ip"], port, host)
             await scanner.demote(str(endpoint["ip"]), port)
@@ -294,10 +304,16 @@ async def _ship(host: str, endpoints: list[dict]) -> tuple[list[dict], list[dict
 
 
 async def _published(host: str, uuid: str, attempts: Optional[int] = None) -> bool:
-    """Has this hostname started answering for the panel yet?"""
+    """Has this hostname started answering for the panel yet?
+
+    Speed matters here: this is the last step of a build and the one users
+    watch. Attempts are short on purpose - a 20 s timeout that repeats is how a
+    build used to sit at "health checking" for three minutes. 12 s per try,
+    four tries, and the gaps between them shrink as we go.
+    """
     url = f"https://{host}/{uuid}/health"
     tries = attempts or settings.health_attempts
-    async with httpx.AsyncClient(timeout=20.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
         for attempt in range(tries):
             try:
                 response = await client.get(url)
@@ -305,8 +321,21 @@ async def _published(host: str, uuid: str, attempts: Optional[int] = None) -> bo
                     return True
             except Exception:  # noqa: BLE001
                 pass
-            await asyncio.sleep(min(2 + attempt * 2, 8))
+            if attempt < tries - 1:
+                await asyncio.sleep(min(1.5 + attempt * 1.5, 5.0))
     return False
+
+
+async def _probe(host: str, uuid: str) -> tuple[bool, dict]:
+    """The outbound-traffic proof, without the publish wait."""
+    try:
+        async with httpx.AsyncClient(timeout=15.0, follow_redirects=True) as client:
+            response = await client.get(f"https://{host}/{uuid}/probe")
+            report = response.json() if response.status_code == 200 else {}
+    except Exception:  # noqa: BLE001
+        report = {}
+
+    return bool(report.get("ok")), report
 
 
 async def _health(host: str, uuid: str, attempts: Optional[int] = None) -> tuple[bool, dict]:
@@ -314,14 +343,7 @@ async def _health(host: str, uuid: str, attempts: Optional[int] = None) -> tuple
     if not await _published(host, uuid, attempts):
         return False, {}
 
-    try:
-        async with httpx.AsyncClient(timeout=25.0, follow_redirects=True) as client:
-            response = await client.get(f"https://{host}/{uuid}/probe")
-            report = response.json() if response.status_code == 200 else {}
-    except Exception:  # noqa: BLE001
-        report = {}
-
-    return bool(report.get("ok")), report
+    return await _probe(host, uuid)
 
 
 async def _demote_dead_relays(report: dict) -> None:
@@ -458,14 +480,25 @@ async def build(
         raise DeployError(error.message) from error
 
     await _announce(progress, 4)
-    host = dev_host
+    # Race both front doors at once: whichever answers first wins. This is the
+    # stage that used to stall - the custom domain got its own publish wait and
+    # then the health check waited all over again, sequentially.
     if custom:
-        if await _published(custom, panel_uuid):
+        custom_ok, dev_ok = await asyncio.gather(
+            _published(custom, panel_uuid, attempts=3),
+            _published(dev_host, panel_uuid, attempts=3),
+        )
+        if custom_ok:
             host = custom
+        elif dev_ok:
+            host = dev_host
         else:
             log.warning("custom domain %s never answered, falling back to %s", custom, dev_host)
+            host = dev_host
+    else:
+        host = dev_host
 
-    healthy, report = await _health(host, panel_uuid)
+    healthy, report = await _probe(host, panel_uuid)
     if report:
         await _demote_dead_relays(report)
 
@@ -585,7 +618,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     except (CloudflareError, pages.PagesError) as error:
         raise DeployError(getattr(error, "message", str(error))) from error
 
-    healthy, report = await _health(host, panel_uuid, attempts=3)
+    healthy, report = await _probe(host, panel_uuid)
     if report:
         await _demote_dead_relays(report)
     if healthy:

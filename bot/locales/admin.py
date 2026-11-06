@@ -52,21 +52,26 @@ ADMIN: dict[str, dict[str, str]] = {
         "admin.channel_removed": "\U0001f5d1 \u06a9\u0627\u0646\u0627\u0644 \u062d\u0630\u0641 \u0634\u062f.",
         "admin.channels_empty": "\u0647\u06cc\u0686 \u06a9\u0627\u0646\u0627\u0644\u06cc \u062b\u0628\u062a \u0646\u0634\u062f\u0647.",
         "admin.engine": (
-            "\u2699\ufe0f <b>\u0645\u0648\u062a\u0648\u0631 \u0627\u0633\u06a9\u0646</b>\n{rule}\n"
-            "\U0001f4e1 \u0627\u0633\u062a\u062e\u0631: <b>{total}</b> \u00b7 \u062a\u0627\u06cc\u06cc\u062f\u0634\u062f\u0647: <b>{verified}</b>\n"
-            "\U0001f300 \u062f\u0627\u0645\u0646\u0647\u0654 \u062e\u0648\u062f\u062a\u0631\u0645\u06cc\u0645: <b>{domains}</b>\n"
-            "\U0001f3c6 \u0628\u0647\u062a\u0631\u06cc\u0646 \u067e\u06cc\u0646\u06af: <b>{best}</b>\n"
-            "\U0001f50c \u067e\u0648\u0631\u062a\u200c\u0647\u0627: <b>{ports}</b>\n"
-            "\u23f3 \u0622\u062e\u0631\u06cc\u0646 \u0627\u0633\u06a9\u0646: <b>{updated}</b>\n"
-            "\u2699\ufe0f \u062f\u0631 \u062d\u0627\u0644 \u0627\u062c\u0631\u0627: <b>{state}</b>\n"
-            "\U0001f501 \u0641\u0627\u0635\u0644\u0647 \u0627\u0633\u06a9\u0646: <b>{interval}</b> \u062b\u0627\u0646\u06cc\u0647\n"
-            "\U0001f4e6 \u062f\u0633\u062a\u0647 \u0647\u0631 \u0627\u0633\u06a9\u0646: <b>{batch}</b> \u00b7 \u0647\u0645\u0632\u0645\u0627\u0646\u06cc: <b>{concurrency}</b>\n"
+            "\U0001f6e1 <b>اسکنر هوشمند</b> · هر ۳۰۰ ثانیه خودکار\n{rule}\n"
+            "\U0001f916 <b>موتور آی‌پی تمیز</b>\n"
+            "\U0001f4e1 استخر: <b>{total}</b> · تاییدشده: <b>{verified}</b>\n"
+            "\U0001f300 دامنه‌ی خودترمیم: <b>{domains}</b> · پینگ برتر: <b>{best}</b>\n"
+            "\U0001f50c پورت‌ها: <b>{ports}</b> · دسته: <b>{batch}</b> · همزمانی: <b>{concurrency}</b>\n"
+            "\u23f3 آخرین اسکن: <b>{updated}</b> · در حال اجرا: <b>{state}</b>\n"
             "{rule}\n"
-            "\U0001f916 <b>\u0627\u0639\u0645\u0627\u0644 \u062e\u0648\u062f\u06a9\u0627\u0631 \u0631\u0648\u06cc \u067e\u0646\u0644\u200c\u0647\u0627</b>\n"
-            "\u0648\u0636\u0639\u06cc\u062a: <b>{pilot}</b> \u00b7 \u0647\u0631 <b>{pilot_interval}</b> \u062b\u0627\u0646\u06cc\u0647\n"
-            "\u062f\u0631 \u0646\u0648\u0628\u062a: <b>{due}</b> \u067e\u0646\u0644 \u00b7 \u0622\u062e\u0631\u06cc\u0646 \u062f\u0648\u0631: <b>{last_synced}</b> \u0645\u0648\u0641\u0642"
+            "\U0001f6e1 <b>موتور وارپ / وایرگارد</b>\n"
+            "\U0001f30d اندپوینت پایدار: <b>{warp_stable}</b> از <b>{warp_total}</b>\n"
+            "\u23f3 آخرین اسکن: <b>{warp_updated}</b>\n"
+            "{rule}\n"
+            "\U0001f916 <b>اعمال خودکار روی پنل‌ها</b>\n"
+            "وضعیت: <b>{pilot}</b> · هر <b>{pilot_interval}</b> ثانیه\n"
+            "در نوبت: <b>{due}</b> پنل · آخرین دور: <b>{last_synced}</b> موفق"
         ),
-        "admin.sync_started": "\U0001f916 \u0627\u0639\u0645\u0627\u0644 \u062e\u0648\u062f\u06a9\u0627\u0631 \u0634\u0631\u0648\u0639 \u0634\u062f\u060c \u06a9\u0645\u06cc \u0637\u0648\u0644 \u0645\u06cc\u200c\u06a9\u0634\u062f...",
+        "admin.smart_done": (
+            "\U0001f6e1 <b>اسکن هوشمند تمام شد</b>\n"
+            "بهترین آی‌پی‌ها و اندپوینت‌های وارپ در استخر قرار گرفتند و بر روی کانفیگ‌ها سوار می‌شوند."
+        ),
+        "admin.sync_started""": "\U0001f916 \u0627\u0639\u0645\u0627\u0644 \u062e\u0648\u062f\u06a9\u0627\u0631 \u0634\u0631\u0648\u0639 \u0634\u062f\u060c \u06a9\u0645\u06cc \u0637\u0648\u0644 \u0645\u06cc\u200c\u06a9\u0634\u062f...",
         "admin.sync_done": "\u2705 \u0631\u0648\u06cc <b>{count}</b> \u067e\u0646\u0644 \u0622\u06cc\u200c\u067e\u06cc \u062a\u0627\u0632\u0647 \u0627\u0639\u0645\u0627\u0644 \u0634\u062f.",
         "admin.options": (
             "\U0001f39a <b>\u062a\u0646\u0637\u06cc\u0645\u0627\u062a</b>\n{rule}\n"
@@ -141,21 +146,26 @@ ADMIN: dict[str, dict[str, str]] = {
         "admin.channel_removed": "\U0001f5d1 Channel removed.",
         "admin.channels_empty": "No channels registered.",
         "admin.engine": (
-            "\u2699\ufe0f <b>Scan engine</b>\n{rule}\n"
+            "\U0001f6e1 <b>Smart scanner</b> \u00b7 automatic every 300 s\n{rule}\n"
+            "\U0001f916 <b>Clean-IP engine</b>\n"
             "\U0001f4e1 Pool: <b>{total}</b> \u00b7 verified: <b>{verified}</b>\n"
-            "\U0001f300 Self-healing hostnames: <b>{domains}</b>\n"
-            "\U0001f3c6 Best ping: <b>{best}</b>\n"
-            "\U0001f50c Ports: <b>{ports}</b>\n"
-            "\u23f3 Last scan: <b>{updated}</b>\n"
-            "\u2699\ufe0f Running: <b>{state}</b>\n"
-            "\U0001f501 Interval: <b>{interval}</b> s\n"
-            "\U0001f4e6 Batch: <b>{batch}</b> \u00b7 concurrency: <b>{concurrency}</b>\n"
+            "\U0001f300 Self-healing hostnames: <b>{domains}</b> \u00b7 best ping: <b>{best}</b>\n"
+            "\U0001f50c Ports: <b>{ports}</b> \u00b7 batch: <b>{batch}</b> \u00b7 concurrency: <b>{concurrency}</b>\n"
+            "\u23f3 Last scan: <b>{updated}</b> \u00b7 running: <b>{state}</b>\n"
+            "{rule}\n"
+            "\U0001f6e1 <b>WARP / WireGuard engine</b>\n"
+            "\U0001f30d Stable endpoints: <b>{warp_stable}</b> of <b>{warp_total}</b>\n"
+            "\u23f3 Last scan: <b>{warp_updated}</b>\n"
             "{rule}\n"
             "\U0001f916 <b>Autopilot</b>\n"
             "State: <b>{pilot}</b> \u00b7 every <b>{pilot_interval}</b> s\n"
             "Queued: <b>{due}</b> panels \u00b7 last cycle: <b>{last_synced}</b> applied"
         ),
-        "admin.sync_started": "\U0001f916 Autopilot cycle started, this takes a moment...",
+        "admin.smart_done": (
+            "\U0001f6e1 <b>Smart scan finished</b>\n"
+            "The best clean IPs and WARP endpoints are in the pools and are being mounted onto the configs."
+        ),
+        "admin.sync_started""": "\U0001f916 Autopilot cycle started, this takes a moment...",
         "admin.sync_done": "\u2705 Fresh clean IPs applied to <b>{count}</b> panels.",
         "admin.options": "\U0001f39a <b>Options</b>\n{rule}\nTap an option to flip it.",
         "admin.panels": "\U0001f5c2 <b>Recent panels</b>\n{rule}\n{list}",

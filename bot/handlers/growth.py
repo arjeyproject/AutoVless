@@ -25,7 +25,7 @@ from aiogram.types import (
 from .. import db, freepool, keyboards, referral, screens, store
 from ..config import settings
 from ..i18n import num, t
-from ..keyboards import BLUE, GREEN, ORANGE, PURPLE, WHITE, YELLOW, _c, back_row
+from ..keyboards import GO, OK, SOFT, _c, back_row
 from ..utils import chunked, edit, esc, ping_label
 from ..webapp import build_webapp_url
 from .webapp import miniapp_keyboard
@@ -56,11 +56,11 @@ def _b(label: str, data: str) -> InlineKeyboardButton:
 def free_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_c(t(lang, "btn.free_vless"), "free:vless", GREEN), _c(t(lang, "btn.free_trojan"), "free:trojan", YELLOW)],
-            [_c(t(lang, "btn.free_httpup"), "free:httpupgrade", BLUE), _c(t(lang, "btn.free_xhttp"), "free:xhttp", PURPLE)],
-            [_c(t(lang, "btn.free_mix"), "free:mix", ORANGE)],
-            [_c(t(lang, "btn.free_warp"), "nav:warp", WHITE)],
-            [_c(t(lang, "btn.apps"), "nav:apps", ORANGE)],
+            [_c(t(lang, "btn.free_vless"), "free:vless", OK), _c(t(lang, "btn.free_trojan"), "free:trojan", GO)],
+            [_c(t(lang, "btn.free_httpup"), "free:httpupgrade", GO), _c(t(lang, "btn.free_xhttp"), "free:xhttp", OK)],
+            [_c(t(lang, "btn.free_mix"), "free:mix", OK)],
+            [_c(t(lang, "btn.free_warp"), "nav:warp", GO)],
+            [_c(t(lang, "btn.apps"), "nav:apps", SOFT)],
             back_row(lang),
         ]
     )

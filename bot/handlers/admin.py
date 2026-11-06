@@ -24,6 +24,7 @@ from ..curator import curator
 from ..i18n import num, t
 from ..scanner import scanner
 from ..utils import ago, edit, esc, ping_label
+from ..warpscan import warp_scanner
 
 log = logging.getLogger("autovless.admin")
 router = Router(name="admin")
@@ -51,16 +52,8 @@ def _guard(is_admin: bool) -> bool:
 
 
 def engine_keyboard(lang: str) -> InlineKeyboardMarkup:
-    """Engine controls: sweep, apply, curate, warp."""
-    return InlineKeyboardMarkup(
-        inline_keyboard=[
-            [InlineKeyboardButton(text=t(lang, "btn.scan_now"), callback_data="adm:scan")],
-            [InlineKeyboardButton(text=t(lang, "btn.sync_now"), callback_data="adm:sync")],
-            [InlineKeyboardButton(text=t(lang, "btn.curate"), callback_data="adm:curate")],
-            [InlineKeyboardButton(text=t(lang, "btn.warp_rescan"), callback_data="wg:rescan")],
-            keyboards.back_row(lang, "adm:menu"),
-        ]
-    )
+    """The merged scanner screen - both engines behind one button."""
+    return keyboards.admin_engine(lang)
 
 
 @router.callback_query(F.data.startswith("adm:"))
@@ -103,6 +96,22 @@ async def dispatch(call: CallbackQuery, state: FSMContext, lang: str, is_admin: 
     elif action == "scan":
         await call.answer(t(lang, "scan_started"))
         await scanner.scan_once(batch=max(320, settings.scan_batch // 2))
+        await show_engine(call, lang)
+        return
+    elif action == "smart":
+        # The merged scanner: one tap, both engines, one report.
+        await call.answer(t(lang, "scan_started"))
+        results = await asyncio.gather(
+            scanner.scan_once(batch=settings.scan_batch),
+            warp_scanner.scan_once(),
+            return_exceptions=True,
+        )
+        ip_error, warp_error = results
+        if isinstance(ip_error, Exception):
+            log.warning("smart scan ip engine failed: %s", ip_error)
+        if isinstance(warp_error, Exception):
+            log.warning("smart scan warp engine failed: %s", warp_error)
+        await call.message.answer(t(lang, "admin.smart_done"))
         await show_engine(call, lang)
         return
     elif action == "sync":
@@ -221,6 +230,7 @@ async def show_engine(call: CallbackQuery, lang: str) -> None:
     stats = await scanner.stats()
     pilot = await autopilot.stats()
     keeper = await curator.stats()
+    warp = await warp_scanner.stats()
     text = t(
         lang,
         "admin.engine",
@@ -231,9 +241,11 @@ async def show_engine(call: CallbackQuery, lang: str) -> None:
         ports=" \u00b7 ".join(num(port, lang) for port in stats["ports"]),
         updated=ago(stats["updated_at"], lang),
         state=t(lang, "admin.on" if stats["scanning"] else "admin.off"),
-        interval=num(settings.scan_interval, lang),
         batch=num(settings.scan_batch, lang),
         concurrency=num(settings.scan_concurrency, lang),
+        warp_stable=num(warp.get("stable") or 0, lang),
+        warp_total=num(warp.get("total") or 0, lang),
+        warp_updated=ago(warp.get("updated_at") or 0, lang),
         pilot=t(lang, "admin.on" if pilot["enabled"] else "admin.off"),
         pilot_interval=num(pilot["interval"], lang),
         due=num(pilot["due"], lang),

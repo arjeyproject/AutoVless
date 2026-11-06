@@ -1,4 +1,4 @@
-"""Start, main menu, static screens, language and operator selection."""
+"""Start, main menu, static screens, language."""
 
 from __future__ import annotations
 
@@ -9,7 +9,7 @@ from aiogram.filters import Command, CommandObject, CommandStart
 from aiogram.fsm.context import FSMContext
 from aiogram.types import CallbackQuery, Message
 
-from .. import db, keyboards, operators, payment, referral, screens
+from .. import db, keyboards, payment, referral, screens
 from ..config import settings
 from ..i18n import other_lang, t
 from ..middlewares import missing_channels
@@ -105,13 +105,6 @@ async def on_language(call: CallbackQuery, lang: str, is_admin: bool) -> None:
     await call.answer()
 
 
-@router.callback_query(F.data == "nav:status")
-async def on_status(call: CallbackQuery, lang: str) -> None:
-    text, markup = await screens.network_status(lang)
-    await edit(call, text, markup)
-    await call.answer()
-
-
 @router.callback_query(F.data == "nav:guide")
 async def on_guide(call: CallbackQuery, lang: str) -> None:
     await edit(call, t(lang, "guide"), keyboards.apps_platforms(lang))
@@ -121,31 +114,6 @@ async def on_guide(call: CallbackQuery, lang: str) -> None:
 @router.callback_query(F.data == "nav:donate")
 async def on_donate(call: CallbackQuery, lang: str) -> None:
     await edit(call, t(lang, "support_us", brand=esc(settings.brand)), keyboards.simple_back(lang))
-    await call.answer()
-
-
-@router.callback_query(F.data == "nav:operator")
-async def on_operator(call: CallbackQuery, lang: str) -> None:
-    user = await db.get_user(call.from_user.id)
-    text, markup = screens.operator_screen(lang, user["operator"] if user else None)
-    await edit(call, text, markup)
-    await call.answer()
-
-
-@router.callback_query(F.data.startswith("op:"))
-async def on_operator_pick(call: CallbackQuery, lang: str) -> None:
-    code = (call.data or "").split(":", 1)[1]
-    if code not in operators.OPERATORS:
-        await call.answer()
-        return
-    await db.set_operator(call.from_user.id, code)
-    text = t(
-        lang,
-        "operator_saved",
-        operator=esc(operators.label(code, lang)),
-        tip=esc(operators.tip(code, lang)),
-    )
-    await edit(call, text, keyboards.simple_back(lang))
     await call.answer()
 
 

@@ -110,5 +110,7 @@ async def panel_overview(tg_id: int, lang: str) -> tuple[str, object]:
 
 
 def operator_screen(lang: str, current: Optional[str]) -> tuple[str, object]:
+    """Kept for compatibility; the operator menu was removed from the bot in
+    the colourful-buttons release. ``handlers/user.py`` no longer calls it."""
     label = operators.label(current, lang) or t(lang, "operator_unset")
-    return t(lang, "operator_menu", current=esc(label)), keyboards.operator_menu(lang)
+    return t(lang, "operator_menu", current=esc(label)), keyboards.simple_back(lang)

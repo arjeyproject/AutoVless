@@ -2,6 +2,8 @@
 
 from __future__ import annotations
 
+from typing import Optional
+
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 from aiogram.utils.keyboard import InlineKeyboardBuilder
 
@@ -27,25 +29,24 @@ CF_TOKEN_URL = (
     "&accountId=*&zoneId=all&name=AutoVless"
 )
 
-# Telegram inline keyboards have no colour API - only text. The colour system
-# is a real one, not decoration: every button on every screen carries the
-# colour of its action, so the same colour always means the same thing.
-GREEN = "\U0001f7e2"    # create, build, confirm, apply something
-BLUE = "\U0001f535"     # open or view something
-PURPLE = "\U0001f7eb"   # WARP / WireGuard
-ORANGE = "\U0001f7e0"   # apps, free stuff, the catalogue
-YELLOW = "\U0001f7e1"   # settings, conversions, diagnostics
-RED = "\U0001f534"      # destructive actions only
-WHITE = "\u26aa\ufe0f"  # navigation and secondary actions
+# Telegram colours buttons natively since Bot API 9.4: ``style`` accepts
+# "success" (green), "primary" (blue) and "danger" (red); a button without one
+# gets the app-specific soft glass look. The mapping below is semantic, not
+# decoration - every screen hands out a different mix of the four looks, so a
+# user learns what a colour means and each menu still reads as its own place.
+OK = "success"    # create, build, confirm, apply something
+GO = "primary"    # open or view something
+BAD = "danger"    # destructive actions only
+SOFT = None       # navigation and secondary actions
 
 
 def _paint(text: str, *colour: str) -> str:
-    """Prefix the action colour unless the label already carries a mark."""
-    if not colour:
-        return text
-    if text.startswith((GREEN, BLUE, PURPLE, ORANGE, YELLOW, RED, WHITE, "\U0001f7e2", "\u2705", "\u274c")):
-        return text
-    return f"{colour[0]} {text}"
+    """Kept for callers that still pass a legacy colour constant.
+
+    Labels carry exactly one emoji of their own now, so nothing is prefixed;
+    the argument is only consumed to keep every existing call site valid.
+    """
+    return text
 
 AMNEZIA_PLAY_URL = "https://play.google.com/store/apps/details?id=org.amnezia.vpn"
 AMNEZIA_WIN_URL = "https://github.com/amnezia-vpn/amnezia-client/releases/latest"
@@ -58,28 +59,51 @@ BULLET = "\u2022"
 TICKET_MARKS = {"open": "\U0001f7e0", "answered": "\u2705", "closed": "\U0001f512"}
 
 
-def _b(text: str, data: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(text=text, callback_data=data)
+def _b(text: str, data: str, style: Optional[str] = None) -> InlineKeyboardButton:
+    kwargs: dict = {"text": text, "callback_data": data}
+    if style:
+        # Bot API 9.4 button colouring. aiogram passes the extra field through
+        # untouched, so older clients simply ignore it and newer ones paint it.
+        kwargs["style"] = style
+    return InlineKeyboardButton(**kwargs)
 
 
-def _u(text: str, url: str) -> InlineKeyboardButton:
-    return InlineKeyboardButton(text=text, url=url)
+def _u(text: str, url: str, style: Optional[str] = None) -> InlineKeyboardButton:
+    kwargs: dict = {"text": text, "url": url}
+    if style:
+        kwargs["style"] = style
+    return InlineKeyboardButton(**kwargs)
 
 
-def _c(text: str, data: str, colour: str) -> InlineKeyboardButton:
-    """A coloured action button."""
-    return _b(_paint(text, colour), data)
+def _c(text: str, data: str, colour: Optional[str] = None) -> InlineKeyboardButton:
+    """A coloured action button.
+
+    Callers written against the old emoji palette pass a literal like GREEN or
+    BLUE; those map onto the real styles, and the new names (OK/GO/BAD/SOFT)
+    pass straight through.
+    """
+    return _b(text, data, LEGACY_STYLES.get(colour, colour))
 
 
-def _cu(text: str, url: str, colour: str) -> InlineKeyboardButton:
-    return _u(_paint(text, colour), url)
+def _cu(text: str, url: str, colour: Optional[str] = None) -> InlineKeyboardButton:
+    return _u(text, url, LEGACY_STYLES.get(colour, colour))
 
 
-def glass_button(text: str, callback: str) -> InlineKeyboardButton:
+def glass_button(text: str, callback: str, style: Optional[str] = OK) -> InlineKeyboardButton:
     """A full-width button. Telegram gives us one row per button and that is the
     only "glass" affordance the API has, so a glass button is simply a button
     that owns its row."""
-    return _b(text, callback)
+    return _b(text, callback, style)
+
+
+# Old call sites still hand the emoji constants over; map them so a rebuild
+# mid-deploy keeps painting instead of silently going grey.
+LEGACY_STYLES = {
+    "\U0001f7e2": OK,      # green circle
+    "\U0001f535": GO,      # blue circle
+    "\U0001f534": BAD,     # red circle
+    "\u26aa\ufe0f": SOFT,  # white circle
+}
 
 
 # ---------------------------------------------------------------- devices
@@ -93,11 +117,14 @@ def device_picker(lang: str, flow: str = "", back: str = "nav:warp") -> InlineKe
     ``f:<kind>`` means "render that export for the platform I just picked".
     Depending on state here is what used to make the picker a dead end - a
     navigation in between cleared it and the next tap did nothing at all.
+
+    Devices alternate blue / green so each row reads as its own choice.
     """
     tail = f":{flow}" if flow else ""
+    styles = (GO, OK, GO, OK, GO, OK)
     rows = [
-        [_c(t(lang, label_key(name)), f"wg:dev:{name}{tail}", PURPLE)]
-        for name in PLATFORM_ORDER
+        [_c(t(lang, label_key(name)), f"wg:dev:{name}{tail}", styles[index % len(styles)])]
+        for index, name in enumerate(PLATFORM_ORDER)
     ]
     rows.append(back_row(lang, back))
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -108,46 +135,36 @@ def platform_picker(lang: str, flow: str = "") -> InlineKeyboardMarkup:
     return device_picker(lang, flow)
 
 
-def _client_link(lang: str, platform: str) -> InlineKeyboardButton:
-    """The store link that matches the file we just handed over."""
-    name = normalise_platform(platform)
-    if name in {"ios", "macos"}:
-        return _u(t(lang, "btn.wireguard_ios"), WIREGUARD_IOS_URL)
-    if name == "windows":
-        return _u(t(lang, "btn.amnezia"), AMNEZIA_WIN_URL)
-    return _u(t(lang, "btn.amnezia"), AMNEZIA_PLAY_URL)
-
-
 def ticket_mark(status: object) -> str:
     return TICKET_MARKS.get(str(status), BULLET)
 
 
 def back_row(lang: str, target: str = "nav:menu") -> list[InlineKeyboardButton]:
-    return [_c(t(lang, "btn.back"), target, WHITE)]
+    return [_c(t(lang, "btn.back"), target, SOFT)]
 
 
 def main_menu(lang: str, is_admin: bool = False) -> InlineKeyboardMarkup:
+    """Every action keeps exactly one emoji of its own; the colour comes from
+    the button style itself, and each row gets a different mix so the menu
+    reads as a palette rather than a wall of grey."""
     rows: list[list[InlineKeyboardButton]] = [
-        [_c(t(lang, "btn.build"), "nav:build", GREEN)],
-        [_c(t(lang, "btn.panel"), "nav:panel", BLUE)],
-        [_c(t(lang, "btn.protocols"), "nav:protocols", ORANGE)],
-        [_c(t(lang, "btn.warp"), "nav:warp", PURPLE)],
-        [_c(t(lang, "btn.apps"), "nav:apps", ORANGE)],
-        [_c(t(lang, "btn.guide"), "nav:guide", WHITE), _c(t(lang, "btn.convert"), "nav:convert", YELLOW)],
-        [_c(t(lang, "btn.status"), "nav:status", YELLOW), _c(t(lang, "btn.operator"), "nav:operator", YELLOW)],
-        [_c(t(lang, "btn.support"), "nav:support", BLUE), _c(t(lang, "btn.donate"), "nav:donate", ORANGE)],
-        [_c(t(lang, "btn.lang"), "nav:lang", WHITE)],
+        [_c(t(lang, "btn.build"), "nav:build", OK)],
+        [_c(t(lang, "btn.panel"), "nav:panel", GO)],
+        [_c(t(lang, "btn.warp"), "nav:warp", OK)],
+        [_c(t(lang, "btn.apps"), "nav:apps", GO)],
+        [_c(t(lang, "btn.guide"), "nav:guide", SOFT), _c(t(lang, "btn.support"), "nav:support", GO)],
+        [_c(t(lang, "btn.donate"), "nav:donate", OK), _c(t(lang, "btn.lang"), "nav:lang", SOFT)],
     ]
     if is_admin:
-        rows.append([_c(t(lang, "btn.admin"), "adm:menu", RED)])
+        rows.append([_c(t(lang, "btn.admin"), "adm:menu", BAD)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def token_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_cu(t(lang, "btn.cf_signup"), CF_SIGNUP_URL, BLUE)],
-            [_cu(t(lang, "btn.cf_token"), CF_TOKEN_URL, GREEN)],
+            [_cu(t(lang, "btn.cf_signup"), CF_SIGNUP_URL, GO)],
+            [_cu(t(lang, "btn.cf_token"), CF_TOKEN_URL, OK)],
             back_row(lang),
         ]
     )
@@ -163,15 +180,14 @@ def panel_menu(lang: str) -> InlineKeyboardMarkup:
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_c(t(lang, "btn.qr"), "panel:qr", BLUE), _c(t(lang, "btn.sub"), "panel:sub", BLUE)],
-            [_c(t(lang, "btn.protocols"), "nav:protocols", ORANGE)],
-            [_c(t(lang, "btn.fragment"), "panel:fragment", PURPLE)],
-            [_c(t(lang, "btn.trojan"), "panel:trojan", YELLOW), _c(t(lang, "btn.single"), "panel:single", YELLOW)],
-            [_c(t(lang, "btn.clash"), "panel:clash", YELLOW), _c(t(lang, "btn.singbox"), "panel:singbox", YELLOW)],
-            [_c(t(lang, "btn.ping"), "panel:ping", WHITE), _c(t(lang, "btn.ai"), "panel:ai", WHITE)],
-            [_c(t(lang, "btn.apply"), "panel:apply", GREEN), _c(t(lang, "btn.rescan"), "panel:rescan", GREEN)],
-            [_c(t(lang, "btn.rebuild"), "panel:rebuild", GREEN), _c(t(lang, "btn.apps"), "nav:apps", ORANGE)],
-            [_c(t(lang, "btn.delete"), "panel:delete", RED)],
+            [_c(t(lang, "btn.qr"), "panel:qr", GO), _c(t(lang, "btn.sub"), "panel:sub", OK)],
+            [_c(t(lang, "btn.fragment"), "panel:fragment", GO)],
+            [_c(t(lang, "btn.trojan"), "panel:trojan", OK), _c(t(lang, "btn.single"), "panel:single", GO)],
+            [_c(t(lang, "btn.clash"), "panel:clash", OK), _c(t(lang, "btn.singbox"), "panel:singbox", GO)],
+            [_c(t(lang, "btn.ping"), "panel:ping", GO), _c(t(lang, "btn.ai"), "panel:ai", OK)],
+            [_c(t(lang, "btn.apply"), "panel:apply", OK), _c(t(lang, "btn.rescan"), "panel:rescan", GO)],
+            [_c(t(lang, "btn.rebuild"), "panel:rebuild", OK), _c(t(lang, "btn.apps"), "nav:apps", SOFT)],
+            [_c(t(lang, "btn.delete"), "panel:delete", BAD)],
             back_row(lang),
         ]
     )
@@ -180,74 +196,17 @@ def panel_menu(lang: str) -> InlineKeyboardMarkup:
 def confirm_menu(lang: str, yes: str, no: str = "nav:panel") -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_c(t(lang, "btn.confirm"), yes, GREEN), _c(t(lang, "btn.cancel"), no, WHITE)]
+            [_c(t(lang, "btn.confirm"), yes, OK), _c(t(lang, "btn.cancel"), no, BAD)]
         ]
     )
-
-
-def operator_menu(lang: str) -> InlineKeyboardMarkup:
-    builder = InlineKeyboardBuilder()
-    for code, profile in OPERATORS.items():
-        builder.button(text=profile["en" if lang == "en" else "fa"], callback_data=f"op:{code}")
-    builder.adjust(2)
-    builder.row(*back_row(lang))
-    return builder.as_markup()
-
-
-def protocols_menu(lang: str, has_ss: bool, back: str = "nav:panel") -> InlineKeyboardMarkup:
-    """The protocol picker: one tap per protocol, or the whole bundle at once.
-
-    ``has_ss`` only controls the Shadowsocks row - the button exists or it does
-    not, exactly like the AmneziaWG rows on a platform that cannot read them.
-    """
-    rows: list[list[InlineKeyboardButton]] = [
-        [
-            _c(t(lang, "btn.proto_vless"), "proto:vless", GREEN),
-            _c(t(lang, "btn.proto_httpup"), "proto:httpupgrade", BLUE),
-        ],
-        [
-            _c(t(lang, "btn.proto_xhttp"), "proto:xhttp", PURPLE),
-            _c(t(lang, "btn.proto_trojan"), "proto:trojan", YELLOW),
-        ],
-    ]
-    if has_ss:
-        rows.append([_c(t(lang, "btn.proto_ss"), "proto:ss", ORANGE)])
-    rows += [
-        [
-            _c(t(lang, "btn.clash"), "proto:clash", YELLOW),
-            _c(t(lang, "btn.singbox"), "proto:singbox", YELLOW),
-        ],
-        [_c(t(lang, "btn.fragment"), "proto:fragment", PURPLE)],
-        [_c(t(lang, "btn.warp"), "nav:warp", PURPLE)],
-        [_c(t(lang, "btn.proto_qr"), "proto:qr", BLUE)],
-        [_c(t(lang, "btn.proto_all"), "proto:all", GREEN)],
-        back_row(lang, back),
-    ]
-    return InlineKeyboardMarkup(inline_keyboard=rows)
-
-
-def protocols_qr(lang: str, has_ss: bool) -> InlineKeyboardMarkup:
-    """Per-protocol QR codes, two per row so the labels stay readable."""
-    kinds = [
-        (t(lang, "btn.proto_vless"), "proto:qr:vless"),
-        (t(lang, "btn.proto_httpup"), "proto:qr:httpupgrade"),
-        (t(lang, "btn.proto_xhttp"), "proto:qr:xhttp"),
-        (t(lang, "btn.proto_trojan"), "proto:qr:trojan"),
-    ]
-    if has_ss:
-        kinds.append((t(lang, "btn.proto_ss"), "proto:qr:ss"))
-    kinds.append((t(lang, "btn.sub"), "proto:qr:sub"))
-    rows = [[_b(label, data) for label, data in kinds[i : i + 2]] for i in range(0, len(kinds), 2)]
-    rows.append(back_row(lang, "nav:protocols"))
-    return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def free_hint_menu(lang: str) -> InlineKeyboardMarkup:
     """Shown when the protocol menu is opened with no panel: build, or go free."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_c(t(lang, "btn.build"), "nav:build", GREEN)],
-            [_c(t(lang, "btn.free"), "nav:free", ORANGE)],
+            [_c(t(lang, "btn.build"), "nav:build", OK)],
+            [_c(t(lang, "btn.free"), "nav:free", GO)],
             back_row(lang),
         ]
     )
@@ -276,15 +235,15 @@ def apps_platforms(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                _b(t(lang, "btn.apps_android"), "apps:android"),
-                _b(t(lang, "btn.apps_ios"), "apps:ios"),
+                _b(t(lang, "btn.apps_android"), "apps:android", OK),
+                _b(t(lang, "btn.apps_ios"), "apps:ios", GO),
             ],
             [
-                _b(t(lang, "btn.apps_windows"), "apps:windows"),
-                _b(t(lang, "btn.apps_macos"), "apps:macos"),
+                _b(t(lang, "btn.apps_windows"), "apps:windows", GO),
+                _b(t(lang, "btn.apps_macos"), "apps:macos", OK),
             ],
-            [_b(t(lang, "btn.apps_linux"), "apps:linux")],
-            [_b(t(lang, "btn.guide"), "nav:guide")],
+            [_b(t(lang, "btn.apps_linux"), "apps:linux", GO)],
+            [_b(t(lang, "btn.guide"), "nav:guide", SOFT)],
             back_row(lang),
         ]
     )
@@ -298,13 +257,13 @@ def apps_list(lang: str, platform: str, tag: str = "") -> InlineKeyboardMarkup:
 
     others = [code for code in catalogue.PLATFORMS if code != platform]
     switch = [
-        _b(t(lang, f"btn.apps_{code}"), f"apps:{code}:{tag}" if tag else f"apps:{code}")
+        _b(t(lang, f"btn.apps_{code}"), f"apps:{code}:{tag}" if tag else f"apps:{code}", GO)
         for code in others
     ]
     for index in range(0, len(switch), 2):
         rows.append(switch[index : index + 2])
 
-    rows.append([_b(t(lang, "btn.guide"), "nav:guide")])
+    rows.append([_b(t(lang, "btn.guide"), "nav:guide", SOFT)])
     rows.append(back_row(lang, "nav:apps"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -396,7 +355,7 @@ def warp_menu(lang: str, has_identity: bool = False) -> InlineKeyboardMarkup:
     existing caller keeps working.
     """
     rows: list[list[InlineKeyboardButton]] = [
-        [glass_button(f"{PURPLE} {t(lang, 'btn.warp_build')}", "wg:net")],
+        [glass_button(t(lang, "btn.warp_build"), "wg:net", GO)],
         back_row(lang),
     ]
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -414,37 +373,34 @@ def warp_network(lang: str, platform: str = "") -> InlineKeyboardMarkup:
     tail = f":{normalise_platform(platform)}" if platform else ""
     rows: list[list[InlineKeyboardButton]] = []
     pair: list[InlineKeyboardButton] = []
-    for code, profile in OPERATORS.items():
-        pair.append(_c(profile["en" if lang == "en" else "fa"], f"wg:net:{code}{tail}", PURPLE))
+    styles = (GO, OK)
+    for index, (code, profile) in enumerate(OPERATORS.items()):
+        pair.append(_c(profile["en" if lang == "en" else "fa"], f"wg:net:{code}{tail}", styles[index % len(styles)]))
         if len(pair) == 2:
             rows.append(pair)
             pair = []
     if pair:
         rows.append(pair)
     if platform:
-        rows.append([_c(t(lang, "btn.wg_change_device"), "wg:net", WHITE)])
+        rows.append([_c(t(lang, "btn.wg_change_device"), "wg:net", SOFT)])
     rows.append(back_row(lang, "nav:warp"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def warp_delivered(lang: str, family: str, platform: str = "") -> InlineKeyboardMarkup:
-    """Attached under a delivered config: next endpoint, the client, the exports."""
-    name = normalise_platform(platform) if platform else ""
-    tail = f":{name}" if name else ""
-    rows: list[list[InlineKeyboardButton]] = [
-        [_b(t(lang, "btn.wg_next_ep"), f"wg:net:next:{family}{tail}")],
-        [_client_link(lang, name or "android")],
-    ]
-    if name in {"ios", "macos"}:
-        # Clean WireGuard has no obfuscation, so the one client that can carry an
-        # obfuscated WARP link on iOS is worth a button of its own.
-        rows.append([_u(t(lang, "btn.streisand_ios"), STREISAND_IOS_URL)])
-    rows += _warp_export_rows(lang, name)
-    rows += _warp_identity_rows(lang)
-    rows.append([_b(t(lang, "btn.wg_change_device"), "wg:net")])
-    rows.append([_b(t(lang, "btn.wg_pick_again"), f"wg:dev:{name or 'android'}")])
-    rows.append(back_row(lang, "nav:warp"))
-    return InlineKeyboardMarkup(inline_keyboard=rows)
+    """Attached under a delivered config.
+
+    This screen used to hand out the client link, four export pairs, the next
+    endpoint and six identity actions right under a file the user has not even
+    opened yet. All of that is gone on purpose: after every build the keyboard
+    is exactly two buttons - change the device, or go back to the main menu.
+    """
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [_c(t(lang, "btn.wg_change_device"), "wg:net", GO)],
+            [_c(t(lang, "btn.back_home"), "nav:menu", SOFT)],
+        ]
+    )
 
 
 def warp_exports(
@@ -474,19 +430,19 @@ def pool_menu(lang: str) -> InlineKeyboardMarkup:
     """Admin controls for the two family pools, plus the operator leaderboard."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_b(t(lang, "btn.pool_refresh"), "pool:refresh")],
+            [_b(t(lang, "btn.pool_refresh"), "pool:refresh", OK)],
             [
-                _b(t(lang, "btn.pool_refresh_v4"), "pool:refresh:v4"),
-                _b(t(lang, "btn.pool_refresh_v6"), "pool:refresh:v6"),
+                _b(t(lang, "btn.pool_refresh_v4"), "pool:refresh:v4", GO),
+                _b(t(lang, "btn.pool_refresh_v6"), "pool:refresh:v6", GO),
             ],
             [
-                _b(t(lang, "btn.pool_add_v4"), "pool:add:v4"),
-                _b(t(lang, "btn.pool_add_v6"), "pool:add:v6"),
+                _b(t(lang, "btn.pool_add_v4"), "pool:add:v4", OK),
+                _b(t(lang, "btn.pool_add_v6"), "pool:add:v6", OK),
             ],
-            [_b(t(lang, "btn.pool_manual"), "pool:manual")],
-            [_b(t(lang, "btn.pool_audit"), "pool:audit")],
-            [_b(t(lang, "btn.pool_ops"), "pool:ops")],
-            [_b(t(lang, "btn.pool_list"), "pool:list")],
+            [_b(t(lang, "btn.pool_manual"), "pool:manual", GO)],
+            [_b(t(lang, "btn.pool_audit"), "pool:audit", SOFT)],
+            [_b(t(lang, "btn.pool_ops"), "pool:ops", SOFT)],
+            [_b(t(lang, "btn.pool_list"), "pool:list", GO)],
             back_row(lang, "adm:menu"),
         ]
     )
@@ -496,26 +452,26 @@ def pool_manual(lang: str, v4: int = 0, v6: int = 0) -> InlineKeyboardMarkup:
     """The hand entered endpoints screen: add, re-check, clear."""
     rows: list[list[InlineKeyboardButton]] = [
         [
-            _b(t(lang, "btn.pool_add_v4"), "pool:add:v4"),
-            _b(t(lang, "btn.pool_add_v6"), "pool:add:v6"),
+            _b(t(lang, "btn.pool_add_v4"), "pool:add:v4", OK),
+            _b(t(lang, "btn.pool_add_v6"), "pool:add:v6", OK),
         ],
-        [_b(t(lang, "btn.pool_manual_check"), "pool:manual:check")],
+        [_b(t(lang, "btn.pool_manual_check"), "pool:manual:check", GO)],
     ]
     clear: list[InlineKeyboardButton] = []
     if v4:
-        clear.append(_b(t(lang, "btn.pool_manual_clear_v4"), "pool:manual:ask:v4"))
+        clear.append(_b(t(lang, "btn.pool_manual_clear_v4"), "pool:manual:ask:v4", BAD))
     if v6:
-        clear.append(_b(t(lang, "btn.pool_manual_clear_v6"), "pool:manual:ask:v6"))
+        clear.append(_b(t(lang, "btn.pool_manual_clear_v6"), "pool:manual:ask:v6", BAD))
     if clear:
         rows.append(clear)
-    rows.append([_b(t(lang, "btn.pool"), "pool:home")])
+    rows.append([_b(t(lang, "btn.pool"), "pool:home", SOFT)])
     rows.append(back_row(lang, "adm:menu"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
 def pool_manual_cancel(lang: str) -> InlineKeyboardMarkup:
     """Shown while the bot is waiting for a pasted list."""
-    return InlineKeyboardMarkup(inline_keyboard=[[_b(t(lang, "btn.cancel"), "pool:manual")]])
+    return InlineKeyboardMarkup(inline_keyboard=[[_b(t(lang, "btn.cancel"), "pool:manual", SOFT)]])
 
 
 def pool_manual_confirm(lang: str, family: str) -> InlineKeyboardMarkup:
@@ -523,8 +479,8 @@ def pool_manual_confirm(lang: str, family: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [
-                _b(t(lang, "btn.confirm"), f"pool:manual:wipe:{family}"),
-                _b(t(lang, "btn.cancel"), "pool:manual"),
+                _b(t(lang, "btn.confirm"), f"pool:manual:wipe:{family}", OK),
+                _b(t(lang, "btn.cancel"), "pool:manual", SOFT),
             ]
         ]
     )
@@ -533,7 +489,7 @@ def pool_manual_confirm(lang: str, family: str) -> InlineKeyboardMarkup:
 def pool_back(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_b(t(lang, "btn.pool"), "pool:home")],
+            [_b(t(lang, "btn.pool"), "pool:home", SOFT)],
             back_row(lang, "adm:menu"),
         ]
     )
@@ -544,11 +500,11 @@ def pool_back(lang: str) -> InlineKeyboardMarkup:
 
 def support_menu(lang: str, has_thread: bool) -> InlineKeyboardMarkup:
     """User facing support home."""
-    rows: list[list[InlineKeyboardButton]] = [[_b(t(lang, "btn.support_new"), "sup:new")]]
+    rows: list[list[InlineKeyboardButton]] = [[_b(t(lang, "btn.support_new"), "sup:new", OK)]]
     if has_thread:
-        rows.append([_b(t(lang, "btn.support_thread"), "sup:thread")])
+        rows.append([_b(t(lang, "btn.support_thread"), "sup:thread", GO)])
     if settings.support_url:
-        rows.append([_u(t(lang, "btn.support_direct"), settings.support_url)])
+        rows.append([_u(t(lang, "btn.support_direct"), settings.support_url, GO)])
     rows.append(back_row(lang))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -557,7 +513,7 @@ def support_user_reply(lang: str) -> InlineKeyboardMarkup:
     """Attached to an admin answer so the user can keep the thread going."""
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_b(t(lang, "btn.support_new"), "sup:new")],
+            [_b(t(lang, "btn.support_new"), "sup:new", OK)],
             back_row(lang),
         ]
     )
@@ -581,9 +537,9 @@ def support_list(
         if scope != "all"
         else ("btn.tickets_open", "sup:list:open")
     )
-    rows.append([_b(t(lang, toggle[0]), toggle[1])])
+    rows.append([_b(t(lang, toggle[0]), toggle[1], GO)])
     rows.append(
-        [_b(t(lang, "support.toggle_on" if enabled else "support.toggle_off"), "sup:toggle")]
+        [_b(t(lang, "support.toggle_on" if enabled else "support.toggle_off"), "sup:toggle", OK)]
     )
     rows.append(back_row(lang, "adm:menu"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
@@ -602,9 +558,9 @@ def support_ticket(
     )
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_b(t(lang, "btn.reply"), f"sup:reply:{ticket_id}")],
-            [_b(t(lang, action[0]), action[1])],
-            [_b(t(lang, "btn.tickets"), f"sup:list:{scope}")],
+            [_b(t(lang, "btn.reply"), f"sup:reply:{ticket_id}", GO)],
+            [_b(t(lang, action[0]), action[1], OK)],
+            [_b(t(lang, "btn.tickets"), f"sup:list:{scope}", SOFT)],
             back_row(lang, "adm:menu"),
         ]
     )
@@ -616,15 +572,15 @@ def support_ticket(
 def admin_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_c(t(lang, "btn.stats"), "adm:stats", YELLOW), _c(t(lang, "btn.users"), "adm:users", BLUE)],
+            [_c(t(lang, "btn.stats"), "adm:stats", GO), _c(t(lang, "btn.users"), "adm:users", OK)],
             [
-                _c(t(lang, "btn.broadcast"), "adm:broadcast", ORANGE),
-                _c(t(lang, "btn.channels"), "adm:channels", YELLOW),
+                _c(t(lang, "btn.broadcast"), "adm:broadcast", GO),
+                _c(t(lang, "btn.channels"), "adm:channels", OK),
             ],
-            [_c(t(lang, "btn.engine"), "adm:engine", GREEN), _c(t(lang, "btn.options"), "adm:options", YELLOW)],
-            [_c(t(lang, "btn.pool"), "pool:home", PURPLE)],
-            [_c(t(lang, "btn.panels"), "adm:panels", BLUE), _c(t(lang, "btn.logs"), "adm:logs", BLUE)],
-            [_c(t(lang, "btn.tickets"), "sup:list:open", BLUE), _c(t(lang, "btn.backup"), "adm:backup", YELLOW)],
+            [_c(t(lang, "btn.engine"), "adm:engine", OK), _c(t(lang, "btn.options"), "adm:options", SOFT)],
+            [_c(t(lang, "btn.pool"), "pool:home", GO)],
+            [_c(t(lang, "btn.panels"), "adm:panels", OK), _c(t(lang, "btn.logs"), "adm:logs", SOFT)],
+            [_c(t(lang, "btn.tickets"), "sup:list:open", GO), _c(t(lang, "btn.backup"), "adm:backup", OK)],
             back_row(lang),
         ]
     )
@@ -634,8 +590,8 @@ def admin_channels(lang: str, channels: list[dict]) -> InlineKeyboardMarkup:
     rows: list[list[InlineKeyboardButton]] = []
     for channel in channels:
         title = channel.get("title") or channel["chat_id"]
-        rows.append([_b(f"\U0001f5d1 {title}", f"adm:chdel:{channel['chat_id']}")])
-    rows.append([_b(t(lang, "btn.add"), "adm:chadd")])
+        rows.append([_b(f"\U0001f5d1 {title}", f"adm:chdel:{channel['chat_id']}", BAD)])
+    rows.append([_b(t(lang, "btn.add"), "adm:chadd", OK)])
     rows.append(back_row(lang, "adm:menu"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -650,15 +606,21 @@ def admin_options(lang: str, values: dict[str, bool]) -> InlineKeyboardMarkup:
 
 
 def admin_engine(lang: str) -> InlineKeyboardMarkup:
-    """The scan controls, plus the WARP endpoint screens the user side no longer
-    shows. They were taken off the user's WARP home on purpose, but an admin still
-    needs to be able to look at the pool and force a sweep."""
+    """One scanner to rule both engines.
+
+    The clean-IP sweep and the WARP endpoint sweep used to have two buttons, two
+    screens and two vocabularies. They are one button now: ``adm:smart`` fires
+    both engines at once, the automatic cadence (300 s) does it between taps,
+    and the survivors land in the pools the panels are built from.
+    """
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_b(t(lang, "btn.scan_now"), "adm:scan")],
-            [_b(t(lang, "btn.sync_now"), "adm:sync")],
-            [_b(t(lang, "btn.warp_rescan"), "wg:rescan"), _b(t(lang, "btn.warp_eps"), "wg:eps")],
-            [_b(t(lang, "btn.pool"), "pool:home")],
+            [glass_button(t(lang, "btn.smart_scan"), "adm:smart", OK)],
+            [
+                _b(t(lang, "btn.sync_now"), "adm:sync", GO),
+                _b(t(lang, "btn.curate"), "adm:curate", GO),
+            ],
+            [_b(t(lang, "btn.pool"), "pool:home", SOFT)],
             back_row(lang, "adm:menu"),
         ]
     )

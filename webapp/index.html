@@ -49,7 +49,7 @@
         <div class="price-box"><span data-i18n="pay.price">مبلغ</span><b id="payPrice">—</b></div>
         <div class="price-box"><span data-i18n="pay.period">اعتبار</span><b id="payPeriod">—</b></div>
       </div>
-      <button class="btn primary block" id="payZp" type="button" data-i18n="pay.zp">💳 پرداخت با کارت بانکی</button>
+      <button class="btn green block" id="payZp" type="button" data-i18n="pay.zp">💳 پرداخت با کارت بانکی</button>
       <button class="btn stars block" id="payStars" type="button" data-i18n="pay.stars">⭐️ پرداخت با استارز تلگرام</button>
       <p class="tiny muted center" id="payNone" hidden data-i18n="pay.none">درگاه پرداخت هنوز تنظیم نشده.</p>
       <button class="btn ghost block" id="payCheck" type="button" data-i18n="pay.check">🔄 پرداخت کردم، بررسی کن</button>
@@ -63,8 +63,8 @@
       <h1 data-i18n="home.title">شبکه‌ی تو، همیشه تازه</h1>
       <p class="muted" data-i18n="home.text">آی‌پی‌های تمیز خودکار اسکن، تست و روی کانفیگ‌هایت اعمال می‌شوند.</p>
       <div class="hero-actions">
-        <button class="btn primary" type="button" data-go="panel" data-i18n="home.cta">⚡️ پنل توربو</button>
-        <button class="btn ghost" type="button" data-go="free" data-i18n="home.cta2">🎁 کانفیگ رایگان</button>
+        <button class="btn violet" type="button" data-go="panel" data-i18n="home.cta">⚡️ پنل توربو</button>
+        <button class="btn green" type="button" data-go="free" data-i18n="home.cta2">🎁 کانفیگ رایگان</button>
       </div>
     </div>
 
@@ -105,7 +105,7 @@
     <div class="card glass center" id="panelLocked" hidden>
       <div class="lock-icon">🔒</div>
       <p class="muted" data-i18n="panel.locked">پنل بعد از فعال شدن اشتراک در دسترس است.</p>
-      <button class="btn primary block" type="button" data-go="home" data-i18n="pay.title">🔐 اشتراک ورود</button>
+      <button class="btn violet block" type="button" data-go="home" data-i18n="pay.title">🔐 اشتراک ورود</button>
     </div>
 
     <div class="card glass" id="panelEmpty" hidden>
@@ -113,7 +113,7 @@
       <p class="muted" data-i18n="panel.buildText">توکن Cloudflare خودت را بده.</p>
       <input class="input" id="tokenInput" type="password" autocomplete="off" spellcheck="false" placeholder="Cloudflare API Token">
       <a class="tiny link" href="https://dash.cloudflare.com/profile/api-tokens" target="_blank" rel="noopener" data-i18n="panel.tokenHelp">ساخت توکن در داشبورد کلادفلر ↗</a>
-      <button class="btn primary block" id="buildBtn" type="button" data-i18n="panel.build">ساخت پنل</button>
+      <button class="btn green block" id="buildBtn" type="button" data-i18n="panel.build">ساخت پنل</button>
       <ol class="steps" id="steps" hidden></ol>
     </div>
 
@@ -150,11 +150,11 @@
       <div class="qr" id="qrBox"><img id="qrImg" alt="QR"></div>
 
       <div class="grid two">
-        <button class="btn" id="applyBtn" type="button" data-i18n="panel.apply">⚡️ آی‌پی تازه</button>
-        <button class="btn" id="pingBtn" type="button" data-i18n="panel.ping">📶 پینگ</button>
-        <button class="btn" id="rebuildBtn" type="button" data-i18n="panel.rebuild">🔄 بازسازی</button>
-        <button class="btn" id="fragBtn" type="button" data-i18n="panel.fragment">🧩 فرگمنت</button>
-        <button class="btn" id="noiseBtn" type="button" data-i18n="panel.noise">🌫 فرگمنت + نویز</button>
+        <button class="btn green" id="applyBtn" type="button" data-i18n="panel.apply">⚡️ آی‌پی تازه</button>
+        <button class="btn cyan" id="pingBtn" type="button" data-i18n="panel.ping">📶 پینگ</button>
+        <button class="btn amber" id="rebuildBtn" type="button" data-i18n="panel.rebuild">🔄 بازسازی</button>
+        <button class="btn violet" id="fragBtn" type="button" data-i18n="panel.fragment">🧩 فرگمنت</button>
+        <button class="btn violet" id="noiseBtn" type="button" data-i18n="panel.noise">🌫 فرگمنت + نویز</button>
         <button class="btn" id="clashBtn" type="button" data-i18n="panel.clashFile">📄 فایل Clash</button>
       </div>
       <button class="btn danger block" id="deleteBtn" type="button" data-i18n="panel.delete">🗑 حذف پنل</button>
@@ -191,7 +191,7 @@
         <button class="seg-btn" type="button" data-op="other" data-i18n="warp.op_other">سایر</button>
       </div>
 
-      <button class="btn primary block" id="wgBuild" type="button" data-i18n="warp.build">ساخت کانفیگ</button>
+      <button class="btn cyan block" id="wgBuild" type="button" data-i18n="warp.build">ساخت کانفیگ</button>
 
       <div id="wgResult" hidden>
         <div class="kv"><span data-i18n="warp.endpoint">اندپوینت</span><code id="wgEndpoint">—</code></div>
@@ -202,7 +202,7 @@
           <b data-i18n="warp.appleTitle">🍏 آیفون و مک: اول AmneziaWG</b>
           <span class="muted tiny" data-i18n="warp.appleText">اپ رایگان AmneziaWG را نصب کن و فایل یا کیوآر زیر را وارد کن.</span>
           <div class="grid two">
-            <button class="btn primary" id="wgAwgDownload" type="button" data-i18n="warp.awgDownload">⬇️ فایل AmneziaWG</button>
+            <button class="btn green" id="wgAwgDownload" type="button" data-i18n="warp.awgDownload">⬇️ فایل AmneziaWG</button>
             <button class="btn" id="wgAwgQr" type="button" data-i18n="warp.awgQr">🔳 کیوآر AmneziaWG</button>
             <button class="btn" id="wgAwgStore" type="button" data-i18n="warp.awgStore">🍏 نصب AmneziaWG</button>
             <button class="btn" id="wgHiddify" type="button" data-i18n="warp.hiddify">🚀 لینک Hiddify</button>
