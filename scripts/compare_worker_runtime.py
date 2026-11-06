@@ -8,7 +8,7 @@ local environment token.
 """
 from __future__ import annotations
 
-import argparse, hashlib, json, os, re, socket, sqlite3, ssl, subprocess, sys
+import argparse, hashlib, json, os, re, sqlite3
 from pathlib import Path
 from urllib.error import HTTPError, URLError
 from urllib.request import Request, urlopen

@@ -194,7 +194,7 @@ made against a test panel first, not against everybody's live worker.
 
 ## Loose end, named on purpose
 
-`worker/vless-worker-v2.js` has no `mix` or `trojan` route, so those paths quietly
+`worker/vless-worker.js` (the only bundle shipped) serves `mix` and `trojan`; those paths
 return the plain VLESS subscription. It is not the bundle that ships - `WORKER_FILE`
 points at `vless-worker.js` - so nothing in production is affected, and it was left
 alone rather than half-fixed.

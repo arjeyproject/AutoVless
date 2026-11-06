@@ -33,12 +33,8 @@ End result: every config users get is live and usable on day 1.
 
 import base64
 import hashlib
-import hmac
 import json
-import re
-import time
 from typing import Dict, List, Optional, Tuple
-from urllib import parse
 import aiohttp
 import nacl.bindings
 import nacl.public
@@ -122,9 +118,10 @@ class ProtonVPNEngine:
             raise ValueError(f"Seed must be 32 bytes, got {len(seed)}")
         
         # Use seed to create Ed25519, then derive X25519
-        ed25519_key = nacl.signing.SigningKey(seed)
-        ed25519_public = ed25519_key.verify_key
-        
+        # The seed doubles as the Ed25519 identity; Proton derives the
+        # X25519 secret from it directly (below), so no key object is kept.
+        nacl.signing.SigningKey(seed)
+
         # Convert Ed25519 public to X25519 private (Proton's method)
         # Hash the Ed25519 secret with SHA512, take first 32 bytes
         h = hashlib.sha512(seed).digest()

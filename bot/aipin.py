@@ -35,7 +35,7 @@ from __future__ import annotations
 
 import hashlib
 import logging
-from typing import Optional, Sequence
+from typing import Sequence
 
 from . import proxies, store
 from .config import settings

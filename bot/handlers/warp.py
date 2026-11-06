@@ -32,7 +32,7 @@ from aiogram.types import BufferedInputFile, CallbackQuery, Message
 from .. import db, keyboards, warpconf, warpstore
 from .. import warp as warpcore
 from ..config import settings
-from ..i18n import device_label, num, t
+from ..i18n import num, t
 from ..platforms import normalise_platform, should_include_amnezia_keys
 from ..utils import ago, chunked, edit, esc, ping_label
 from ..warpscan import ScanReport, warp_scanner

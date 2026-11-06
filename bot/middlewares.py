@@ -8,7 +8,7 @@ from typing import Any, Awaitable, Callable
 
 from aiogram import BaseMiddleware, Bot
 from aiogram.enums import ChatMemberStatus
-from aiogram.types import CallbackQuery, Message, TelegramObject, Update, User
+from aiogram.types import TelegramObject, Update, User
 
 from . import db, keyboards, payment, referral
 from .config import settings

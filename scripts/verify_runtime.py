@@ -12,7 +12,6 @@ from __future__ import annotations
 import argparse
 import asyncio
 import json
-import sys
 from urllib.parse import urlparse
 
 import httpx
