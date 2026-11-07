@@ -524,6 +524,14 @@ async def build(
                 f"the panel was deployed but neither {custom} nor {dev_host} answered"
             )
     else:
+        # No custom domain is no reason to skip the publish gate: a deployment
+        # that went "live" without a working worker used to be saved as a panel
+        # row with healthy=0 and a front door that answered nothing, and the
+        # user read the resulting empty subscription as "no sub link works".
+        if not await _published(dev_host, panel_uuid, attempts=10):
+            raise DeployError(
+                f"the panel was deployed but {dev_host} never answered"
+            )
         host = dev_host
 
     healthy, report = await _probe(host, panel_uuid)

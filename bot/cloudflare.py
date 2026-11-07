@@ -376,16 +376,24 @@ class CloudflareClient:
         self,
         account_id: str,
         project: str,
-        manifest: dict[str, str],
+        code: bytes,
     ) -> dict:
         """One deployment of an advanced-mode (``_worker.js``) Pages project.
 
-        ``manifest`` maps bundle paths with a leading slash to the hashes
-        produced by :func:`bot.blake3pure.file_hash`.
+        The worker module rides as the ``_worker.bundle`` multipart field - that
+        is what current wrangler sends (``formData.append("_worker.bundle",
+        new File([contents], "_worker.bundle"))``), and it is the only shape the
+        platform executes. Listing ``_worker.js`` in the asset manifest instead
+        makes the platform SERVE the file statically: the deployment still goes
+        "live", every route answers the asset server's bare 404, and
+        ``/_worker.js`` happily returns the bundle itself - exactly the
+        "deployed but never answered" failure seen in production on 2026-11-07.
+        A pure-worker project has no static assets, so the manifest is empty.
         """
         form = {
-            "manifest": (None, json.dumps(manifest), "application/json"),
+            "manifest": (None, "{}", "application/json"),
             "branch": (None, "main"),
+            "_worker.bundle": ("_worker.bundle", code, "application/octet-stream"),
         }
         result = await self._call(
             "POST",

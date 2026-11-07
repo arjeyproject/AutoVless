@@ -30,7 +30,7 @@ from __future__ import annotations
 import asyncio
 import logging
 
-from . import blake3pure, vless
+from . import vless
 from .cloudflare import CloudflareClient, CloudflareError
 
 log = logging.getLogger("autovless.pages")
@@ -74,11 +74,6 @@ async def _ensure_project(cf: CloudflareClient, account_id: str, project: str) -
     await cf.create_pages_project(account_id, project)
 
 
-async def _bundle(code: str) -> bytes:
-    """The Pages deployment carries exactly one file: the worker module."""
-    return code.encode("utf-8")
-
-
 async def push(
     token: str,
     account_id: str,
@@ -87,6 +82,10 @@ async def push(
     variables: dict[str, str],
 ) -> str:
     """Update bindings, create one production deployment, and WAIT for it.
+
+    The worker module rides on the deployment request itself (the
+    ``_worker.bundle`` multipart field), so there are no static assets to
+    upload - a pure advanced-mode project is exactly that.
 
     The wait is not decoration. A Pages direct-upload deployment is processed
     asynchronously, and the API accepting the request says nothing about the
@@ -101,23 +100,8 @@ async def push(
         async with CloudflareClient(token) as cf:
             await _ensure_project(cf, account_id, project)
             await cf.update_pages_env(account_id, project, variables)
-
-            contents = await _bundle(code)
-            digest = blake3pure.file_hash(WORKER_BUNDLE, contents)
-            await cf.upload_pages_assets(
-                account_id,
-                project,
-                [
-                    {
-                        "path": WORKER_BUNDLE,
-                        "contents": contents,
-                        "hash": digest,
-                        "contentType": WORKER_CONTENT_TYPE,
-                    }
-                ],
-            )
             deployment = await cf.create_pages_deployment(
-                account_id, project, {f"/{WORKER_BUNDLE}": digest}
+                account_id, project, code.encode("utf-8")
             )
             await _wait_deployment(cf, account_id, project, deployment)
     except CloudflareError as error:
