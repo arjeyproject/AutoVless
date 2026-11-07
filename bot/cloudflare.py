@@ -380,25 +380,27 @@ class CloudflareClient:
     ) -> dict:
         """One deployment of an advanced-mode (``_worker.js``) Pages project.
 
-        The worker module rides as the ``_worker.bundle`` multipart field - that
-        is what current wrangler sends (``formData.append("_worker.bundle",
-        new File([contents], "_worker.bundle"))``), and it is the only shape the
-        platform executes. Listing ``_worker.js`` in the asset manifest instead
-        makes the platform SERVE the file statically: the deployment still goes
-        "live", every route answers the asset server's bare 404, and
-        ``/_worker.js`` happily returns the bundle itself - exactly the
-        "deployed but never answered" failure seen in production on 2026-11-07.
-        A pure-worker project has no static assets, so the manifest is empty.
+        The multipart body mirrors undici's FormData (what wrangler sends)
+        byte for byte, because the platform's parser is exact about the shape:
+
+        - ``manifest`` and ``branch`` ride as plain form fields WITHOUT a
+          ``Content-Type`` header. The manifest part used to carry
+          ``Content-Type: application/json`` and that alone was accepted while
+          the request had no bundle part - but the moment ``_worker.bundle``
+          joined, the same header got the whole call rejected with "Request
+          body is incorrect" (2026-11-07). Plain fields stay plain.
+        - the worker module rides as the ``_worker.bundle`` file part - the
+          only shape the platform executes. A ``_worker.js`` entry in the
+          asset manifest is SERVED STATICALLY instead of run, which is what
+          the "deployed but never answers" builds were doing.
+        - a pure advanced-mode project has no static assets, so the manifest
+          is the empty object - exactly what wrangler sends for one.
         """
-        form = {
-            "manifest": (None, "{}", "application/json"),
-            "branch": (None, "main"),
-            "_worker.bundle": ("_worker.bundle", code, "application/octet-stream"),
-        }
         result = await self._call(
             "POST",
             f"/accounts/{account_id}/pages/projects/{project}/deployments",
-            files=form,
+            data={"manifest": "{}", "branch": "main"},
+            files={"_worker.bundle": ("_worker.bundle", code)},
         )
         return result or {}
 

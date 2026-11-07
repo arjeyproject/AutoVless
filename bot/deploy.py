@@ -482,15 +482,34 @@ async def build(
 
             await _announce(progress, 3)
             if target == "pages":
-                await pages.push(
-                    token,
-                    account_id,
-                    project,
-                    code,
-                    pages.bindings(panel_uuid, dev_host, endpoints, relays, ai_relays, chain_relays),
-                )
-                custom = await pages.attach_domain(cf, account_id, project)
-            else:
+                try:
+                    await pages.push(
+                        token,
+                        account_id,
+                        project,
+                        code,
+                        pages.bindings(panel_uuid, dev_host, endpoints, relays, ai_relays, chain_relays),
+                    )
+                except pages.PagesError as error:
+                    # The Pages direct-upload API is picky about the exact
+                    # multipart shape and its rules move. A user whose build
+                    # dies here has no panel at all - so when Pages refuses,
+                    # the very same worker goes up on the classic Workers
+                    # target instead: proven path, same custom domain, same
+                    # configs. The user gets a working panel either way.
+                    log.warning(
+                        "pages deploy for %s failed (%s); falling back to the workers target",
+                        project,
+                        error,
+                    )
+                    target = "workers"
+                    subdomain = await cf.ensure_subdomain(account_id)
+                    if not subdomain:
+                        raise DeployError(error.message) from error
+                    dev_host = f"{script}.{subdomain}.workers.dev"
+                else:
+                    custom = await pages.attach_domain(cf, account_id, project)
+            if target == "workers":
                 await cf.upload_script(
                     account_id,
                     script,
