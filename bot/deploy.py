@@ -937,6 +937,32 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
                     await cf.enable_workers_dev(account_id, script)
             except CloudflareError as retry_error:
                 log.warning("could not re-bind SUB_HOST after the target move: %s", retry_error)
+        if not await _published(host, panel_uuid, attempts=2):
+            # The workers fallback found no working front door - which, on an
+            # account whose Pages writes AND workers executions are both
+            # flagged, is the rule rather than the exception. Put the custom
+            # hostname back on the (still serving) pages project and fail
+            # with the truth instead of leaving the domain on a dead worker.
+            log.warning("workers fallback produced no live host for %s; restoring pages bindings", script)
+            try:
+                async with CloudflareClient(str(token)) as cf:
+                    # No deployment here - a blocked project cannot take one.
+                    # Re-attaching the hostname is enough: the project's last
+                    # healthy deployment is still serving.
+                    await cf.attach_pages_domain(account_id, project, host)
+            except (CloudflareError, pages.PagesError) as attach_error:
+                log.warning("pages re-attach during restore failed: %s", attach_error)
+            await _record_target(panel_uuid, "pages")
+            restored = str(panel.get("host"))
+            if restored and await _published(restored, panel_uuid, attempts=2):
+                await _record_host(panel_uuid, restored)
+                host = restored
+            raise DeployError(
+                "cloudflare has flagged this account (pages writes blocked, workers not executing). "
+                "the panel keeps serving from its last healthy pages deployment but nothing can be "
+                "re-deployed until cloudflare clears the review - email abusereply@cloudflare.com "
+                f"or use a different account. original error: {message}"
+            )
 
     healthy, report = await _probe(host, panel_uuid)
     if report:

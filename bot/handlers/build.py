@@ -136,8 +136,11 @@ async def run_build(
             panel = await deploy.build(token, reuse=reuse, progress=on_step, force_scan=force_scan)
     except deploy.DeployError as error:
         reason = str(error.reason)
+        lowered = reason.lower()
         if "clean ip pool" in reason:
             await progress_message.edit_text(t(lang, "no_clean_ip"))
+        elif any(mark in lowered for mark in ("flagged", "blocked", "abusereply")):
+            await progress_message.edit_text(t(lang, "account_blocked"))
         else:
             await progress_message.edit_text(t(lang, "token_rejected", reason=esc(reason)))
         await db.log_event("build_failed", tg_id, reason)

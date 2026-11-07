@@ -235,3 +235,25 @@ CONFIGS: dict[str, dict[str, str]] = {
         "no_match": "\U0001f4ed nothing matches this filter.",
     },
 }
+
+# Appended late so the merge order cannot bury it: an abuse-flagged account
+# needs its own honest screen, in both languages, with the way out named.
+CONFIGS["fa"]["account_blocked"] = (
+    "\u200f\U0001f6a8 <b>\u0627\u06a9\u0627\u0646\u062a Cloudflare \u0634\u0645\u0627 \u062a\u0648\u0633\u0637 Cloudflare \u0645\u0633\u062f\u0648\u062f \u0634\u062f\u0647 \u0627\u0633\u062a</b>\n"
+    "\u200f{rule}\n"
+    "\u200fCloudflare \u0646\u0648\u0634\u062a\u0646 \u0631\u0648\u06cc Pages \u0648 \u0627\u062c\u0631\u0627\u06cc Workers \u0627\u06cc\u0646 \u0627\u06a9\u0627\u0646\u062a \u0631\u0627 \u0628\u0647 \u062f\u0644\u06cc\u0644 \u0628\u0631\u0631\u0633\u06cc \u062a\u062e\u0644\u0641 \u0645\u062a\u0648\u0642\u0641 \u06a9\u0631\u062f\u0647. "
+    "\u067e\u0646\u0644 \u0641\u0639\u0644\u0627 \u0627\u0632 \u062f\u06cc\u067e\u0644\u0648\u06cc \u0642\u0628\u0644\u06cc \u062e\u0648\u062f \u0633\u0631\u0648 \u0645\u06cc\u200c\u0634\u0648\u062f \u0648 \u06a9\u0627\u0646\u0641\u06cc\u06af\u200c\u0647\u0627 \u062a\u0627 \u0645\u0627\u0646\u062f\u0646 \u0622\u0646 \u062f\u06cc\u067e\u0644\u0648 \u06a9\u0627\u0631 \u0645\u06cc\u200c\u06a9\u0646\u0646\u062f.\n\n"
+    "\u200f\u2757 \u0631\u0627\u0647 \u062d\u0644:\n"
+    "\u200f1. \u0628\u0647 <code>abusereply@cloudflare.com</code> \u0627\u06cc\u0645\u06cc\u0644 \u0628\u0632\u0646\u06cc\u062f \u0648 \u062f\u0631\u062e\u0648\u0627\u0633\u062a \u0628\u0631\u0631\u0633\u06cc \u0628\u062f\u0647\u06cc\u062f.\n"
+    "\u200f2. \u06cc\u0627 \u0628\u0627 \u06cc\u06a9 \u0627\u06a9\u0627\u0646\u062a Cloudflare \u062a\u0627\u0632\u0647 \u0648 \u06cc\u06a9 \u062f\u0627\u0645\u0646\u0647\u0020\u062c\u062f\u06cc\u062f\u060c \u0627\u0632 \u062f\u06a9\u0645\u0647\u0020\u0633\u0627\u062e\u062a \u067e\u0646\u0644 \u06cc\u06a9 \u067e\u0646\u0644 \u062a\u0627\u0632\u0647 \u0628\u0633\u0627\u0632\u06cc\u062f."
+)
+CONFIGS["en"]["account_blocked"] = (
+    "\U0001f6a8 <b>Your Cloudflare account has been flagged by Cloudflare</b>\n"
+    "{rule}\n"
+    "Cloudflare stopped Pages writes and Workers executions on this account pending "
+    "abuse review. The panel keeps serving from its last healthy deployment, so your "
+    "current configs keep working until that deployment is removed.\n\n"
+    "\u2757 The way out:\n"
+    "1. Email <code>abusereply@cloudflare.com</code> and ask for a review.\n"
+    "2. Or build a fresh panel with a new Cloudflare account and a domain."
+)
