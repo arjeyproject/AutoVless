@@ -19,7 +19,7 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata git unzip \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata git curl unzip \
  && rm -rf /var/lib/apt/lists/*
 
 # The xray core, from the official release. Pinned; verified executable.
