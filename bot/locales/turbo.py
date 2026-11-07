@@ -16,6 +16,8 @@ TURBO: dict[str, dict[str, str]] = {
         # ------------------------------------------------------------ buttons
         "btn.trojan": "\U0001f3af کانفیگ تروجان",
         "btn.fragment": "\U0001f9f1 کانفیگ فرگمنت (Xray)",
+        "btn.httpup": "\U0001f4f6 کانفیگ HTTPUpgrade",
+        "btn.xhttp": "\U0001f680 کانفیگ XHTTP",
         # ------------------------------------------------------------- trojan
         "sub_mixed": (
             "\u200f\U0001f3af <b>لینک ترکیبی (VLESS + Trojan)</b>\n"
@@ -44,6 +46,30 @@ TURBO: dict[str, dict[str, str]] = {
             "\u200fتروجان فقط روی پورت‌های TLS (\u06f4\u06f4\u06f3 \u00b7 \u06f2\u06f0\u06f5\u06f3 \u00b7 \u06f8\u06f4\u06f4\u06f3) معنی دارد.\n"
             "\u200fیک بار <b>اعمال فوری آی‌پی تمیز</b> را بزن و دوباره امتحان کن."
         ),
+        # ------------------------------------------------- httpupgrade / xhttp
+        "httpup_configs": (
+            "\u200f\U0001f4f6 <b>کانفیگ VLESS + HTTPUpgrade</b>\n"
+            "\u200f{rule}\n"
+            "\u200f\U0001f9ea ترنسپورت: <b>HTTPUpgrade</b>\n"
+            "\u200f\U0001f4e6 تعداد: <b>{count}</b>\n"
+            "\u200f\U0001f517 لینک اشتراک HTTPUpgrade:\n<code>{sub}</code>\n"
+            "\u200f{rule}\n"
+            "\u200f\u2705 همان ورکر خودت است؛ فقط دست‌دادن اولیه ارتقا یافته و فریم WebSocket حذف شده. "
+            "در v2rayNG و Hiddify و V2Box و Streisand کار می‌کند و روی بعضی شبکه‌ها که شکل WS را "
+            "شناخته‌اند ازش رد می‌شود."
+        ),
+        "xhttp_configs": (
+            "\u200f\U0001f680 <b>کانفیگ VLESS + XHTTP</b>\n"
+            "\u200f{rule}\n"
+            "\u200f\U0001f9ea ترنسپورت: <b>XHTTP (مد stream-one)</b>\n"
+            "\u200f\U0001f4e6 تعداد: <b>{count}</b>\n"
+            "\u200f\U0001f517 لینک اشتراک XHTTP:\n<code>{sub}</code>\n"
+            "\u200f{rule}\n"
+            "\u200f\u2705 تمام سشن در یک درخواست POST تمام‌دوناله روی HTTP/2 می‌گذرد؛ برای DPI "
+            "شبیه ترافیک سرویس عادی دیده می‌شود.\n"
+            "\u200f\U0001f4a1 فقط روی پورت‌های TLS ساخته می‌شود و کلاینت به‌روز می‌خواهد: "
+            "v2rayNG 1.9+ یا Hiddify جدید یا sing-box تازه."
+        ),
         # ----------------------------------------------------------- fragment
         "fragment_ready": (
             "\U0001f9e9 فرگمنت روی <b>{count}</b> کانفیگ فعال شد "
@@ -62,6 +88,8 @@ TURBO: dict[str, dict[str, str]] = {
     "en": {
         "btn.trojan": "\U0001f3af Trojan configs",
         "btn.fragment": "\U0001f9f1 Fragment config (Xray)",
+        "btn.httpup": "\U0001f4f6 HTTPUpgrade configs",
+        "btn.xhttp": "\U0001f680 XHTTP configs",
         "sub_mixed": (
             "\U0001f3af <b>Mixed link (VLESS + Trojan)</b>\n"
             "<code>{mix}</code>\n\n"
@@ -88,6 +116,29 @@ TURBO: dict[str, dict[str, str]] = {
             "{rule}\n"
             "Trojan only makes sense on a TLS port (443 \u00b7 2053 \u00b7 8443).\n"
             "Press <b>apply clean IPs</b> once and try again."
+        ),
+        "httpup_configs": (
+            "\U0001f4f6 <b>VLESS + HTTPUpgrade configs</b>\n"
+            "{rule}\n"
+            "\U0001f9ea Transport: <b>HTTPUpgrade</b>\n"
+            "\U0001f4e6 Count: <b>{count}</b>\n"
+            "\U0001f517 HTTPUpgrade subscription:\n<code>{sub}</code>\n"
+            "{rule}\n"
+            "\u2705 Same worker of yours; only the opening handshake is upgraded and the WebSocket "
+            "framing is gone. Works in v2rayNG, Hiddify, V2Box and Streisand, and slips past "
+            "networks that have learned the WS shape."
+        ),
+        "xhttp_configs": (
+            "\U0001f680 <b>VLESS + XHTTP configs</b>\n"
+            "{rule}\n"
+            "\U0001f9ea Transport: <b>XHTTP (stream-one mode)</b>\n"
+            "\U0001f4e6 Count: <b>{count}</b>\n"
+            "\U0001f517 XHTTP subscription:\n<code>{sub}</code>\n"
+            "{rule}\n"
+            "\u2705 The whole session rides one full-duplex HTTP/2 POST; to DPI it looks like ordinary "
+            "service traffic.\n"
+            "\U0001f4a1 Built on TLS ports only and needs a current client: v2rayNG 1.9+, a fresh "
+            "Hiddify or a recent sing-box."
         ),
         "fragment_ready": (
             "\U0001f9e9 Fragment enabled on <b>{count}</b> configs "

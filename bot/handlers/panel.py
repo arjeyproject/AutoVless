@@ -87,6 +87,8 @@ def _sub_links(tg_id: int, panel: dict) -> dict[str, str]:
         "raw": vless.sub_url(uuid, host, "raw"),
         "mix": vless.sub_url(uuid, host, "mix"),
         "trojan": trojan.sub_url(uuid, host),
+        "httpup": vless.sub_url(uuid, host, "httpup"),
+        "xhttp": vless.sub_url(uuid, host, "xhttp"),
         "clash": vless.sub_url(uuid, host, "clash"),
         "singbox": vless.sub_url(uuid, host, "singbox"),
     }
@@ -310,6 +312,56 @@ async def on_trojan(call: CallbackQuery, lang: str) -> None:
     for position, group_text in enumerate(_link_pairs(links, lang)):
         await call.message.answer(group_text, disable_web_page_preview=True)
     await db.log_event("trojan", call.from_user.id, f"links={len(links)}")
+
+
+# --------------------------------------------------------------------- #
+# httpupgrade / xhttp
+# --------------------------------------------------------------------- #
+
+
+# The two free transports that ride the same worker, each with its own screen.
+# They were served by the worker all along (``/<uuid>/httpup`` and
+# ``/<uuid>/xhttp``) and rode inside the mixed subscription, but no button ever
+# led to them - which is exactly why they were reported as missing.
+_TRANSPORT_SCREENS: dict[str, dict] = {
+    "panel:httpup": {"transport": "httpupgrade", "header": "httpup_configs", "sub": "httpup", "file": "autovless-httpupgrade.txt"},
+    "panel:xhttp": {"transport": "xhttp", "header": "xhttp_configs", "sub": "xhttp", "file": "autovless-xhttp.txt"},
+}
+
+
+@router.callback_query(F.data.in_({"panel:httpup", "panel:xhttp"}))
+async def on_transport(call: CallbackQuery, lang: str) -> None:
+    """Singles for one free transport, in the shape the trojan screen proved.
+
+    HTTPUpgrade rides the very same WebSocket code path on the worker, so its
+    links work wherever the ws ones do - the difference is framing on the
+    client side, which is sometimes what a picky DPI box keys on. XHTTP in
+    stream-one mode is a genuinely different inbound and needs TLS, so a panel
+    with no healthy TLS port answers with the honest empty state instead of
+    links that cannot connect.
+    """
+    panel = await _require_panel(call, lang)
+    if panel is None:
+        return
+    spec = _TRANSPORT_SCREENS[call.data]
+    links = vless.build_links(
+        panel["uuid"], panel["host"], panel["endpoints"], "", spec["transport"]
+    )
+    if not links:
+        await edit(call, t(lang, "proto.no_tls"), keyboards.panel_menu(lang))
+        await call.answer()
+        return
+    await call.answer()
+    sub = _sub_links(call.from_user.id, panel)[spec["sub"]]
+    header = t(lang, spec["header"], count=num(len(links), lang), sub=esc(sub))
+    await call.message.answer(header, disable_web_page_preview=True)
+    await call.message.answer_document(
+        _links_file(links, spec["file"]),
+        caption=t(lang, "single_file_caption", count=num(len(links), lang)),
+    )
+    for group_text in _link_pairs(links, lang):
+        await call.message.answer(group_text, disable_web_page_preview=True)
+    await db.log_event(spec["transport"], call.from_user.id, f"links={len(links)}")
 
 
 # --------------------------------------------------------------------- #

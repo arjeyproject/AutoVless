@@ -209,18 +209,19 @@ def panel_menu(lang: str) -> InlineKeyboardMarkup:
     """The turbo panel, reorganised around what a user actually takes away.
 
     One green leader - the all-in-one subscription link - then the protocol
-    menu in symmetric pairs: singles + QR, Trojan + Clash, sing-box + Fragment,
-    and one full-width refresh. The diagnostics (live ping, the AI/chain
-    report, the second rescan, the second rebuild, an apps shortcut the main
-    menu already owns) are gone: each was a button a user pressed once and
-    never needed again, and five of them stood between the user and the
-    configs. Delete stays the only red on the screen.
+    menu in symmetric pairs: singles + QR, Trojan + Clash, HTTPUpgrade +
+    XHTTP, sing-box + Fragment, and one full-width refresh. The diagnostics
+    (live ping, the AI/chain report, the second rescan, the second rebuild, an
+    apps shortcut the main menu already owns) are gone: each was a button a
+    user pressed once and never needed again, and five of them stood between
+    the user and the configs. Delete stays the only red on the screen.
     """
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_c(t(lang, "btn.sub"), "panel:sub", OK)],
             [_c(t(lang, "btn.single"), "panel:single", GO), _c(t(lang, "btn.qr"), "panel:qr", GO)],
             [_c(t(lang, "btn.trojan"), "panel:trojan", GO), _c(t(lang, "btn.clash"), "panel:clash", GO)],
+            [_c(t(lang, "btn.httpup"), "panel:httpup", GO), _c(t(lang, "btn.xhttp"), "panel:xhttp", GO)],
             [_c(t(lang, "btn.singbox"), "panel:singbox", GO), _c(t(lang, "btn.fragment"), "panel:fragment", GO)],
             [_c(t(lang, "btn.apply"), "panel:apply", GO)],
             [_c(t(lang, "btn.delete"), "panel:delete", BAD)],

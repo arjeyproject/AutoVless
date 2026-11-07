@@ -105,7 +105,20 @@ const DEFAULT_HTTP_PORTS = [80, 8080, 8880, 2052, 2082, 2086, 2095];
 const SERVE_TLS_PORTS = [443, 2053, 8443];
 const SERVE_HTTP_PORTS = [80, 8080];
 const WS_OPEN = 1;
-const CONNECT_TIMEOUT_MS = 8000;
+const CONNECT_TIMEOUT_MS = 6000;
+// How long a relay gets to produce its first byte after the TCP handshake and
+// the replayed payload went through. A public proxyip host that accepts the
+// connection and then goes quiet is the single most common way a session used
+// to die: the pump below waited forever, the failover never got its turn, and
+// to the client the whole panel looked dead. Six seconds and the ladder moves
+// on - long enough for any real forwarder, short enough that a ping test
+// survives the walk to the next candidate.
+const FIRST_BYTE_TIMEOUT_MS = 6000;
+// The whole relay ladder gets this budget per session. Once it is spent only a
+// direct attempt may run. Without the cap, a ladder of dead relays stacked one
+// CONNECT_TIMEOUT on top of another and the client's ping test died of old age
+// before the direct attempt - the one that always works - ever got its turn.
+const LADDER_BUDGET_MS = 20000;
 // 56 hex characters of sha224, then CRLF. The whole trojan preamble.
 const TROJAN_HEAD = 58;
 
@@ -1068,8 +1081,18 @@ function stickyOrder(list, seed) {
 function relayTargets(raw, port) {
   const out = [];
   for (const item of raw) {
-    const target = splitHostPort(item, port);
-    if (target.hostname) out.push({ ...target, relay: true, source: item });
+    const value = String(item || "").trim();
+    if (!value) continue;
+    // A bare relay name is dialled on the destination's own port. That only
+    // ever works for 443 - the port every public proxyip forwarder listens
+    // on, and the port whose TLS ClientHello names the destination for it.
+    // Dialled on any other port the attempt is a guaranteed stall, so bare
+    // relays are skipped there and only an entry with an explicit :port can
+    // still serve. This is what keeps the plain-HTTP configs fast: their
+    // destinations go direct first, with the ladder behind them.
+    if (!/:(\d+)$/.test(value) && port !== 443) continue;
+    const target = splitHostPort(value, port);
+    if (target.hostname) out.push({ ...target, relay: true, source: value });
   }
   return out;
 }
@@ -1158,6 +1181,7 @@ function openTcp(state, head) {
     bytes: head.payload.byteLength,
     replayable: true
   };
+  const started = Date.now();
 
   const attempt = async (index) => {
     if (state.done) return;
@@ -1167,6 +1191,12 @@ function openTcp(state, head) {
     }
 
     const target = attempts[index];
+    // The ladder budget: a relay attempt that would start after the budget is
+    // spent is skipped, so the walk always reaches the direct attempt while
+    // the client is still listening.
+    if (target.relay && Date.now() - started > LADDER_BUDGET_MS) {
+      return attempt(index + 1);
+    }
     let socket = null;
 
     try {
@@ -1188,7 +1218,14 @@ function openTcp(state, head) {
       return attempt(index + 1);
     }
 
-    const received = await pumpRemote(state, socket);
+    // A relay is given a bounded window to prove itself; a direct attempt keeps
+    // the old open-ended wait, because a destination that genuinely says
+    // nothing for a while (the client speaks first) must not be killed by a
+    // timer - and direct is always the last, guaranteed candidate anyway.
+    const received =
+      target.relay && !state.spoke && box.replayable
+        ? await firstByteWithTimeout(state, socket)
+        : await pumpRemote(state, socket);
     box.writer = null;
 
     const retryable =
@@ -1227,6 +1264,31 @@ function openTcp(state, head) {
 
     if (!box.replayable) shutdown(state);
   };
+}
+
+/**
+ * One relay attempt, bounded. Races the pump against a first-byte timer; a
+ * relay that connects and then stalls is closed and reported as zero bytes so
+ * the ladder's normal failover takes over. The pump keeps running in the
+ * background either way - once the socket is closed its pipe ends on its own
+ * and the promise resolves harmlessly.
+ */
+function firstByteWithTimeout(state, socket) {
+  return new Promise((resolve) => {
+    let settled = false;
+    let timer = null;
+    const finish = (value) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timer);
+      resolve(value);
+    };
+    timer = setTimeout(() => {
+      closeSocket(socket);
+      finish(0);
+    }, FIRST_BYTE_TIMEOUT_MS);
+    pumpRemote(state, socket).then(finish, () => finish(0));
+  });
 }
 
 /**

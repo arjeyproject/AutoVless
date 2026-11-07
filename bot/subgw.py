@@ -52,6 +52,8 @@ FORMATS = (
     "mix",
     "trojan",
     "ss",
+    "httpup",
+    "xhttp",
     "clash",
     "singbox",
     "fragment",

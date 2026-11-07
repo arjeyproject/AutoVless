@@ -372,6 +372,28 @@ class CloudflareClient:
             headers={"Authorization": f"Bearer {jwt}"},
         )
 
+    @staticmethod
+    def _undici_multipart(parts: list[tuple[str, Optional[str], Optional[bytes], Optional[str]]], boundary: str) -> bytes:
+        """Serialise parts exactly the way undici's FormData does.
+
+        ``parts`` entries are ``(name, filename, content, content_type)``; a
+        ``None`` filename makes a plain form field and a ``None`` content type
+        leaves the header off entirely - both material details, because the
+        Pages parser is exact about which parts carry headers.
+        """
+        out = []
+        for name, filename, content, ctype in parts:
+            head = f'--{boundary}\r\nContent-Disposition: form-data; name="{name}"'
+            if filename:
+                head += f'; filename="{filename}"'
+            head += "\r\n"
+            if ctype:
+                head += f"Content-Type: {ctype}\r\n"
+            head += "\r\n"
+            out.append(head.encode("utf-8") + (content or b"") + b"\r\n")
+        out.append(f"--{boundary}--\r\n".encode("utf-8"))
+        return b"".join(out)
+
     async def create_pages_deployment(
         self,
         account_id: str,
@@ -380,49 +402,60 @@ class CloudflareClient:
     ) -> dict:
         """One deployment of an advanced-mode (``_worker.js``) Pages project.
 
-        The multipart body is assembled BY HAND here, byte for byte the way
-        undici's FormData (what wrangler sends) serialises it, because the
-        platform's parser is exact about the shape and every generic client
-        encoding has been rejected at least once:
+        The upload is a NESTED multipart, and the nesting is the part every
+        previous attempt got wrong (2026-11-07). wrangler does not send the
+        worker source as the ``_worker.bundle`` field - it serialises the
+        classic Workers script upload form (``createWorkerUploadForm``:
+        a ``metadata`` field plus one part per module) into a blob with
+        ``await new Response(formData).blob()`` and appends THAT as
+        ``_worker.bundle``. The platform then unwraps the outer multipart,
+        reads the bundle, and parses ITS ``metadata`` JSON - which is exactly
+        why a flat body with plain JS inside was always answered with
+        "Request body is incorrect. The request body may have an invalid JSON
+        type or missing required keys": the inner ``metadata`` never parsed.
 
-        - ``manifest`` and ``branch`` ride as plain form fields with NO
-          ``Content-Type`` header on their parts. A manifest part carrying
-          ``Content-Type: application/json`` was accepted while the request had
-          no bundle part, and rejected the moment it did (2026-11-07).
-        - the worker module rides as the ``_worker.bundle`` FILE part with NO
-          ``Content-Type`` header either - ``new File([x], "_worker.bundle")``
-          in wrangler has an empty type, and undici omits the header when the
-          type is empty. httpx always stamps a Content-Type on file parts
-          (``application/octet-stream``), and BOTH that and the typed variant
-          were rejected with "Request body is incorrect" - so the header has to
-          simply not be there.
-        - field order follows wrangler: manifest, branch, then the bundle.
-        - a ``_worker.js`` entry in the asset manifest would be SERVED
-          STATICALLY instead of run, which is what the "deployed but never
-          answers" builds were doing; the bundle field is the only shape the
-          platform executes.
+        Outer form, field order per wrangler ``api/pages/deploy.ts``:
+          - ``manifest``  plain field, ``{}`` (no static assets)
+          - ``branch``    plain field, ``main``
+          - ``_worker.bundle`` file part, filename ``_worker.bundle``, NO
+            Content-Type header (``new File(..., "_worker.bundle")`` has an
+            empty type and undici omits the header when the type is empty)
+
+        Inner form (the bundle), per ``deploy-helpers/create-worker-upload-form.ts``:
+          - ``metadata``  plain field: ``{"main_module": "worker.js"}`` - no
+            bindings key at all (env vars ride on the project's
+            ``deployment_configs``, exactly like a Pages deploy without a
+            wrangler config)
+          - ``worker.js`` file part, filename ``worker.js``,
+            Content-Type ``application/javascript+module``
+
+        A ``_worker.js`` entry in the asset manifest would be SERVED
+        STATICALLY instead of run, which is what the "deployed but never
+        answers" builds were doing; the bundle field is the only shape the
+        platform executes.
         """
-        boundary = f"----autovless-{secrets.token_hex(16)}"
-        head = (
-            f'--{boundary}\r\n'
-            'Content-Disposition: form-data; name="manifest"\r\n'
-            '\r\n'
-            '{}\r\n'
-            f'--{boundary}\r\n'
-            'Content-Disposition: form-data; name="branch"\r\n'
-            '\r\n'
-            'main\r\n'
-            f'--{boundary}\r\n'
-            'Content-Disposition: form-data; name="_worker.bundle"; filename="_worker.bundle"\r\n'
-            '\r\n'
-        ).encode("utf-8")
-        tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
-        body = head + code + tail
+        inner_boundary = f"----formdata-undici-{secrets.token_hex(12)}"
+        inner = self._undici_multipart(
+            [
+                ("metadata", None, json.dumps({"main_module": "worker.js"}).encode(), None),
+                ("worker.js", "worker.js", code, "application/javascript+module"),
+            ],
+            inner_boundary,
+        )
+        outer_boundary = f"----formdata-undici-{secrets.token_hex(12)}"
+        body = self._undici_multipart(
+            [
+                ("manifest", None, b"{}", None),
+                ("branch", None, b"main", None),
+                ("_worker.bundle", "_worker.bundle", inner, None),
+            ],
+            outer_boundary,
+        )
         result = await self._call(
             "POST",
             f"/accounts/{account_id}/pages/projects/{project}/deployments",
             content=body,
-            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
+            headers={"Content-Type": f"multipart/form-data; boundary={outer_boundary}"},
         )
         return result or {}
 
