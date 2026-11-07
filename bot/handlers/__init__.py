@@ -9,6 +9,7 @@ from . import (
     adminx,
     apps,
     build,
+    configs,
     growth,
     panel,
     payment,
@@ -37,6 +38,10 @@ def register(dispatcher: Dispatcher) -> None:
     dispatcher.include_router(admin.router)
     dispatcher.include_router(build.router)
     dispatcher.include_router(panel.router)
+    # ``configs`` owns the cfg: namespace (the configurations screen, the real
+    # ping engine's UI and the proxy chain) and must see its callbacks before
+    # any broader router could swallow them.
+    dispatcher.include_router(configs.router)
     # ``wgpro`` and ``pool`` sit ahead of ``warp`` on purpose: the 3.0 layer owns
     # ``wg:set``, ``wg:backup``, ``wg:restore`` and ``wg:bench``, and the operator
     # picker owns ``wg:net`` - both have to be seen before the generic WARP router.

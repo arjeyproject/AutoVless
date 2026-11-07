@@ -291,8 +291,11 @@ def build_link(
 
     ws and httpupgrade carry the same path and reach the same worker code
     path. xhttp in stream-one mode is TLS-only: one full-duplex POST to the
-    panel uuid path, with the uuid itself riding in the header.
+    panel uuid path, with the uuid itself riding in the header. An endpoint
+    the user disabled never produces a link.
     """
+    if endpoint.get("disabled"):
+        return ""
     secure = is_tls(endpoint["port"])
     transport = transport or "ws"
     params = {

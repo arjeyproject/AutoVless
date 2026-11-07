@@ -127,10 +127,39 @@ def xray_config(
     brand: str = "",
     with_trojan: bool = True,
     dns: Optional[list[str]] = None,
+    chain_hops: Optional[list[str]] = None,
 ) -> str:
-    """A complete, importable Xray config with fragmentation on every proxy."""
+    """A complete, importable Xray config with fragmentation on every proxy.
+
+    With ``chain_hops`` (an enabled Proxy Chain), the file's proxies are wired
+    through the chain's hops instead of dialling directly: each proxy's first
+    connection rides the chain - real multi-hop, not a second list.
+    """
     brand = brand or settings.brand
     proxies = outbounds(uuid, host, endpoints, with_trojan)
+    chain_outbounds: list[dict] = []
+    if chain_hops:
+        from . import chain as chainmod
+
+        ok, _reason, parsed = chainmod.validate(list(chain_hops))
+        if ok:
+            for index, item in enumerate(parsed, start=1):
+                from . import xraycore
+
+                outbound = xraycore.outbound_from_params(item, f"chain-{index}")
+                if index > 1:
+                    outbound["proxySettings"] = {
+                        "tag": f"chain-{index - 1}",
+                        "transportLayer": True,
+                    }
+                chain_outbounds.append(outbound)
+            if chain_outbounds:
+                # Every regular proxy dials through the chain's last hop.
+                for proxy in proxies:
+                    proxy["proxySettings"] = {
+                        "tag": f"chain-{len(chain_outbounds)}",
+                        "transportLayer": True,
+                    }
 
     config = {
         "remarks": f"{brand} \u00b7 Fragment",
@@ -157,7 +186,8 @@ def xray_config(
                 "sniffing": {"enabled": True, "destOverride": ["http", "tls"]},
             },
         ],
-        "outbounds": proxies
+        "outbounds": chain_outbounds
+        + proxies
         + [
             {
                 "tag": "fragment",

@@ -5,6 +5,11 @@ FROM python:3.12-slim
 # enrolled probing identity comes from when api.cloudflareclient.com is blocked.
 # Build with --build-arg WARPEP=0 to skip it.
 ARG WARPEP=1
+# XRAY_VERSION pins the core the bot ships for real connectivity tests and
+# proxy-chain testing (vless/trojan/ss/vmess over ws/httpupgrade/xhttp/grpc,
+# REALITY). The pure-python engine in bot.pingtest covers ws/httpupgrade
+# itself; the core is the honest fallback for everything else.
+ARG XRAY_VERSION=v24.12.18
 
 ENV PYTHONUNBUFFERED=1 \
     PYTHONDONTWRITEBYTECODE=1 \
@@ -14,8 +19,18 @@ ENV PYTHONUNBUFFERED=1 \
 WORKDIR /app
 
 RUN apt-get update \
- && apt-get install -y --no-install-recommends ca-certificates tzdata git \
+ && apt-get install -y --no-install-recommends ca-certificates tzdata git unzip \
  && rm -rf /var/lib/apt/lists/*
+
+# The xray core, from the official release. Pinned; verified executable.
+RUN set -eux; \
+    arch="$(dpkg --print-architecture)"; \
+    case "$arch" in amd64) xray_arch=64;; arm64) xray_arch=arm64-v8a;; aarch64) xray_arch=arm64-v8a;; *) xray_arch=64;; esac; \
+    curl -fsSL -o /tmp/xray.zip "https://github.com/XTLS/Xray-core/releases/download/${XRAY_VERSION}/Xray-linux-${xray_arch}.zip" \
+    && unzip -o /tmp/xray.zip -d /tmp/xray xray \
+    && install -m 0755 /tmp/xray/xray /usr/local/bin/xray \
+    && rm -rf /tmp/xray /tmp/xray.zip \
+    && /usr/local/bin/xray version | head -1
 
 COPY requirements.txt requirements-optional.txt ./
 RUN pip install --no-cache-dir -r requirements.txt \

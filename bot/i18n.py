@@ -7,6 +7,7 @@ from typing import Any
 from .locales.admin import ADMIN
 from .locales.ai import AI
 from .locales.apps import APPS
+from .locales.configs import CONFIGS
 from .locales.curator import CURATOR
 from .locales.device import DEVICE
 from .locales.en import EN
@@ -52,6 +53,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **PROTON_STRINGS.get("fa", {}),
         **TURBO["fa"],
         **GROWTH["fa"],
+        **CONFIGS["fa"],
         **PAYMENT["fa"],
         **PRO["fa"],
         # PROTO goes last of all: the protocol picker and the operator-aware
@@ -73,6 +75,7 @@ CATALOG: dict[str, dict[str, str]] = {
         **PROTON_STRINGS.get("en", {}),
         **TURBO["en"],
         **GROWTH["en"],
+        **CONFIGS["en"],
         **PAYMENT["en"],
         **PRO["en"],
         **PROTO["en"],

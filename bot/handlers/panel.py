@@ -36,6 +36,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardMarkup
 
 from .. import db, deploy, fragment, keyboards, profiles, qrimg, screens, subgw, trojan, vless
+from .. import chain as chainmod
 from ..autopilot import autopilot
 from ..config import settings
 from ..i18n import num, t
@@ -383,7 +384,12 @@ async def on_fragment(call: CallbackQuery, lang: str) -> None:
         return
 
     await call.answer()
-    body = fragment.xray_config(panel["uuid"], panel["host"], endpoints)
+    # An enabled proxy chain rides inside the fragment file: every proxy then
+    # dials through the chain's hops, which is what "routing through several
+    # servers in order" means on a client that imports Xray JSON.
+    enabled = await db.enabled_chain(call.from_user.id)
+    chain_hops = chainmod.normalise_hops(enabled.get("hops")) if enabled else []
+    body = fragment.xray_config(panel["uuid"], panel["host"], endpoints, chain_hops=chain_hops)
     total = len(fragment.outbounds(panel["uuid"], panel["host"], endpoints))
     await call.message.answer_document(
         BufferedInputFile(body.encode("utf-8"), filename=fragment.filename()),
@@ -428,28 +434,62 @@ async def on_export(call: CallbackQuery, lang: str) -> None:
 
 @router.callback_query(F.data == "panel:ping")
 async def on_ping(call: CallbackQuery, lang: str) -> None:
+    """The real ping: a genuine tunnel through every endpoint.
+
+    This used to be a TCP handshake to the entry address - a number that was
+    green for configs whose UUID the worker rejects. Now each endpoint's own
+    link is dialled the way a client dials it, the exit address is read from
+    inside the tunnel, and what failed is named: DNS, TCP, TLS, handshake or
+    timeout. Endpoints that fail are demoted out of the pool as before.
+    """
     panel = await _require_panel(call, lang)
     if panel is None:
         return
     await call.answer()
 
-    endpoints = panel["endpoints"]
-    results = await asyncio.gather(
-        *(tcp_latency(ep["ip"], int(ep["port"])) for ep in endpoints)
-    )
+    endpoints = [ep for ep in panel["endpoints"] if not ep.get("disabled")]
+    if not endpoints:
+        await edit(call, t(lang, "configs_empty"), keyboards.panel_menu(lang))
+        return
+
+    from .. import pingtest
+
+    uuid, host = str(panel["uuid"]), str(panel["host"])
+    jobs = []
+    for index, ep in enumerate(endpoints):
+        link = vless.build_link(uuid, host, ep, index + 1, settings.brand, "ws")
+        jobs.append((str(index), link))
+
+    latencies: dict[int, float | None] = {}
+    async for key, result in pingtest.test_many(jobs, concurrency=4, timeout=12.0):
+        index = int(key)
+        ep = endpoints[index]
+        latencies[index] = result.latency_ms if result.ok else None
+        await db.save_test_result(
+            call.from_user.id,
+            jobs[index][1],
+            f"{ep['ip']}:{ep['port']}",
+            result.as_dict(),
+        )
+        # A shipped endpoint the tunnel cannot traverse should stop shipping.
+        if not result.ok:
+            await scanner.demote(str(ep["ip"]), int(ep["port"]))
 
     rows = []
-    for index, (endpoint, latency) in enumerate(zip(endpoints, results), start=1):
+    for index, endpoint in enumerate(endpoints):
+        latency = latencies.get(index)
+        record = await db.get_test_result(jobs[index][1]) or {}
         mark = "\u2705" if latency else "\u274c"
         if endpoint.get("kind") == "domain":
             mark = f"{mark}\U0001f300"
+        exit_note = ""
+        if latency and record.get("exit_ip"):
+            flag = pingtest.flag_emoji(str(record.get("exit_country") or ""))
+            exit_note = f" \u2192 {flag} <code>{esc(record['exit_ip'])}</code>"
         rows.append(
-            f"{mark} <b>#{num(index, lang)}</b> \u00b7 <code>{esc(endpoint['ip'])}:"
-            f"{num(endpoint['port'], lang)}</code> \u00b7 {ping_label(latency, lang)}"
+            f"{mark} <b>#{num(index + 1, lang)}</b> \u00b7 <code>{esc(endpoint['ip'])}:"
+            f"{num(endpoint['port'], lang)}</code> \u00b7 {ping_label(latency, lang)}{exit_note}"
         )
-        # A shipped endpoint that no longer answers should stop being shipped.
-        if not latency:
-            await scanner.demote(str(endpoint["ip"]), int(endpoint["port"]))
 
     await edit(
         call,

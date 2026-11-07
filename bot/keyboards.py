@@ -219,10 +219,11 @@ def panel_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_c(t(lang, "btn.sub"), "panel:sub", OK)],
-            [_c(t(lang, "btn.single"), "panel:single", GO), _c(t(lang, "btn.qr"), "panel:qr", GO)],
-            [_c(t(lang, "btn.trojan"), "panel:trojan", GO), _c(t(lang, "btn.clash"), "panel:clash", GO)],
-            [_c(t(lang, "btn.httpup"), "panel:httpup", GO), _c(t(lang, "btn.xhttp"), "panel:xhttp", GO)],
-            [_c(t(lang, "btn.singbox"), "panel:singbox", GO), _c(t(lang, "btn.fragment"), "panel:fragment", GO)],
+            [_c(t(lang, "btn.configs"), "panel:configs", GO), _c(t(lang, "btn.single"), "panel:single", GO)],
+            [_c(t(lang, "btn.qr"), "panel:qr", GO), _c(t(lang, "btn.trojan"), "panel:trojan", GO)],
+            [_c(t(lang, "btn.clash"), "panel:clash", GO), _c(t(lang, "btn.httpup"), "panel:httpup", GO)],
+            [_c(t(lang, "btn.xhttp"), "panel:xhttp", GO), _c(t(lang, "btn.singbox"), "panel:singbox", GO)],
+            [_c(t(lang, "btn.fragment"), "panel:fragment", GO)],
             [_c(t(lang, "btn.apply"), "panel:apply", GO)],
             [_c(t(lang, "btn.delete"), "panel:delete", BAD)],
             back_row(lang),

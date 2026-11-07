@@ -651,45 +651,47 @@ async def _run_build(job_id: str, tg_id: int, token: str, reuse: Optional[dict])
         job["step"] = int(step)
         job["at"] = time.time()
 
-    try:
-        panel = await deploy.build(token, reuse=reuse, progress=progress, force_scan=True)
-    except deploy.DeployError as error:
-        job.update({"state": "failed", "error": error.reason, "at": time.time()})
-        return
-    except Exception as error:  # noqa: BLE001
-        log.exception("mini app build failed")
-        job.update({"state": "failed", "error": str(error)[:200], "at": time.time()})
-        return
-
-    await db.save_panel(
-        tg_id,
-        panel.account_id,
-        panel.script,
-        panel.host,
-        panel.uuid,
-        token,
-        panel.endpoints,
-        panel.build_ms,
-        relays=panel.relays,
-        healthy=panel.healthy,
-        deploy_target=panel.target,
-    )
-    await db.log_event("miniapp_build", tg_id, panel.host)
-    # The chain pin was chosen before the row existed; write it now so refreshes
-    # reuse this exact relay until it dies. Same as the bot's own build path.
-    if panel.chain_relays:
+    # The same lock the Telegram build flow takes - one build per user, ever.
+    async with deploy.build_lock(tg_id):
         try:
-            await store.set_chain_pin(panel.uuid, panel.chain_relays[0], panel.chain_country)
-        except Exception:  # noqa: BLE001
-            log.debug("could not record the chain pin after mini app build", exc_info=True)
-    job.update(
-        {
-            "state": "done",
-            "step": len(deploy.STEP_KEYS),
-            "at": time.time(),
-            "result": await _panel_payload(tg_id),
-        }
-    )
+            panel = await deploy.build(token, reuse=reuse, progress=progress, force_scan=True)
+        except deploy.DeployError as error:
+            job.update({"state": "failed", "error": error.reason, "at": time.time()})
+            return
+        except Exception as error:  # noqa: BLE001
+            log.exception("mini app build failed")
+            job.update({"state": "failed", "error": str(error)[:200], "at": time.time()})
+            return
+
+        await db.save_panel(
+            tg_id,
+            panel.account_id,
+            panel.script,
+            panel.host,
+            panel.uuid,
+            token,
+            panel.endpoints,
+            panel.build_ms,
+            relays=panel.relays,
+            healthy=panel.healthy,
+            deploy_target=panel.target,
+        )
+        await db.log_event("miniapp_build", tg_id, panel.host)
+        # The chain pin was chosen before the row existed; write it now so refreshes
+        # reuse this exact relay until it dies. Same as the bot's own build path.
+        if panel.chain_relays:
+            try:
+                await store.set_chain_pin(panel.uuid, panel.chain_relays[0], panel.chain_country)
+            except Exception:  # noqa: BLE001
+                log.debug("could not record the chain pin after mini app build", exc_info=True)
+        job.update(
+            {
+                "state": "done",
+                "step": len(deploy.STEP_KEYS),
+                "at": time.time(),
+                "result": await _panel_payload(tg_id),
+            }
+        )
 
 
 async def build_handler(request: web.Request, body: dict, user: dict) -> web.StreamResponse:
@@ -700,11 +702,12 @@ async def build_handler(request: web.Request, body: dict, user: dict) -> web.Str
     token = str(body.get("token") or "").strip()
     reuse: Optional[dict] = None
 
-    # One build at a time per user: a double tap used to start two deploys that
-    # raced each other onto the same Cloudflare account.
-    for job in _jobs.values():
-        if job.get("owner") == tg_id and job.get("state") == "running":
-            return _json({"ok": False, "error": "a build is already running"}, status=409)
+    # One build at a time per user - and the guard is the SAME lock the
+    # Telegram flow takes, because two independent guards meant a mini app
+    # build and a bot rebuild could race onto one Cloudflare account and the
+    # second save_panel reverted the first build's custom-domain host.
+    if deploy.build_lock(tg_id).locked():
+        return _json({"ok": False, "error": "a build is already running"}, status=409)
 
     panel = await db.get_panel(tg_id)
     if str(body.get("mode") or "") == "rebuild" and panel is not None:

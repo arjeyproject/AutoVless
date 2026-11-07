@@ -69,6 +69,27 @@ ACCEPT_REQUIRED = 2
 
 Progress = Optional[Callable[[int], Awaitable[None]]]
 
+# One build at a time per user, across BOTH entry points - the Telegram flow
+# and the mini app each had their own guard, so a user tapping rebuild in the
+# bot while the mini app build was still running produced two deploys racing
+# onto the same account, and the loser's save_panel silently reverted the
+# winner's host back to pages.dev. The lock lives here because both flows
+# import this module.
+_BUILD_LOCKS: dict[int, asyncio.Lock] = {}
+
+
+def build_lock(tg_id: int) -> asyncio.Lock:
+    lock = _BUILD_LOCKS.get(int(tg_id))
+    if lock is None:
+        lock = asyncio.Lock()
+        _BUILD_LOCKS[int(tg_id)] = lock
+    return lock
+
+# A wall-clock budget for the whole build. Every individual call already has a
+# timeout; the budget is what turns "one wait misconfigured on a slow evening"
+# from a user staring at a progress bar for twenty minutes into a clear error.
+BUILD_BUDGET_S = 420.0
+
 
 class DeployError(Exception):
     """Raised when a build cannot be completed."""
@@ -138,6 +159,17 @@ async def _select_endpoints(force_scan: bool) -> list[dict]:
     if not endpoints:
         raise DeployError("clean ip pool is empty")
     return endpoints
+
+
+async def _select_network(force_scan: bool, panel_uuid: str = "") -> tuple[list[dict], list[str], list[str], str, list[str], str]:
+    """Endpoints, relays and both relay pins - the part of a build that does
+    not touch the user's Cloudflare account. Gathered as one unit so a build
+    can run it beside the token/project setup."""
+    endpoints = await _select_endpoints(force_scan)
+    relays = await _select_relays()
+    ai_relays, ai_country = await aipin.choose(relays, panel_uuid)
+    chain_relays, chain_country = await aipin.choose_chain(relays, panel_uuid)
+    return endpoints, relays, ai_relays, ai_country, chain_relays, chain_country
 
 
 async def _select_relays() -> list[str]:
@@ -318,12 +350,13 @@ async def _published(host: str, uuid: str, attempts: Optional[int] = None) -> bo
 
     Speed matters here: this is the last step of a build and the one users
     watch. Attempts are short on purpose - a 20 s timeout that repeats is how a
-    build used to sit at "health checking" for three minutes. 12 s per try,
-    four tries, and the gaps between them shrink as we go.
+    build used to sit at "health checking" for three minutes. 8 s per try, and
+    the gaps between them stay small; a hostname that needs longer than this
+    window is reported as pending rather than holding the build hostage.
     """
     url = f"https://{host}/{uuid}/health"
     tries = attempts or settings.health_attempts
-    async with httpx.AsyncClient(timeout=12.0, follow_redirects=True) as client:
+    async with httpx.AsyncClient(timeout=8.0, follow_redirects=True) as client:
         for attempt in range(tries):
             try:
                 response = await client.get(url)
@@ -332,7 +365,7 @@ async def _published(host: str, uuid: str, attempts: Optional[int] = None) -> bo
             except Exception:  # noqa: BLE001
                 pass
             if attempt < tries - 1:
-                await asyncio.sleep(min(1.5 + attempt * 1.5, 5.0))
+                await asyncio.sleep(min(1.0 + attempt * 1.0, 3.0))
     return False
 
 
@@ -463,6 +496,33 @@ async def build(
     force_scan: bool = False,
     target: Optional[str] = None,
 ) -> Panel:
+    """The build entry point: the whole flow under one wall-clock budget.
+
+    A build used to be able to sit for many minutes past every individual
+    timeout (a custom domain that never publishes was worth a 14-try wait, an
+    acceptance pass with a congested pool another minute). The budget is the
+    backstop: past it the build fails with a clear, honest message instead of
+    holding the user's evening hostage.
+    """
+    try:
+        return await asyncio.wait_for(
+            _build_impl(token, reuse=reuse, progress=progress, force_scan=force_scan, target=target),
+            timeout=BUILD_BUDGET_S,
+        )
+    except asyncio.TimeoutError as error:
+        raise DeployError(
+            f"the build exceeded its {int(BUILD_BUDGET_S)}s budget and was stopped; "
+            "the Cloudflare account or the network is too slow right now - try again"
+        ) from error
+
+
+async def _build_impl(
+    token: str,
+    reuse: Optional[dict] = None,
+    progress: Progress = None,
+    force_scan: bool = False,
+    target: Optional[str] = None,
+) -> Panel:
     started = time.perf_counter()
     reuse = reuse or {}
     code = _read_worker()
@@ -470,14 +530,21 @@ async def build(
     target = (target or settings.deploy_target).lower()
 
     await _announce(progress, 0)
+    script = reuse.get("script_name") or script_name()
+    panel_uuid = reuse.get("uuid") or vless.new_uuid()
+
+    # The clean-IP sweep needs no token, no account, nothing from Cloudflare.
+    # It used to run AFTER the project setup, serially - which put the whole
+    # scan (up to two waves) on the critical path of every build. Racing it
+    # against the token verify + project setup hands the build its endpoints
+    # the moment the upload step starts.
+    network_task = asyncio.create_task(_select_network(force_scan, panel_uuid))
     try:
         async with CloudflareClient(token) as cf:
             await cf.verify_token()
             account_id = reuse.get("account_id") or str((await cf.first_account())["id"])
 
             await _announce(progress, 1)
-            script = reuse.get("script_name") or script_name()
-            panel_uuid = reuse.get("uuid") or vless.new_uuid()
 
             if target == "pages":
                 project = pages.project_name(script)
@@ -493,10 +560,7 @@ async def build(
                 dev_host = f"{script}.{subdomain}.workers.dev"
 
             await _announce(progress, 2)
-            endpoints = await _select_endpoints(force_scan)
-            relays = await _select_relays()
-            ai_relays, ai_country = await aipin.choose(relays, panel_uuid)
-            chain_relays, chain_country = await aipin.choose_chain(relays, panel_uuid)
+            endpoints, relays, ai_relays, ai_country, chain_relays, chain_country = await network_task
 
             await _announce(progress, 3)
             if target == "pages":
@@ -538,7 +602,12 @@ async def build(
                 # The script has to exist before a domain can point at it.
                 custom = await edge.attach(cf, account_id, script)
     except CloudflareError as error:
+        network_task.cancel()
         raise DeployError(error.message) from error
+    except BaseException:
+        # A failure anywhere in the CF setup must not leave the sweep running.
+        network_task.cancel()
+        raise
 
     await _announce(progress, 4)
     # Race both front doors at once: whichever answers first wins. The pages
@@ -548,8 +617,8 @@ async def build(
     # one front door Iranian networks can resolve, pages.dev they cannot.
     if custom:
         custom_ok, dev_ok = await asyncio.gather(
-            _published(custom, panel_uuid, attempts=14),
-            _published(dev_host, panel_uuid, attempts=3),
+            _published(custom, panel_uuid, attempts=8),
+            _published(dev_host, panel_uuid, attempts=4),
         )
         if custom_ok:
             host = custom
@@ -619,7 +688,7 @@ async def build(
             # second upload, and the account stopped executing the script
             # minutes later while the row already said healthy=1. Prove the
             # final state answers before the result is trusted.
-            if not await _published(host, panel_uuid, attempts=4):
+            if not await _published(host, panel_uuid, attempts=3):
                 raise DeployError(
                     f"the panel stopped answering right after the final upload ({host}); "
                     "the Cloudflare account may be rate limited or flagged - try again "
@@ -691,6 +760,29 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
             log.info("panel %s moved from %s to %s", panel_uuid, host, moved)
             host = moved
             await _record_host(panel_uuid, host)
+
+    if not await _published(host, panel_uuid, attempts=2):
+        # A custom domain whose Pages binding went missing (an interrupted
+        # build, another deploy racing it) answers 522 forever while the very
+        # same project stays healthy on its pages.dev host. Re-attaching the
+        # domain is idempotent and costs one API call - cheaper than
+        # misreading a lost binding as a dead panel and reviving onto the
+        # wrong front door.
+        if not (edge.is_dev_host(host) or pages.is_pages_host(host)):
+            try:
+                async with CloudflareClient(str(token)) as cf:
+                    if target == "pages":
+                        repaired = await pages.attach_domain(cf, account_id, pages.project_name(script))
+                    else:
+                        repaired = await edge.attach(cf, account_id, script)
+            except CloudflareError as error:
+                log.info("domain repair skipped for %s: %s", host, error.message)
+                repaired = ""
+            if repaired and repaired != host:
+                host = repaired
+                await _record_host(panel_uuid, host)
+            if repaired and await _published(host, panel_uuid, attempts=2):
+                log.info("panel %s front door %s repaired by re-attach", panel_uuid, host)
 
     if not await _published(host, panel_uuid, attempts=2):
         # A front door that answers nothing used to kill the whole refresh:

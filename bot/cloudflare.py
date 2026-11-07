@@ -99,12 +99,22 @@ class CloudflareClient:
                 f"circuit breaker open (will retry in {int(self._circuit_open_until - now)}s)"
             )
 
-        max_retries = 3
+        max_retries = 4
         for attempt in range(max_retries):
             try:
                 response = await self._client.request(method, f"{API}{path}", **kwargs)
-            except httpx.TimeoutException as exc:
-                raise CloudflareError("cloudflare timed out") from exc
+            except (httpx.TimeoutException, httpx.NetworkError) as exc:
+                # Network hiccups used to kill a build or an autopilot revival
+                # outright ("network error:" with an empty message - the
+                # VPS's connection to the API blips several times an hour).
+                # Two patient retries change a transient failure into a pass.
+                self._consecutive_failures += 1
+                if attempt < max_retries - 1 and self._consecutive_failures < self._max_consecutive_failures:
+                    await asyncio.sleep(_exponential_backoff(attempt))
+                    continue
+                name = type(exc).__name__
+                text = str(exc).strip() or name
+                raise CloudflareError(f"network error: {text}") from exc
             except httpx.HTTPError as exc:
                 raise CloudflareError(f"network error: {exc}") from exc
 
@@ -116,7 +126,6 @@ class CloudflareClient:
             if isinstance(payload, dict) and payload.get("success"):
                 self._consecutive_failures = 0
                 return payload.get("result")
-
             # Handle rate limit (429) with backoff
             if response.status_code == 429:
                 retry_after = float(response.headers.get("Retry-After", "1"))

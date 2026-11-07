@@ -118,6 +118,36 @@ CREATE INDEX IF NOT EXISTS idx_users_seen ON users (seen_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tickets_updated ON tickets (status, updated_at DESC);
 CREATE INDEX IF NOT EXISTS idx_tickets_user ON tickets (tg_id, id DESC);
 CREATE INDEX IF NOT EXISTS idx_ticket_messages ON ticket_messages (ticket_id, id);
+
+CREATE TABLE IF NOT EXISTS config_tests (
+    key           TEXT PRIMARY KEY,
+    tg_id         INTEGER NOT NULL,
+    label         TEXT NOT NULL DEFAULT '',
+    ok            INTEGER NOT NULL DEFAULT 0,
+    latency_ms    REAL,
+    exit_ip       TEXT NOT NULL DEFAULT '',
+    exit_country  TEXT NOT NULL DEFAULT '',
+    error_kind    TEXT NOT NULL DEFAULT '',
+    error_detail  TEXT NOT NULL DEFAULT '',
+    method        TEXT NOT NULL DEFAULT '',
+    server_ip     TEXT NOT NULL DEFAULT '',
+    tested_at     INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_config_tests_user ON config_tests (tg_id, tested_at DESC);
+
+CREATE TABLE IF NOT EXISTS proxy_chains (
+    id           INTEGER PRIMARY KEY AUTOINCREMENT,
+    tg_id        INTEGER NOT NULL,
+    name         TEXT NOT NULL,
+    hops         TEXT NOT NULL DEFAULT '[]',
+    enabled      INTEGER NOT NULL DEFAULT 0,
+    last_result  TEXT NOT NULL DEFAULT '',
+    created_at   INTEGER NOT NULL,
+    updated_at   INTEGER NOT NULL
+);
+
+CREATE INDEX IF NOT EXISTS idx_chains_user ON proxy_chains (tg_id, id DESC);
 """
 
 # Columns added after 1.0. Existing databases are patched in place on boot.
@@ -1163,3 +1193,147 @@ async def global_stats() -> dict:
         "tickets_waiting": int(await scalar("SELECT COUNT(*) FROM tickets WHERE unread_admin > 0")),
         "warp_users": int(await scalar("SELECT COUNT(*) FROM warp_users")),
     }
+
+
+# --------------------------------------------------------------------- #
+# config test results (the Configurations screen's memory)
+# --------------------------------------------------------------------- #
+
+
+def test_key(link: str) -> str:
+    """Stable key for a config link: the sha256 of its canonical text."""
+    import hashlib
+
+    return hashlib.sha256(str(link or "").strip().encode("utf-8")).hexdigest()[:32]
+
+
+async def save_test_result(tg_id: int, link: str, label: str, result: dict) -> None:
+    await execute(
+        """
+        INSERT INTO config_tests (key, tg_id, label, ok, latency_ms, exit_ip,
+                                  exit_country, error_kind, error_detail, method,
+                                  server_ip, tested_at)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET
+            tg_id        = excluded.tg_id,
+            label        = excluded.label,
+            ok           = excluded.ok,
+            latency_ms   = excluded.latency_ms,
+            exit_ip      = excluded.exit_ip,
+            exit_country = excluded.exit_country,
+            error_kind   = excluded.error_kind,
+            error_detail = excluded.error_detail,
+            method       = excluded.method,
+            server_ip    = excluded.server_ip,
+            tested_at    = excluded.tested_at
+        """,
+        (
+            test_key(link),
+            int(tg_id),
+            str(label or "")[:120],
+            1 if result.get("ok") else 0,
+            result.get("latency_ms"),
+            str(result.get("exit_ip") or ""),
+            str(result.get("exit_country") or ""),
+            str(result.get("error_kind") or ""),
+            str(result.get("error_detail") or "")[:200],
+            str(result.get("method") or ""),
+            str(result.get("server_ip") or ""),
+            now(),
+        ),
+    )
+
+
+async def get_test_result(link: str) -> Optional[dict]:
+    row = await fetch_one("SELECT * FROM config_tests WHERE key = ?", (test_key(link),))
+    return dict(row) if row is not None else None
+
+
+async def get_test_results(links: Sequence[str]) -> dict[str, dict]:
+    """One lookup for a whole screen. Missing links are simply absent."""
+    out: dict[str, dict] = {}
+    for link in links:
+        row = await get_test_result(link)
+        if row is not None:
+            out[test_key(link)] = row
+    return out
+
+
+# --------------------------------------------------------------------- #
+# proxy chains
+# --------------------------------------------------------------------- #
+
+
+def _chain_row(row: aiosqlite.Row) -> dict:
+    record = dict(row)
+    try:
+        record["hops"] = json.loads(record.get("hops") or "[]")
+    except ValueError:
+        record["hops"] = []
+    if not isinstance(record["hops"], list):
+        record["hops"] = []
+    try:
+        record["last_result"] = json.loads(record.get("last_result") or "")
+    except ValueError:
+        record["last_result"] = {}
+    record["enabled"] = bool(record.get("enabled"))
+    return record
+
+
+async def list_chains(tg_id: int) -> list[dict]:
+    rows = await fetch_all(
+        "SELECT * FROM proxy_chains WHERE tg_id = ? ORDER BY id ASC", (int(tg_id),)
+    )
+    return [_chain_row(row) for row in rows]
+
+
+async def get_chain(tg_id: int, chain_id: int) -> Optional[dict]:
+    row = await fetch_one(
+        "SELECT * FROM proxy_chains WHERE tg_id = ? AND id = ?", (int(tg_id), int(chain_id))
+    )
+    return _chain_row(row) if row is not None else None
+
+
+async def create_chain(tg_id: int, name: str, hops: list[str], enabled: bool = False) -> int:
+    ts = now()
+    return await insert(
+        "INSERT INTO proxy_chains (tg_id, name, hops, enabled, created_at, updated_at) "
+        "VALUES (?, ?, ?, ?, ?, ?)",
+        (int(tg_id), str(name)[:80], json.dumps(hops, ensure_ascii=False), 1 if enabled else 0, ts, ts),
+    )
+
+
+async def update_chain_hops(tg_id: int, chain_id: int, hops: list[str]) -> None:
+    await execute(
+        "UPDATE proxy_chains SET hops = ?, updated_at = ? WHERE tg_id = ? AND id = ?",
+        (json.dumps(hops, ensure_ascii=False), now(), int(tg_id), int(chain_id)),
+    )
+
+
+async def set_chain_enabled(tg_id: int, chain_id: int, enabled: bool) -> None:
+    """Enabling one chain disables the others: one active route per user."""
+    if enabled:
+        await execute("UPDATE proxy_chains SET enabled = 0 WHERE tg_id = ?", (int(tg_id),))
+    await execute(
+        "UPDATE proxy_chains SET enabled = ?, updated_at = ? WHERE tg_id = ? AND id = ?",
+        (1 if enabled else 0, now(), int(tg_id), int(chain_id)),
+    )
+
+
+async def set_chain_result(tg_id: int, chain_id: int, result: dict) -> None:
+    await execute(
+        "UPDATE proxy_chains SET last_result = ?, updated_at = ? WHERE tg_id = ? AND id = ?",
+        (json.dumps(result, ensure_ascii=False)[:1000], now(), int(tg_id), int(chain_id)),
+    )
+
+
+async def delete_chain(tg_id: int, chain_id: int) -> None:
+    await execute("DELETE FROM proxy_chains WHERE tg_id = ? AND id = ?", (int(tg_id), int(chain_id)))
+
+
+async def enabled_chain(tg_id: int) -> Optional[dict]:
+    row = await fetch_one(
+        "SELECT * FROM proxy_chains WHERE tg_id = ? AND enabled = 1 ORDER BY updated_at DESC LIMIT 1",
+        (int(tg_id),),
+    )
+    return _chain_row(row) if row is not None else None

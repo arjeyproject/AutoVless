@@ -110,7 +110,17 @@ async def run_build(
     reuse: dict | None = None,
     force_scan: bool = False,
 ) -> None:
-    """Drive a build, streaming progress into a single message."""
+    """Drive a build, streaming progress into a single message.
+
+    The per-user lock is shared with the mini app's build flow: two guards
+    that did not know about each other once let a bot rebuild and a mini app
+    build race onto one Cloudflare account, and the slower one's save quietly
+    reverted the faster one's custom-domain host.
+    """
+    if deploy.build_lock(tg_id).locked():
+        await message.answer(t(lang, "busy"))
+        return
+
     progress_message = await message.answer(
         t(lang, "build_progress", steps=deploy.render_steps(lang, 0, t))
     )
@@ -122,7 +132,8 @@ async def run_build(
 
     _in_flight.add(tg_id)
     try:
-        panel = await deploy.build(token, reuse=reuse, progress=on_step, force_scan=force_scan)
+        async with deploy.build_lock(tg_id):
+            panel = await deploy.build(token, reuse=reuse, progress=on_step, force_scan=force_scan)
     except deploy.DeployError as error:
         reason = str(error.reason)
         if "clean ip pool" in reason:
