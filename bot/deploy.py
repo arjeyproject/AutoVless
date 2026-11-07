@@ -431,6 +431,24 @@ async def _move_to_domain(token: str, account_id: str, script: str, uuid: str, t
 # --------------------------------------------------------------------- #
 
 
+def _stored_list(raw: object) -> list[dict]:
+    """The endpoint JSON a panel row carries, as a list. "[]" on anything odd."""
+    try:
+        parsed = json.loads(str(raw or "[]"))
+        return parsed if isinstance(parsed, list) else []
+    except ValueError:
+        return []
+
+
+def _stored_strlist(raw: object) -> list[str]:
+    """The relay JSON a panel row carries, as plain strings."""
+    try:
+        parsed = json.loads(str(raw or "[]"))
+        return [str(item) for item in parsed] if isinstance(parsed, list) else []
+    except ValueError:
+        return []
+
+
 def _read_worker() -> str:
     try:
         return settings.worker_file.read_text(encoding="utf-8")
@@ -674,6 +692,46 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
             host = moved
             await _record_host(panel_uuid, host)
 
+    if not await _published(host, panel_uuid, attempts=2):
+        # A front door that answers nothing used to kill the whole refresh:
+        # the acceptance check below needs a live panel to upgrade against, so
+        # a panel whose script was deleted (or whose deploy once failed) failed
+        # here forever and the autopilot skipped it on every cycle. Re-upload
+        # the bundle with the stored bindings first, then heal the endpoints
+        # the normal way. Same script, same uuid, same host - nothing the user
+        # holds has to change.
+        log.warning(
+            "panel %s front door %s is not answering; re-uploading the bundle first",
+            panel_uuid,
+            host,
+        )
+        revival_vars = _bindings(
+            panel_uuid,
+            host,
+            _stored_list(panel.get("endpoints")),
+            _stored_strlist(panel.get("relays")),
+            [str(panel.get("ai_relay") or "")] if panel.get("ai_relay") else [],
+            [str(panel.get("chain_relay") or "")] if panel.get("chain_relay") else [],
+        )
+        try:
+            if target == "pages":
+                await pages.push(
+                    str(token),
+                    account_id,
+                    pages.project_name(script),
+                    code,
+                    revival_vars,
+                )
+            else:
+                async with CloudflareClient(str(token)) as cf:
+                    await cf.upload_script(account_id, script, code, revival_vars)
+                    await cf.enable_workers_dev(account_id, script)
+        except (CloudflareError, pages.PagesError) as error:
+            raise DeployError(
+                f"the panel front door ({host}) is down and the revival upload "
+                f"failed: {getattr(error, 'message', error)}"
+            ) from error
+
     candidates = await _select_endpoints(force_scan)
     relays = await _select_relays()
     ai_relays, ai_country = await aipin.choose(relays, panel_uuid)
@@ -733,12 +791,50 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
 
 
 async def destroy(token: str, account_id: str, script: str, target: str = "workers") -> None:
+    """Remove every trace of a panel: bindings first, then the code.
+
+    The order matters. Deleting a script whose custom-domain binding survives
+    leaves the hostname pointing at a service that no longer exists - every
+    request to it answers 522 forever, and the user reads that as "the bot
+    died". Both deploy targets are cleaned regardless of which one the row
+    names: panels have been moved between them often enough that trusting the
+    row alone used to leave the other side behind.
+    """
     target = str(target or "workers").lower()
+    project = pages.project_name(script)
+    errors: list[str] = []
+    async with CloudflareClient(token) as cf:
+        try:
+            bindings_list = await cf.list_worker_domains(account_id)
+            for row in bindings_list:
+                if str(row.get("service") or "") != script:
+                    continue
+                try:
+                    await cf.detach_worker_domain(account_id, str(row.get("id")))
+                    log.info("detached workers domain %s", row.get("hostname"))
+                except CloudflareError as error:
+                    errors.append(f"detach {row.get('hostname')}: {error.message}")
+        except CloudflareError as error:
+            errors.append(f"list worker domains: {error.message}")
+        try:
+            for hostname in await cf.list_pages_domains(account_id, project):
+                try:
+                    await cf.detach_pages_domain(account_id, project, str(hostname))
+                    log.info("detached pages domain %s", hostname)
+                except CloudflareError as error:
+                    errors.append(f"detach {hostname}: {error.message}")
+        except CloudflareError as error:
+            errors.append(f"list pages domains: {error.message}")
+        try:
+            await cf.delete_script(account_id, script)
+        except CloudflareError as error:
+            if error.status != 404:
+                errors.append(f"delete script: {error.message}")
     try:
-        if target == "pages":
-            await pages.destroy(token, account_id, pages.project_name(script))
-        else:
-            async with CloudflareClient(token) as cf:
-                await cf.delete_script(account_id, script)
+        await pages.destroy(token, account_id, project)
     except (CloudflareError, pages.PagesError) as error:
-        raise DeployError(getattr(error, "message", str(error))) from error
+        message = getattr(error, "message", str(error))
+        if "404" not in message and "not found" not in message.lower():
+            errors.append(f"delete pages project: {message}")
+    if errors:
+        raise DeployError("; ".join(errors))

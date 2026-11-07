@@ -240,6 +240,27 @@ class CloudflareClient:
         )
         return result or {}
 
+    async def list_worker_domains(self, account_id: str) -> list[dict]:
+        """Every Workers custom-domain binding on the account."""
+        result = await self._call("GET", f"/accounts/{account_id}/workers/domains")
+        return result or []
+
+    async def detach_worker_domain(self, account_id: str, domain_id: str) -> None:
+        """Remove one Workers custom-domain binding.
+
+        Deleting the script alone leaves the binding behind: the hostname keeps
+        pointing at a service that no longer exists and Cloudflare answers 522
+        to everything, which reads to the user as "the bot died" long after the
+        panel was removed. Detaching is the other half of every delete.
+        """
+        try:
+            await self._call(
+                "DELETE", f"/accounts/{account_id}/workers/domains/{domain_id}"
+            )
+        except CloudflareError as exc:
+            if exc.status != 404:
+                raise
+
     # ------------------------------------------------------------------ #
     # worker scripts
     # ------------------------------------------------------------------ #
@@ -466,6 +487,33 @@ class CloudflareClient:
             json={"name": hostname},
         )
         return result or {}
+
+    async def detach_pages_domain(self, account_id: str, project: str, hostname: str) -> None:
+        """Remove one custom domain from a Pages project."""
+        try:
+            await self._call(
+                "DELETE",
+                f"/accounts/{account_id}/pages/projects/{project}/domains/{hostname}",
+            )
+        except CloudflareError as exc:
+            if exc.status != 404:
+                raise
+
+    async def list_pages_domains(self, account_id: str, project: str) -> list[str]:
+        """The hostnames attached to a Pages project."""
+        try:
+            result = await self._call(
+                "GET", f"/accounts/{account_id}/pages/projects/{project}/domains"
+            )
+        except CloudflareError as exc:
+            if exc.status == 404:
+                return []
+            raise
+        return [
+            str(row.get("name"))
+            for row in (result or [])
+            if isinstance(row, dict) and row.get("name")
+        ]
 
     async def list_pages_deployments(
         self,

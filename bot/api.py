@@ -1460,21 +1460,38 @@ class ApiServer:
         if not API_ENABLED:
             log.info("mini app api is disabled")
             return
-        try:
-            runner = web.AppRunner(build_app(), access_log=None)
-            await runner.setup()
-            site = web.TCPSite(runner, API_HOST, API_PORT)
-            await site.start()
-            self._runner = runner
-            log.info(
-                "api listening on %s:%s (static: %s, gateway: %s)",
-                API_HOST,
-                API_PORT,
-                WEBAPP_DIR,
-                subgw.origin() or "off",
-            )
-        except Exception:  # noqa: BLE001
-            log.exception("could not start the mini app api")
+        # A bind failure used to be permanent for the container's lifetime: on
+        # restart the old process sometimes let go of the port a second after
+        # the new one asked for it, the one-shot bind failed, and the mini app
+        # plus every /sub gateway route stayed dead until the next restart.
+        # A few patient retries turn that race into a footnote.
+        last_error: Optional[Exception] = None
+        for attempt in range(4):
+            try:
+                runner = web.AppRunner(build_app(), access_log=None)
+                await runner.setup()
+                site = web.TCPSite(runner, API_HOST, API_PORT)
+                await site.start()
+                self._runner = runner
+                log.info(
+                    "api listening on %s:%s (static: %s, gateway: %s)",
+                    API_HOST,
+                    API_PORT,
+                    WEBAPP_DIR,
+                    subgw.origin() or "off",
+                )
+                return
+            except OSError as error:
+                last_error = error
+                log.warning(
+                    "api bind attempt %s/4 on %s:%s failed: %s",
+                    attempt + 1,
+                    API_HOST,
+                    API_PORT,
+                    error,
+                )
+                await asyncio.sleep(5)
+        log.error("could not start the mini app api: %s", last_error)
 
     async def stop(self) -> None:
         if self._runner is not None:
