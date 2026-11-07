@@ -169,18 +169,26 @@ def ticket_mark(status: object) -> str:
 
 
 def back_row(lang: str, target: str = "nav:menu") -> list[InlineKeyboardButton]:
-    return [_c(t(lang, "btn.back"), target, SOFT)]
+    """Back is red everywhere, by the owner's own rule: "تمام دکمه‌های برگشت
+    رو قرمز کن". One colour for one verb, on every screen in the bot."""
+    return [_c(t(lang, "btn.back"), target, BAD)]
 
 
 def main_menu(lang: str, is_admin: bool = False) -> InlineKeyboardMarkup:
-    """One green leader - build the panel - and a blue rank under it."""
+    """One green leader - build the panel - and a blue rank under it.
+
+    Guide and language are blue too: the owner asked for it by name
+    ("راهنمای اتصال و زبان رو آبی کن"), and they are ordinary destinations,
+    not decoration, so they belong in the blue rank like everything else.
+    Back is red; delete stays red; copy stays glass.
+    """
     rows: list[list[InlineKeyboardButton]] = [
         [_c(t(lang, "btn.build"), "nav:build", OK)],
         [_c(t(lang, "btn.panel"), "nav:panel", GO)],
         [_c(t(lang, "btn.warp"), "nav:warp", GO)],
         [_c(t(lang, "btn.apps"), "nav:apps", GO)],
-        [_c(t(lang, "btn.guide"), "nav:guide", SOFT), _c(t(lang, "btn.support"), "nav:support", GO)],
-        [_c(t(lang, "btn.donate"), "nav:donate", GO), _c(t(lang, "btn.lang"), "nav:lang", SOFT)],
+        [_c(t(lang, "btn.guide"), "nav:guide", GO), _c(t(lang, "btn.support"), "nav:support", GO)],
+        [_c(t(lang, "btn.donate"), "nav:donate", GO), _c(t(lang, "btn.lang"), "nav:lang", GO)],
     ]
     if is_admin:
         rows.append([_c(t(lang, "btn.admin"), "adm:menu", BAD)])
@@ -289,7 +297,7 @@ def apps_platforms(lang: str) -> InlineKeyboardMarkup:
                 _b(t(lang, "btn.apps_macos"), "apps:macos", checker(1, 1)),
             ],
             [_b(t(lang, "btn.apps_linux"), "apps:linux", checker(2, 0))],
-            [_b(t(lang, "btn.guide"), "nav:guide", SOFT)],
+            [_b(t(lang, "btn.guide"), "nav:guide", GO)],
             back_row(lang),
         ]
     )
@@ -309,7 +317,7 @@ def apps_list(lang: str, platform: str, tag: str = "") -> InlineKeyboardMarkup:
     for index in range(0, len(switch), 2):
         rows.append(switch[index : index + 2])
 
-    rows.append([_b(t(lang, "btn.guide"), "nav:guide", SOFT)])
+    rows.append([_b(t(lang, "btn.guide"), "nav:guide", GO)])
     rows.append(back_row(lang, "nav:apps"))
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
@@ -446,7 +454,7 @@ def warp_delivered(lang: str, family: str, platform: str = "") -> InlineKeyboard
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_c(t(lang, "btn.wg_change_device"), "wg:net", GO)],
-            [_c(t(lang, "btn.back_home"), "nav:menu", SOFT)],
+            [_c(t(lang, "btn.back_home"), "nav:menu", BAD)],
         ]
     )
 

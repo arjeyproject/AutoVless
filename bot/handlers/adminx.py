@@ -64,7 +64,7 @@ def referral_menu(lang: str) -> InlineKeyboardMarkup:
         inline_keyboard=[
             [_b(t(lang, "btn.ref_toggle"), "adm:ref:toggle")],
             [_b(t(lang, "btn.ref_count"), "adm:ref:count"), _b(t(lang, "btn.ref_top"), "adm:ref:top")],
-            [_b(t(lang, "btn.back"), "adm:menu")],
+            [_b(t(lang, "btn.back"), "adm:menu", keyboards.BAD)],
         ]
     )
 
@@ -83,7 +83,7 @@ def free_menu(lang: str, servers: list[dict]) -> InlineKeyboardMarkup:
         )
     rows.append([_b(t(lang, "btn.free_add"), "adm:free:add"), _b(t(lang, "btn.free_from_panel"), "adm:free:panel")])
     rows.append([_b(t(lang, "btn.free_check"), "adm:free:check")])
-    rows.append([_b(t(lang, "btn.back"), "adm:menu")])
+    rows.append([_b(t(lang, "btn.back"), "adm:menu", keyboards.BAD)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 
@@ -91,7 +91,7 @@ def ai_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
             [_b(t(lang, "btn.ai_geo"), "adm:ai:geo")],
-            [_b(t(lang, "btn.back"), "adm:menu")],
+            [_b(t(lang, "btn.back"), "adm:menu", keyboards.BAD)],
         ]
     )
 

@@ -17,7 +17,7 @@ from typing import Optional
 from aiogram import Bot
 from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup
 
-from . import db, store
+from . import db, keyboards, store
 from .config import settings
 from .i18n import num, t
 
@@ -120,7 +120,7 @@ def card_keyboard(lang: str, invite: str) -> InlineKeyboardMarkup:
         share = "https://t.me/share/url?url=" + invite.replace(":", "%3A").replace("/", "%2F")
         rows.append([InlineKeyboardButton(text=t(lang, "btn.ref_share"), url=share)])
     rows.append([InlineKeyboardButton(text=t(lang, "btn.ref_check"), callback_data="ref:check")])
-    rows.append([InlineKeyboardButton(text=t(lang, "btn.back"), callback_data="nav:menu")])
+    rows.append([InlineKeyboardButton(text=t(lang, "btn.back"), callback_data="nav:menu", style=keyboards.BAD)])
     return InlineKeyboardMarkup(inline_keyboard=rows)
 
 

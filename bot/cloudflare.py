@@ -399,6 +399,65 @@ class CloudflareClient:
         )
         return result or {}
 
+    async def list_pages_deployments(
+        self,
+        account_id: str,
+        project: str,
+        limit: int = 5,
+    ) -> list[dict]:
+        """Newest first. Used to watch a deployment until it actually goes live."""
+        result = await self._call(
+            "GET",
+            f"/accounts/{account_id}/pages/projects/{project}/deployments",
+            params={"page": 1, "per_page": max(1, min(25, limit))},
+        )
+        return result or []
+
+    async def upsert_zone_cname(
+        self,
+        zone_id: str,
+        hostname: str,
+        target: str,
+        proxied: bool = True,
+    ) -> dict:
+        """Create the CNAME a Pages custom domain waits for, or update it.
+
+        Pages domains created through the API on a zone inside the same account
+        do not get a DNS record for free - the project domain sits "pending"
+        until one exists. Idempotent: an existing record of the same type and
+        name is updated, not duplicated.
+        """
+        existing: list[dict] = []
+        try:
+            listing = await self._call(
+                "GET",
+                f"/zones/{zone_id}/dns_records",
+                params={"type": "CNAME", "name": hostname, "per_page": 50},
+            )
+            existing = listing or []
+        except CloudflareError as error:
+            log.info("dns listing failed for %s: %s", hostname, error.message)
+
+        payload = {
+            "type": "CNAME",
+            "name": hostname,
+            "content": target,
+            "ttl": 1,  # 1 = auto, required when proxied
+            "proxied": proxied,
+        }
+        if existing:
+            record_id = str(existing[0]["id"])
+            result = await self._call(
+                "PUT", f"/zones/{zone_id}/dns_records/{record_id}", json=payload
+            )
+            log.info("updated dns cname %s -> %s", hostname, target)
+            return result or {}
+        result = await self._call(
+            "POST", f"/zones/{zone_id}/dns_records", json=payload
+        )
+        log.info("created dns cname %s -> %s", hostname, target)
+        return result or {}
+
     async def delete_pages_project(self, account_id: str, project: str) -> None:
         try:
             await self._call(

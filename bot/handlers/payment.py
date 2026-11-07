@@ -258,7 +258,7 @@ def admin_menu(lang: str) -> InlineKeyboardMarkup:
             [_b(t(lang, "btn.pay_days"), "adm:pay:days"), _b(t(lang, "btn.pay_merchant"), "adm:pay:merchant")],
             [_b(t(lang, "btn.pay_sandbox"), "adm:pay:sandbox"), _b(t(lang, "btn.pay_list"), "adm:pay:list")],
             [_b(t(lang, "btn.pay_grant"), "adm:pay:grant"), _b(t(lang, "btn.pay_revoke"), "adm:pay:revoke")],
-            [_b(t(lang, "btn.back"), "adm:menu")],
+            [_b(t(lang, "btn.back"), "adm:menu", keyboards.BAD)],
         ]
     )
 

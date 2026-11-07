@@ -504,21 +504,25 @@ async def build(
         raise DeployError(error.message) from error
 
     await _announce(progress, 4)
-    # Race both front doors at once: whichever answers first wins. This is the
-    # stage that used to stall - the custom domain got its own publish wait and
-    # then the health check waited all over again, sequentially.
+    # Race both front doors at once: whichever answers first wins. The pages
+    # deployment went live inside push() (push waits for it), so the dev host
+    # answers within seconds; the custom domain needs its certificate issued,
+    # which is worth a real wait when DNS exists - the custom domain is the
+    # one front door Iranian networks can resolve, pages.dev they cannot.
     if custom:
         custom_ok, dev_ok = await asyncio.gather(
-            _published(custom, panel_uuid, attempts=3),
+            _published(custom, panel_uuid, attempts=14),
             _published(dev_host, panel_uuid, attempts=3),
         )
         if custom_ok:
             host = custom
         elif dev_ok:
-            host = dev_host
-        else:
             log.warning("custom domain %s never answered, falling back to %s", custom, dev_host)
             host = dev_host
+        else:
+            raise DeployError(
+                f"the panel was deployed but neither {custom} nor {dev_host} answered"
+            )
     else:
         host = dev_host
 
@@ -527,8 +531,21 @@ async def build(
         await _demote_dead_relays(report)
 
     endpoints, rejected = await _ship(host, endpoints)
-    if endpoints:
-        await _remember_reference(host)
+    if not endpoints:
+        # The first batch died wholesale - usually the sweep raced the scanner.
+        # One fresh sweep, one more acceptance pass, and then honesty: a panel
+        # with zero endpoints is worse than no panel, because the subscription
+        # link silently serves an empty list and the user reads it as broken.
+        log.warning("ship produced 0 endpoints, retrying with a fresh sweep")
+        candidates = await _select_endpoints(force_scan=True)
+        if candidates:
+            endpoints, rejected = await _ship(host, candidates)
+    if not endpoints:
+        raise DeployError(
+            "no endpoint could complete a websocket upgrade against the new panel; "
+            "nothing was saved - check the clean-IP pool and try again"
+        )
+    await _remember_reference(host)
     if rejected or host != dev_host:
         # The bundle serves its own subscription from ENDPOINTS and SUB_HOST, so
         # the healed list and the final hostname have to go back up.

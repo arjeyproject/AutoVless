@@ -27,6 +27,7 @@ of those hashes, then a deployment whose manifest maps bundle paths to hashes.
 
 from __future__ import annotations
 
+import asyncio
 import logging
 
 from . import blake3pure, vless
@@ -85,7 +86,17 @@ async def push(
     code: str,
     variables: dict[str, str],
 ) -> str:
-    """Update bindings, then create one production deployment. Returns the host."""
+    """Update bindings, create one production deployment, and WAIT for it.
+
+    The wait is not decoration. A Pages direct-upload deployment is processed
+    asynchronously, and the API accepting the request says nothing about the
+    processing outcome - two real builds once had their deployment accepted and
+    then silently never go live, which the bot read as success, shipped a panel
+    with zero working endpoints, and the user saw a subscription with nothing
+    inside it. So the deployment status is polled here until the platform
+    reports it active, and a failed or stuck deployment raises before the
+    caller has a chance to build on top of something that does not exist.
+    """
     try:
         async with CloudflareClient(token) as cf:
             await _ensure_project(cf, account_id, project)
@@ -105,16 +116,103 @@ async def push(
                     }
                 ],
             )
-            await cf.create_pages_deployment(
+            deployment = await cf.create_pages_deployment(
                 account_id, project, {f"/{WORKER_BUNDLE}": digest}
             )
+            await _wait_deployment(cf, account_id, project, deployment)
     except CloudflareError as error:
         raise PagesError(error.message) from error
     return host_for(project)
 
 
+# Deployment statuses that mean "a human would call this live" and "this will
+# never go live, stop waiting". Anything else is still processing. Both the
+# API's spellings are accepted because the platform mixes them: per-stage
+# statuses read "success", deployment-level ones read "active".
+_DEPLOY_DONE = {"active", "success", "ok", "complete", "completed", "deployed"}
+_DEPLOY_DEAD = {"failure", "failed", "canceled", "cancelled", "error", "skipped"}
+_DEPLOY_WAIT_SECONDS = 90
+_DEPLOY_POLL_SECONDS = 3
+
+
+def _deployment_state(deployment: dict) -> tuple[str, str]:
+    """``(status, detail)`` of a deployment dict, tolerating odd shapes.
+
+    The API spells the outcome differently in different places - per-stage
+    ``status`` values, ``latest_stage.status``, a deployment-level ``status`` -
+    and stages that direct uploads never run can sit "idle" forever. So: dead
+    the moment any stage failed, done when the LAST stage that actually ran
+    reports success, processing otherwise.
+    """
+    if not isinstance(deployment, dict):
+        return "", ""
+    entries = [s for s in (deployment.get("stages") or []) if isinstance(s, dict)]
+    detail = ""
+    for entry in entries:
+        state = str(entry.get("status") or "").lower()
+        if state in _DEPLOY_DEAD:
+            name = str(entry.get("name") or entry.get("stage_name") or "stage")
+            detail = f"{name}: {entry.get('message') or state}"
+            return state, detail
+
+    latest = deployment.get("latest_stage") or {}
+    if isinstance(latest, dict) and latest.get("status"):
+        state = str(latest["status"]).lower()
+        return state, str(latest.get("stage_name") or "")
+    for entry in reversed(entries):
+        state = str(entry.get("status") or "").lower()
+        if state:
+            return state, str(entry.get("name") or "")
+    if deployment.get("status"):
+        return str(deployment["status"]).lower(), ""
+    return "processing", ""
+
+
+async def _wait_deployment(
+    cf: CloudflareClient,
+    account_id: str,
+    project: str,
+    deployment: dict,
+) -> None:
+    """Poll until the newest deployment is active, raise if it dies or stalls.
+
+    Only the newest deployment is inspected: this call just created it, so it
+    is the one the platform is processing.
+    """
+    status, detail = _deployment_state(deployment)
+    waited = 0
+    while status not in _DEPLOY_DONE:
+        if status in _DEPLOY_DEAD:
+            raise PagesError(f"pages deployment failed ({detail or status})")
+        if waited >= _DEPLOY_WAIT_SECONDS:
+            raise PagesError(
+                f"pages deployment did not go live within {_DEPLOY_WAIT_SECONDS}s "
+                f"(last state: {detail or status or 'unknown'})"
+            )
+        await asyncio.sleep(_DEPLOY_POLL_SECONDS)
+        waited += _DEPLOY_POLL_SECONDS
+        try:
+            rows = await cf.list_pages_deployments(account_id, project, limit=1)
+        except CloudflareError as error:
+            # A hiccup while polling is not a failed deployment; keep waiting
+            # until the deadline and let the deadline be the one to complain.
+            log.info("deployment poll failed for %s: %s", project, error.message)
+            continue
+        status, detail = _deployment_state(rows[0] if rows else {})
+    log.info("pages deployment for %s is live (waited %ss)", project, waited)
+
+
 async def attach_domain(cf: CloudflareClient, account_id: str, project: str) -> str:
-    """Attach ``<label>.<zone>`` to the Pages project. ``""`` when impossible."""
+    """Attach ``<label>.<zone>`` to the Pages project. ``""`` when impossible.
+
+    Attaching the domain alone was never enough: the Pages domains API accepts
+    the hostname and then waits for a DNS record that nobody created, so the
+    domain sat "pending" forever and every build logged "custom domain never
+    answered". The zone lives in the same account and the operator's token
+    carries DNS edit, so the CNAME is created here, right after the attach -
+    pointing at the project's pages.dev host, proxied, which is what Cloudflare
+    needs to finish the certificate.
+    """
     from . import edge
 
     if not edge.enabled():
@@ -131,6 +229,12 @@ async def attach_domain(cf: CloudflareClient, account_id: str, project: str) -> 
     hostname = f"{edge.label_for(project)}.{str(zone['name']).lower()}"
     try:
         await cf.attach_pages_domain(account_id, project, hostname)
+        await cf.upsert_zone_cname(
+            str(zone["id"]),
+            hostname,
+            host_for(project),
+            proxied=True,
+        )
     except CloudflareError as error:
         log.warning("could not attach %s to project %s: %s", hostname, project, error.message)
         return ""
