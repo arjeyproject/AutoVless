@@ -63,7 +63,6 @@ from . import (
     shadowsocks,
     store,
     subgw,
-    trojan,
     vless,
     warp,
     warpconf,
@@ -308,17 +307,12 @@ async def _panel_payload(tg_id: int, request: Optional[web.Request] = None) -> O
         "sub": vless.sub_url(uuid, host),
         "raw": vless.sub_url(uuid, host, "raw"),
         "mix": vless.sub_url(uuid, host, "mix"),
-        "httpup": vless.sub_url(uuid, host, "httpup") if settings.httpupgrade else "",
-        "xhttp": vless.sub_url(uuid, host, "xhttp") if settings.xhttp else "",
-        "trojan": trojan.sub_url(uuid, host),
         "clash": vless.sub_url(uuid, host, "clash"),
         "singbox": vless.sub_url(uuid, host, "singbox"),
     }
     if shadowsocks.enabled():
         direct["ss"] = shadowsocks.sub_url(uuid, host)
     links = dict(direct)
-    if subgw.enabled():
-        links.update(subgw.links(tg_id, uuid))
 
     payload = {
         "host": host,
@@ -330,16 +324,14 @@ async def _panel_payload(tg_id: int, request: Optional[web.Request] = None) -> O
         "syncedAt": int(panel.get("synced_at") or 0),
         "hasToken": bool(panel.get("token")),
         "endpoints": endpoints,
-        "trojanPassword": trojan.password_for(uuid),
         "aiRelay": (pin or {}).get("relay"),
         "aiCountry": (pin or {}).get("country"),
-        "gateway": subgw.enabled(),
+        # The operator's domain is reserved for the payment gateway, so the
+        # mini app never shows a subscription link served from it.
+        "gateway": False,
         "links": links,
         "direct": direct,
         "vless": vless.build_links(uuid, host, endpoints, settings.brand),
-        "httpupgrade": vless.build_links(uuid, host, endpoints, settings.brand, "httpupgrade") if settings.httpupgrade else [],
-        "xhttp": vless.build_links(uuid, host, endpoints, settings.brand, "xhttp") if settings.xhttp else [],
-        "trojan": trojan.build_links(uuid, host, endpoints),
     }
     if shadowsocks.enabled():
         payload["ss"] = shadowsocks.build_links(uuid, host, endpoints, settings.brand)
@@ -347,7 +339,7 @@ async def _panel_payload(tg_id: int, request: Optional[web.Request] = None) -> O
     if request is not None:
         payload["downloads"] = {
             kind: _download_url(request, tg_id, kind)
-            for kind in ("sub", "raw", "mix", "httpup", "xhttp", "clash", "singbox", "fragment", "noise")
+            for kind in ("sub", "raw", "mix", "clash", "singbox", "fragment", "noise")
         }
     return payload
 
@@ -419,15 +411,13 @@ async def state_handler(request: web.Request, body: dict, user: dict) -> web.Str
                 "servers": int(free.get("servers") or 0),
                 "healthy": int(free.get("healthy") or 0),
                 "protocols": list(freepool.PROTOCOLS),
-                "sub": f"{_public_origin(request)}/sub/free/{_free_token(tg_id)}"
-                if subgw.enabled() and open_
-                else "",
+                "sub": "",
             },
             "protocols": {
                 "vless": True,
-                "httpupgrade": settings.httpupgrade,
-                "xhttp": settings.xhttp,
-                "trojan": True,
+                "httpupgrade": False,
+                "xhttp": False,
+                "trojan": False,
                 "shadowsocks": shadowsocks.enabled(),
             },
             "gateway": {
@@ -789,18 +779,6 @@ def _render_export(panel: dict, kind: str) -> tuple[str, str]:
         return profiles.xray_noise(uuid, host, endpoints, brand), profiles.filename("noise", brand)
     if kind == "fragment":
         return fragment.xray_config(uuid, host, endpoints, brand), fragment.filename(brand)
-    if kind == "trojan":
-        return "\n".join(trojan.build_links(uuid, host, endpoints)), "autovless-trojan.txt"
-    if kind == "httpup" or kind == "httpupgrade":
-        return (
-            "\n".join(vless.build_links(uuid, host, endpoints, brand, "httpupgrade")),
-            "autovless-httpupgrade.txt",
-        )
-    if kind == "xhttp":
-        return (
-            "\n".join(vless.build_links(uuid, host, endpoints, brand, "xhttp")),
-            "autovless-xhttp.txt",
-        )
     if kind == "ss":
         return (
             "\n".join(shadowsocks.build_links(uuid, host, endpoints, brand)),
@@ -808,8 +786,8 @@ def _render_export(panel: dict, kind: str) -> tuple[str, str]:
         )
     if kind == "mix":
         rows = vless.all_links(uuid, host, endpoints, brand)
-        rows += trojan.build_links(uuid, host, endpoints)
-        rows += shadowsocks.build_links(uuid, host, endpoints, brand)
+        if shadowsocks.enabled():
+            rows += shadowsocks.build_links(uuid, host, endpoints, brand)
         return "\n".join(rows), "autovless-mix.txt"
     return "\n".join(vless.build_links(uuid, host, endpoints, brand)), "autovless.txt"
 
@@ -834,7 +812,7 @@ async def export_handler(request: web.Request, body: dict, user: dict) -> web.St
 
 
 async def links_handler(request: web.Request, body: dict, user: dict) -> web.StreamResponse:
-    """Every subscription URL for this user, gateway first."""
+    """Every subscription URL for this user, on the panel's Cloudflare host."""
     tg_id = user["id"]
     panel = await db.get_panel(tg_id)
     if panel is None:
@@ -843,8 +821,8 @@ async def links_handler(request: web.Request, body: dict, user: dict) -> web.Str
     return _json(
         {
             "ok": True,
-            "gateway": subgw.enabled(),
-            "links": subgw.links(tg_id, uuid) if subgw.enabled() else {},
+            "gateway": False,
+            "links": {},
             "direct": {
                 "sub": vless.sub_url(uuid, str(panel["host"])),
                 "mix": vless.sub_url(uuid, str(panel["host"]), "mix"),
@@ -1049,9 +1027,7 @@ async def free_handler(request: web.Request, body: dict, user: dict) -> web.Stre
             "ok": True,
             "protocol": result["protocol"],
             "host": result["host"],
-            "sub": f"{_public_origin(request)}/sub/free/{_free_token(tg_id)}"
-            if subgw.enabled()
-            else result["sub"],
+            "sub": result["sub"],
             "direct": result["sub"],
             "links": result["links"],
             "best": result["best"],
@@ -1226,7 +1202,6 @@ async def free_sub_handler(request: web.Request) -> web.StreamResponse:
     host = str(server["host"])
     fmt = (request.query.get("format") or "sub").lower()
     rows = vless.all_links(uuid, host, endpoints, settings.brand)
-    rows += trojan.build_links(uuid, host, endpoints)
     body = "\n".join(rows)
     if fmt != "raw":
         body = base64.b64encode(body.encode("utf-8")).decode("ascii")

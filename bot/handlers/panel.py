@@ -1,6 +1,4 @@
-"""Panel management: exports, QR, fragment, trojan, live ping, AI routing, apply.
-
-Two buttons here are new and both exist because of the same complaint.
+"""Panel management: exports, QR, fragment, live ping, AI routing, apply.
 
 *Fragment* answers "the config connects on wifi and dies on mobile data". That is
 almost never the endpoint: it is DPI matching the TLS ClientHello on the way out.
@@ -8,21 +6,11 @@ Fragmentation is configured on the client's dialer, so it cannot ride inside a
 ``vless://`` link - it needs a real Xray config. One tap renders every config the
 user holds into exactly that, fragmented, with a least-ping balancer on top.
 
-*Trojan* answers "VLESS stopped working on my network". Same worker, same
-endpoints, same account: a completely different handshake on the wire. The bot
-builds those links itself from the panel it already knows about, so nothing here
-depends on the worker having been re-uploaded first - though it does have to be
-running a bundle that speaks trojan, which every apply and rebuild takes care of.
-
 Which subscription URL these screens hand out
 ---------------------------------------------
-The gateway one, whenever there is one. A panel's own subscription lives on
-``<script>.<subdomain>.workers.dev``, and that hostname does not resolve in Iran -
-so a user could hold a working config and still watch their client fetch nothing,
-which is indistinguishable from a broken config and was reported as one for
-months. ``bot.subgw`` serves the identical list from the operator's own domain, so
-that is what goes on screen; the worker's own URL is kept underneath as the
-fallback for an operator who has not set ``PUBLIC_URL`` yet.
+The panel's own, always: ``https://<project>.pages.dev/<uuid>``. Cloudflare's
+own host serves the list and the operator's domain stays out of the configs -
+it is reserved for the payment gateway.
 """
 
 from __future__ import annotations
@@ -35,7 +23,7 @@ from aiogram import F, Router
 from aiogram.fsm.context import FSMContext
 from aiogram.types import BufferedInputFile, CallbackQuery, InlineKeyboardMarkup
 
-from .. import db, deploy, fragment, keyboards, profiles, qrimg, screens, subgw, trojan, vless
+from .. import db, deploy, fragment, keyboards, profiles, qrimg, screens, vless
 from .. import chain as chainmod
 from ..autopilot import autopilot
 from ..config import settings
@@ -76,44 +64,20 @@ async def _require_panel(call: CallbackQuery, lang: str) -> dict | None:
 
 
 def _sub_links(tg_id: int, panel: dict) -> dict[str, str]:
-    """Every subscription URL for this panel, gateway first.
+    """Every subscription URL for this panel, on the panel's Cloudflare host.
 
-    Written as one lookup so no screen can accidentally show a mix of the two
-    origins - which would be the most confusing possible outcome for a user
-    comparing two links that are supposed to be the same list.
+    Written as one lookup so no screen can accidentally mix origins. The
+    operator's own domain is reserved for the payment gateway and never
+    appears here.
     """
     uuid, host = str(panel["uuid"]), str(panel["host"])
-    direct = {
+    return {
         "sub": vless.sub_url(uuid, host),
         "raw": vless.sub_url(uuid, host, "raw"),
         "mix": vless.sub_url(uuid, host, "mix"),
-        "trojan": trojan.sub_url(uuid, host),
-        "httpup": vless.sub_url(uuid, host, "httpup"),
-        "xhttp": vless.sub_url(uuid, host, "xhttp"),
         "clash": vless.sub_url(uuid, host, "clash"),
         "singbox": vless.sub_url(uuid, host, "singbox"),
     }
-    if not subgw.enabled():
-        return direct
-    return {**direct, **subgw.links(tg_id, uuid)}
-
-
-def _gateway_note(lang: str) -> str:
-    """Said in the open, because a changed link deserves a reason."""
-    if not subgw.enabled():
-        return ""
-    if lang == "en":
-        return (
-            "\n\n\u2139\ufe0f These links are served from our own domain. "
-            "workers.dev does not resolve on most Iranian networks, so a client "
-            "could never fetch the subscription from it. The configs inside are "
-            "unchanged."
-        )
-    return (
-        "\n\n\u2139\ufe0f این لینک‌ها از دامنه‌ی خودمان سرو می‌شوند. آدرس "
-        "workers.dev روی بیشتر شبکه‌های ایران رزولوو نمی‌شود و کلاینت هیچ‌وقت "
-        "نمی‌توانست ساب را از آن بگیرد. کانفیگ‌های داخلش همان‌هایی هستند که بودند."
-    )
 
 
 def _copy_rows(labels_and_links: list[tuple[str, str]], per_row: int = 2) -> list[list]:
@@ -193,7 +157,6 @@ async def on_sub(call: CallbackQuery, lang: str) -> None:
         clash=esc(links["clash"]),
         singbox=esc(links["singbox"]),
     )
-    text += _gateway_note(lang)
 
     markup = InlineKeyboardMarkup(
         inline_keyboard=[
@@ -267,102 +230,6 @@ async def on_single(call: CallbackQuery, lang: str) -> None:
         header = t(lang, "single_group_header") if position == 0 else ""
         body = f"{header}\n\n{group_text}" if header else group_text
         await call.message.answer(body, disable_web_page_preview=True)
-
-
-# --------------------------------------------------------------------- #
-# trojan
-# --------------------------------------------------------------------- #
-
-
-@router.callback_query(F.data == "panel:trojan")
-async def on_trojan(call: CallbackQuery, lang: str) -> None:
-    """Real Trojan links against the user's own worker.
-
-    TLS endpoints only, and that is not a limitation being papered over: on a
-    plain port there is no TLS record for the handshake to hide inside, so the
-    password would cross the wire in the clear and the client would refuse the
-    config anyway. A short pool means fewer links, never broken ones.
-    """
-    panel = await _require_panel(call, lang)
-    if panel is None:
-        return
-
-    endpoints = panel["endpoints"]
-    links = trojan.build_links(panel["uuid"], panel["host"], endpoints)
-    if not links:
-        await edit(call, t(lang, "trojan_none"), keyboards.panel_menu(lang))
-        await call.answer()
-        return
-
-    await call.answer()
-    header = t(
-        lang,
-        "trojan_configs",
-        count=num(len(links), lang),
-        sub=esc(_sub_links(call.from_user.id, panel)["trojan"]),
-        password=esc(trojan.password_for(panel["uuid"])),
-    )
-    await call.message.answer(header, disable_web_page_preview=True)
-    # The txt file: same capacity argument as the singles screen. Trojan
-    # links run 300+ characters, so per-link copy buttons used to get the whole
-    # message - header, links and all - rejected with BUTTON_DATA_INVALID.
-    await call.message.answer_document(
-        _links_file(links, "autovless-trojan.txt"),
-        caption=t(lang, "single_file_caption", count=num(len(links), lang)),
-    )
-    for position, group_text in enumerate(_link_pairs(links, lang)):
-        await call.message.answer(group_text, disable_web_page_preview=True)
-    await db.log_event("trojan", call.from_user.id, f"links={len(links)}")
-
-
-# --------------------------------------------------------------------- #
-# httpupgrade / xhttp
-# --------------------------------------------------------------------- #
-
-
-# The two free transports that ride the same worker, each with its own screen.
-# They were served by the worker all along (``/<uuid>/httpup`` and
-# ``/<uuid>/xhttp``) and rode inside the mixed subscription, but no button ever
-# led to them - which is exactly why they were reported as missing.
-_TRANSPORT_SCREENS: dict[str, dict] = {
-    "panel:httpup": {"transport": "httpupgrade", "header": "httpup_configs", "sub": "httpup", "file": "autovless-httpupgrade.txt"},
-    "panel:xhttp": {"transport": "xhttp", "header": "xhttp_configs", "sub": "xhttp", "file": "autovless-xhttp.txt"},
-}
-
-
-@router.callback_query(F.data.in_({"panel:httpup", "panel:xhttp"}))
-async def on_transport(call: CallbackQuery, lang: str) -> None:
-    """Singles for one free transport, in the shape the trojan screen proved.
-
-    HTTPUpgrade rides the very same WebSocket code path on the worker, so its
-    links work wherever the ws ones do - the difference is framing on the
-    client side, which is sometimes what a picky DPI box keys on. XHTTP in
-    stream-one mode is a genuinely different inbound and needs TLS, so a panel
-    with no healthy TLS port answers with the honest empty state instead of
-    links that cannot connect.
-    """
-    panel = await _require_panel(call, lang)
-    if panel is None:
-        return
-    spec = _TRANSPORT_SCREENS[call.data]
-    links = vless.build_links(
-        panel["uuid"], panel["host"], panel["endpoints"], "", spec["transport"]
-    )
-    if not links:
-        await edit(call, t(lang, "proto.no_tls"), keyboards.panel_menu(lang))
-        await call.answer()
-        return
-    await call.answer()
-    sub = _sub_links(call.from_user.id, panel)[spec["sub"]]
-    header = t(lang, spec["header"], count=num(len(links), lang), sub=esc(sub))
-    await call.message.answer(header, disable_web_page_preview=True)
-    await call.message.answer_document(
-        _links_file(links, spec["file"]),
-        caption=t(lang, "single_file_caption", count=num(len(links), lang)),
-    )
-    for group_text in _link_pairs(links, lang):
-        await call.message.answer(group_text, disable_web_page_preview=True)
-    await db.log_event(spec["transport"], call.from_user.id, f"links={len(links)}")
 
 
 # --------------------------------------------------------------------- #
@@ -571,8 +438,7 @@ async def on_apply(call: CallbackQuery, lang: str) -> None:
 
     This is the same operation the autopilot runs in the background, exposed as a
     button for people who do not want to wait for the next cycle. It also
-    re-uploads the worker bundle, which is how a panel picks up a new build -
-    including the one that taught it to speak trojan.
+    re-uploads the worker bundle, which is how a panel picks up a new build.
     """
     panel = await _require_panel(call, lang)
     if panel is None:

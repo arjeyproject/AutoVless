@@ -9,7 +9,7 @@ from aiogram.fsm.context import FSMContext
 from aiogram.fsm.state import State, StatesGroup
 from aiogram.types import CallbackQuery, Message
 
-from .. import db, deploy, edge, keyboards, operators, pages, screens, store, subgw, vless
+from .. import db, deploy, keyboards, operators, screens, store, vless
 from ..cloudflare import token_looks_valid
 from ..i18n import num, t
 from ..utils import edit, esc, ping_label
@@ -22,37 +22,6 @@ _in_flight: set[int] = set()
 
 class BuildFlow(StatesGroup):
     token = State()
-
-
-def _domain_note(lang: str, host: str) -> str:
-    """Say plainly which front door the configs use, and what to do about it."""
-    dev_host = edge.is_dev_host(host) or pages.is_pages_host(host)
-    if not dev_host:
-        if lang == "en":
-            return (
-                "\n\n\U0001f6e1 Your configs use your own domain "
-                f"<code>{esc(host)}</code> instead of the platform default, which is what "
-                "lets them get past filtering in Iran."
-            )
-        return (
-            "\n\n\U0001f6e1 کانفیگ‌ها به جای دامنه‌ی پیش‌فرض پلتفرم روی دامنه‌ی خودت "
-            f"<code>{esc(host)}</code> ساخته شدند؛ همین باعث می‌شود از فیلترینگ ایران رد شوند."
-        )
-    if lang == "en":
-        return (
-            "\n\n\u26a0\ufe0f No domain was found on your Cloudflare account, so these "
-            "configs still use the platform default host, which is filtered on most Iranian "
-            "networks. Add any domain (a free one works) to Cloudflare, create a new "
-            "token with the button (it now includes the Pages permission), then "
-            "press Rebuild. The bot moves the panel onto the domain by itself."
-        )
-    return (
-        "\n\n\u26a0\ufe0f روی اکانت کلادفلرت دامنه‌ای پیدا نشد و کانفیگ‌ها هنوز روی "
-        "هاست پیش‌فرض پلتفرم هستند که روی بیشتر اینترنت‌های ایران فیلتر است. یک دامنه (حتی "
-        "رایگان) به کلادفلر اضافه کن، با دکمه‌ی ساخت توکن یک توکن جدید بساز (حالا "
-        "دسترسی Pages هم دارد) و «بازسازی پنل» را بزن؛ ربات خودش پنل "
-        "را روی دامنه منتقل می‌کند."
-    )
 
 
 @router.callback_query(F.data == "nav:build")
@@ -184,13 +153,9 @@ async def run_build(
     latencies = [e.get("latency") or 0 for e in panel.endpoints]
     ports = sorted({int(e["port"]) for e in panel.endpoints})
 
-    # The one link the user actually needs: every endpoint, every protocol,
-    # served from our own domain and refreshed by Update alone. The gateway
-    # link when it exists - workers.dev does not resolve in Iran.
-    if subgw.enabled():
-        sub = subgw.link(tg_id, panel.uuid)
-    else:
-        sub = vless.sub_url(panel.uuid, panel.host)
+    # The one link the user actually needs: served by the panel's own
+    # Cloudflare host, so the operator's domain stays out of the configs.
+    sub = vless.sub_url(panel.uuid, panel.host)
 
     body = t(
         lang,
@@ -206,7 +171,6 @@ async def run_build(
     )
     if not panel.healthy:
         body = f"{body}\n\n{t(lang, 'health_warn')}"
-    body += _domain_note(lang, panel.host)
 
     await progress_message.edit_text(body, reply_markup=keyboards.panel_ready_menu(lang, sub))
 

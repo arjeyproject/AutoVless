@@ -1,12 +1,10 @@
 """Config assembly: endpoints, VLESS links, Clash and sing-box exports.
 
-Every endpoint ships in three free transports: plain WebSocket, HTTPUpgrade
-and - on TLS ports - XHTTP in stream-one mode. All three are served by the
-same worker: the first two share the WebSocket handshake (an httpupgrade
-client sends a plain Upgrade request), and XHTTP stream-one is one full-
-duplex POST. Clients differ in what they tolerate, so every subscription
-blends the three and dedicated ``/httpup`` and ``/xhttp`` paths serve each
-transport alone.
+One transport, on purpose: VLESS over plain WebSocket. HTTPUpgrade and XHTTP
+were removed - the extra link variants bloated every subscription, doubled the
+maintenance surface and did nothing for reachability that a clean entry IP
+plus the worker's Proxy Chain does not already do. Every endpoint ships one
+ws link per port group and nothing else.
 
 Endpoints are also mounted range-first: within one port the best verified
 address per /24 wins, so the configs a user holds do not all sit in one
@@ -263,10 +261,6 @@ def remark(endpoint: dict, index: int, brand: str = "", transport: str = "") -> 
     secure = is_tls(endpoint["port"])
     if endpoint.get("kind") == "domain":
         badge = "\U0001f300"
-    elif transport == "xhttp":
-        badge = "\U0001f680"
-    elif transport == "httpupgrade":
-        badge = "\U0001f4f6"
     else:
         badge = "\u26a1" if secure else "\U0001f7e1"
     ping = f"{round(float(endpoint.get('latency') or 0))}ms" if endpoint.get("latency") else "auto"
@@ -287,34 +281,26 @@ def build_link(
     brand: str = "",
     transport: str = "ws",
 ) -> str:
-    """One vless:// link. ``transport`` is ``ws``, ``httpupgrade`` or ``xhttp``.
+    """One vless:// link over WebSocket.
 
-    ws and httpupgrade carry the same path and reach the same worker code
-    path. xhttp in stream-one mode is TLS-only: one full-duplex POST to the
-    panel uuid path, with the uuid itself riding in the header. An endpoint
-    the user disabled never produces a link.
+    ``transport`` is kept for call compatibility and ignored: WebSocket is the
+    only transport this bot ships. An endpoint the user disabled never
+    produces a link.
     """
     if endpoint.get("disabled"):
         return ""
     secure = is_tls(endpoint["port"])
-    transport = transport or "ws"
     params = {
         "encryption": "none",
         "security": "tls" if secure else "none",
-        "type": transport,
+        "type": "ws",
         "host": host,
+        "path": WS_PATH,
     }
-    if transport == "xhttp":
-        if not secure:
-            return ""
-        params["mode"] = "stream-one"
-        params["path"] = f"/{uuid}"
-    else:
-        params["path"] = WS_PATH
     if secure:
         params.update({"sni": host, "fp": "chrome", "alpn": "http/1.1"})
     query = urlencode(params, quote_via=quote, safe="")
-    label = quote(remark(endpoint, index, brand, transport), safe="")
+    label = quote(remark(endpoint, index, brand), safe="")
     return f"vless://{uuid}@{bracket_ipv6(endpoint['ip'])}:{endpoint['port']}?{query}#{label}"
 
 
@@ -333,16 +319,11 @@ def build_links(
 
 
 def all_links(uuid: str, host: str, endpoints: list[dict], brand: str = "") -> list[str]:
-    """Every free transport in one list: ws, httpupgrade, xhttp.
+    """VLESS over WebSocket only - the one transport this bot ships.
 
     Used by the free-server feed and anything that wants the whole menu.
     """
-    out = build_links(uuid, host, endpoints, brand, "ws")
-    if settings.httpupgrade:
-        out += build_links(uuid, host, endpoints, brand, "httpupgrade")
-    if settings.xhttp:
-        out += build_links(uuid, host, endpoints, brand, "xhttp")
-    return out
+    return build_links(uuid, host, endpoints, brand, "ws")
 
 
 def build_subscription(
@@ -368,12 +349,10 @@ def build_clash(
     brand: str = "",
     transport: str = "ws",
 ) -> str:
-    """Clash (mihomo) export. ws and httpupgrade are supported by the core;
-    xhttp is left out on purpose - mihomo's xhttp support is too uneven across
-    releases to ship in a config that must always load."""
+    """Clash (mihomo) export over WebSocket.
+
+    ``transport`` is kept for call compatibility and ignored."""
     brand = brand or settings.brand
-    if transport == "xhttp":
-        transport = "ws"
     proxies: list[str] = []
     names: list[str] = []
 
@@ -392,22 +371,13 @@ def build_clash(
         ]
         if secure:
             lines += [f"    servername: {host}", "    client-fingerprint: chrome"]
-        if transport == "httpupgrade":
-            lines += [
-                "    network: httpupgrade",
-                "    httpupgrade-opts:",
-                f'      path: "{WS_PATH}"',
-                "      headers:",
-                f"        Host: {host}",
-            ]
-        else:
-            lines += [
-                "    network: ws",
-                "    ws-opts:",
-                f'      path: "{WS_PATH}"',
-                "      headers:",
-                f"        Host: {host}",
-            ]
+        lines += [
+            "    network: ws",
+            "    ws-opts:",
+            f'      path: "{WS_PATH}"',
+            "      headers:",
+            f"        Host: {host}",
+        ]
         proxies.append("\n".join(lines))
 
     return "\n".join(
@@ -441,16 +411,15 @@ def build_singbox(
     brand: str = "",
     transport: str = "ws",
 ) -> str:
-    """sing-box export. httpupgrade is a supported v2ray transport there;
-    xhttp is not, so those entries fall back to ws to keep every file valid."""
+    """sing-box export over WebSocket.
+
+    ``transport`` is kept for call compatibility and ignored."""
     brand = brand or settings.brand
-    if transport == "xhttp":
-        transport = "ws"
     outbounds = []
     for index, endpoint in enumerate(endpoints, start=1):
         secure = is_tls(endpoint["port"])
         transport_block: dict = {
-            "type": transport,
+            "type": "ws",
             "path": WS_PATH,
             "headers": {"Host": host},
         }

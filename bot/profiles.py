@@ -2,19 +2,17 @@
 
 Why these live apart from the per-protocol modules
 --------------------------------------------------
-``bot.vless``, ``bot.trojan`` and ``bot.shadowsocks`` each know how to render
-their own links and their own client blocks, and each ships a single-protocol
-Clash or sing-box file. That is right for a user who wants one thing. It is wrong
-for the common case, which is a user who wants one file that holds everything and
-picks whichever entry is alive tonight. Composing that belongs in neither of the
-three modules, so it is here.
+``bot.vless`` and ``bot.shadowsocks`` each know how to render their own links
+and their own client blocks, and each ships a single-protocol Clash or sing-box
+file. That is right for a user who wants one thing. It is wrong for the common
+case, which is a user who wants one file that holds everything and picks
+whichever entry is alive tonight. Composing that belongs in neither of the
+two modules, so it is here.
 
-Two profiles are new, and both exist for a measured reason:
+Two profiles exist, and both exist for a measured reason:
 
 ``clash`` / ``singbox``
-    All three inbounds in one file, behind a latency test. A group that holds a
-    VLESS entry, a Trojan entry and a Shadowsocks entry on the same address is
-    the whole point of running three protocols on one worker: when a network
+    VLESS and Shadowsocks in one file, behind a latency test. When a network
     learns to kill one handshake, the client fails over to a different shape
     without the user touching anything.
 
@@ -33,7 +31,7 @@ from __future__ import annotations
 import json
 from typing import Sequence
 
-from . import fragment, shadowsocks, trojan, vless
+from . import fragment, shadowsocks, vless
 from .config import settings
 
 PROBE_URL = "http://cp.cloudflare.com/generate_204"
@@ -49,7 +47,7 @@ NOISE = [
 
 
 def clash(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") -> str:
-    """One Clash file, three protocols, a latency group and a fallback group."""
+    """One Clash file, VLESS + Shadowsocks, a latency group and a fallback group."""
     brand = brand or settings.brand
     rows = list(endpoints)
 
@@ -71,35 +69,6 @@ def clash(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") -> s
         ]
         if secure:
             lines += [f"    servername: {host}", "    client-fingerprint: chrome"]
-        if settings.httpupgrade:
-            # HTTPUpgrade rides next to the ws entry of the same address: the
-            # mihomo core supports it natively and it survives DPI shapes that
-            # learned websocket framing.
-            up_name = vless.remark(endpoint, index, brand, "httpupgrade").replace('"', "'")
-            blocks.append(
-                "\n".join(
-                    [
-                        f'  - name: "{up_name}"',
-                        "    type: vless",
-                        f"    server: {endpoint['ip']}",
-                        f"    port: {endpoint['port']}",
-                        f"    uuid: {uuid}",
-                        "    udp: true",
-                        f"    tls: {'true' if secure else 'false'}",
-                        *(
-                            [f"    servername: {host}", "    client-fingerprint: chrome"]
-                            if secure
-                            else []
-                        ),
-                        "    network: httpupgrade",
-                        "    httpupgrade-opts:",
-                        f'      path: "{vless.WS_PATH}"',
-                        "      headers:",
-                        f"        Host: {host}",
-                    ]
-                )
-            )
-            names.append(up_name)
         lines += [
             "    network: ws",
             "    ws-opts:",
@@ -108,29 +77,6 @@ def clash(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") -> s
             f"        Host: {host}",
         ]
         blocks.append("\n".join(lines))
-
-    for index, endpoint in enumerate(trojan.usable(rows), start=1):
-        name = trojan.remark(endpoint, index, brand).replace('"', "'")
-        names.append(name)
-        blocks.append(
-            "\n".join(
-                [
-                    f'  - name: "{name}"',
-                    "    type: trojan",
-                    f"    server: {endpoint['ip']}",
-                    f"    port: {endpoint['port']}",
-                    f"    password: {trojan.password_for(uuid)}",
-                    "    udp: true",
-                    f"    sni: {host}",
-                    "    client-fingerprint: chrome",
-                    "    network: ws",
-                    "    ws-opts:",
-                    f'      path: "{vless.WS_PATH}"',
-                    "      headers:",
-                    f"        Host: {host}",
-                ]
-            )
-        )
 
     if shadowsocks.enabled():
         blocks += shadowsocks.clash_proxies(uuid, host, rows, brand)
@@ -142,7 +88,7 @@ def clash(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") -> s
     listed = "\n".join(f'      - "{name}"' for name in names)
     return "\n".join(
         [
-            f"# {brand} \u00b7 vless + trojan + shadowsocks",
+            f"# {brand} \u00b7 vless + shadowsocks",
             "mixed-port: 7890",
             "allow-lan: false",
             "mode: rule",
@@ -187,13 +133,6 @@ def singbox(uuid: str, host: str, endpoints: Sequence[dict], brand: str = "") ->
     rows = list(endpoints)
 
     outbounds: list[dict] = json.loads(vless.build_singbox(uuid, host, rows, brand))["outbounds"]
-    if settings.httpupgrade:
-        # sing-box has supported the httpupgrade transport since 1.5, so the
-        # same address ships twice here too, once per transport.
-        outbounds += json.loads(
-            vless.build_singbox(uuid, host, rows, brand, "httpupgrade")
-        )["outbounds"]
-    outbounds += json.loads(trojan.build_singbox(uuid, host, rows, brand))["outbounds"]
     if shadowsocks.enabled():
         outbounds += shadowsocks.singbox_outbounds(uuid, host, rows, brand)
 

@@ -101,7 +101,7 @@ class Settings:
     store_tokens: bool; request_timeout: float; log_level: str
     endpoint_scan_enabled: bool; warp_scan_enabled: bool; init_data_future_skew: int
     deploy_target: str
-    httpupgrade: bool; xhttp: bool; pages_autopilot_max_age: int
+    pages_autopilot_max_age: int
     compatibility_date: str = "2024-11-01"; languages: tuple[str, ...] = field(default=("fa", "en"))
     @property
     def config_count(self) -> int: return self.tls_config_count + self.http_config_count
@@ -198,12 +198,6 @@ def load_settings() -> Settings:
         # keeps the previous workers.dev behaviour. The Pages project runs the
         # same worker module through advanced mode (_worker.js).
         deploy_target=(lambda v: v if v in {"pages", "workers"} else "pages")(_str("DEPLOY_TARGET", "pages").lower()),
-        # Free-transport switches. HTTPUpgrade rides the same WebSocket
-        # handshake, so it is served by the same worker with no code path of
-        # its own. XHTTP stream-one is a real single-request full-duplex
-        # tunnel; both are opt-out.
-        httpupgrade=_bool("HTTPUPGRADE", True),
-        xhttp=_bool("XHTTP", True),
         # Pages deployments are monthly-budgeted (500/month on the free plan),
         # so their autopilot cadence is deliberately slower than Workers'.
         # The worker still blends live clean-IP sources on every subscription

@@ -236,12 +236,10 @@
     txt("#heroState", (state.lang === "fa" ? "سلام " : "Hi ") + ((d.user && d.user.name) || ""));
     renderPaywall(d);
 
-    var p = d.protocols || { vless: true, trojan: true, shadowsocks: false, httpupgrade: false, xhttp: false }, badges = $("#protoBadges");
-    if (badges) { badges.innerHTML = ""; [["VLESS", p.vless], ["HTTPUpgrade", p.httpupgrade], ["XHTTP", p.xhttp], ["Trojan", p.trojan], ["Shadowsocks", p.shadowsocks], ["WireGuard", true]].forEach(function (x) { badges.appendChild(el("span", "badge" + (x[1] ? " on" : ""), x[0])); }); }
-    txt("#protoCount", digits([p.vless, p.httpupgrade, p.xhttp, p.trojan, p.shadowsocks, true].filter(Boolean).length) + "/" + digits(6));
+    var p = d.protocols || { vless: true, shadowsocks: false, httpupgrade: false, xhttp: false, trojan: false }, badges = $("#protoBadges");
+    if (badges) { badges.innerHTML = ""; [["VLESS", p.vless], ["Shadowsocks", p.shadowsocks], ["WireGuard", true]].forEach(function (x) { badges.appendChild(el("span", "badge" + (x[1] ? " on" : ""), x[0])); }); }
+    txt("#protoCount", digits([p.vless, p.shadowsocks, true].filter(Boolean).length) + "/" + digits(3));
     show("#fmtSs", !!p.shadowsocks);
-    show("#fmtHttpup", !!p.httpupgrade);
-    show("#fmtXhttp", !!p.xhttp);
 
     var links = d.links || {};
     [["#lnkSupport", links.support], ["#lnkChannel", links.channel], ["#lnkGithub", links.github]].forEach(function (x) {
@@ -257,7 +255,7 @@
       show("#gwNote", !!pan.gateway);
       var h = $("#panelHealth"); if (h) { h.textContent = pan.healthy ? T("healthy") : T("unhealthy"); h.className = "pill " + (pan.healthy ? "good" : "warn"); }
       showSub(state.fmt);
-      var list = $("#configList"); if (list) { list.innerHTML = ""; (pan.vless || []).concat(pan.httpupgrade || [], pan.xhttp || [], pan.trojan || [], pan.ss || []).forEach(function (l) { list.appendChild(copyRow(l)); }); }
+      var list = $("#configList"); if (list) { list.innerHTML = ""; (pan.vless || []).concat(pan.ss || []).forEach(function (l) { list.appendChild(copyRow(l)); }); }
       txt("#aiRelay", pan.aiRelay || T("ai.none")); txt("#aiFlag", pan.aiCountry || "—");
     } else { txt("#aiRelay", T("ai.none")); txt("#aiFlag", "—"); }
 

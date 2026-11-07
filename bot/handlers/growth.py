@@ -35,16 +35,10 @@ router = Router(name="growth")
 
 TIPS = {
     "vless": "free.tip_vless",
-    "trojan": "free.tip_trojan",
-    "httpupgrade": "free.tip_httpupgrade",
-    "xhttp": "free.tip_xhttp",
     "mix": "free.tip_mix",
 }
 TITLES = {
     "vless": "btn.free_vless",
-    "trojan": "btn.free_trojan",
-    "httpupgrade": "btn.free_httpup",
-    "xhttp": "btn.free_xhttp",
     "mix": "btn.free_mix",
 }
 
@@ -56,9 +50,7 @@ def _b(label: str, data: str) -> InlineKeyboardButton:
 def free_menu(lang: str) -> InlineKeyboardMarkup:
     return InlineKeyboardMarkup(
         inline_keyboard=[
-            [_c(t(lang, "btn.free_vless"), "free:vless", OK), _c(t(lang, "btn.free_trojan"), "free:trojan", GO)],
-            [_c(t(lang, "btn.free_httpup"), "free:httpupgrade", GO), _c(t(lang, "btn.free_xhttp"), "free:xhttp", OK)],
-            [_c(t(lang, "btn.free_mix"), "free:mix", OK)],
+            [_c(t(lang, "btn.free_vless"), "free:vless", OK), _c(t(lang, "btn.free_mix"), "free:mix", GO)],
             [_c(t(lang, "btn.free_warp"), "nav:warp", GO)],
             [_c(t(lang, "btn.apps"), "nav:apps", SOFT)],
             back_row(lang),

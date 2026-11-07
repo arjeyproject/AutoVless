@@ -9,13 +9,9 @@ upgrade against that worker before it is handed over, and the subscription link
 is the worker's own - so the entry addresses keep refreshing themselves long
 after the message has scrolled away.
 
-Three protocols come out of one server, because the worker sniffs the first frame
-instead of asking: VLESS over WebSocket, Trojan over WebSocket (TLS ports only,
-for the reason in the worker header) and both together. On top of the plain WS
-entries, every VLESS config also ships HTTPUpgrade - the same handshake from the
-client's point of view - and XHTTP in stream-one mode on TLS ports, so a client
-that dislikes websocket framing still gets a free ride. WireGuard/WARP is free
-already and is handed out by the WARP screens.
+One protocol, on purpose: VLESS over WebSocket, and "mix" which is the same
+list plus its Shadowsocks entries. WireGuard/WARP is free already and is
+handed out by the WARP screens.
 
 Nothing here writes to the shared worker. It is read-only from the bot's side,
 which is why one worker can serve every free user at once.
@@ -30,7 +26,7 @@ from urllib.parse import quote, urlencode
 
 import httpx
 
-from . import db, store, trojan, vless
+from . import db, store, vless
 from .vless import bracket_ipv6
 from .config import settings
 from .probe import measure
@@ -38,7 +34,7 @@ from .scanner import scanner
 
 log = logging.getLogger("autovless.freepool")
 
-PROTOCOLS = ("vless", "httpupgrade", "xhttp", "trojan", "mix")
+PROTOCOLS = ("vless", "mix")
 DEFAULT_PATH = "/?ed=2560"
 VERIFY_ROUNDS = 1
 VERIFY_REQUIRED = 1
@@ -97,7 +93,7 @@ async def add_from_panel(tg_id: int) -> Optional[dict]:
     server_id = await store.add_free_server(
         str(panel["host"]),
         str(panel["uuid"]),
-        trojan.password_for(str(panel["uuid"])),
+        str(panel["uuid"]),
         vless.WS_PATH,
         f"panel:{tg_id}",
         "panel",
@@ -153,12 +149,7 @@ async def pick_server() -> Optional[dict]:
 
 def _remark(server: dict, endpoint: dict, index: int, protocol: str) -> str:
     secure = vless.is_tls(int(endpoint["port"]))
-    badges = {
-        "trojan": "\U0001f3af",
-        "httpupgrade": "\U0001f4f6",
-        "xhttp": "\U0001f680",
-    }
-    badge = badges.get(protocol, "\u26a1" if secure else "\U0001f7e1")
+    badge = "\U0001f7e1" if not secure else "\u26a1"
     ping = f"{round(float(endpoint.get('latency') or 0))}ms" if endpoint.get("latency") else "auto"
     range_tag = f" | \U0001f4cd{vless.range_label(endpoint['ip'])}" if endpoint.get("ip") else ""
     return (
@@ -167,55 +158,25 @@ def _remark(server: dict, endpoint: dict, index: int, protocol: str) -> str:
     )
 
 
-def _vless_link(
-    server: dict,
-    endpoint: dict,
-    index: int,
-    transport: str = "ws",
-) -> str:
+def _vless_link(server: dict, endpoint: dict, index: int) -> str:
     secure = vless.is_tls(int(endpoint["port"]))
-    if transport == "xhttp" and not secure:
-        return ""
     params = {
         "encryption": "none",
         "security": "tls" if secure else "none",
-        "type": transport,
-        "host": server["host"],
-    }
-    if transport == "xhttp":
-        params["mode"] = "stream-one"
-        params["path"] = f"/{server['uuid']}"
-    else:
-        params["path"] = server.get("path") or DEFAULT_PATH
-    if secure:
-        params.update({"sni": server["host"], "fp": "chrome", "alpn": "http/1.1"})
-    query = urlencode(params, quote_via=quote, safe="")
-    label = quote(_remark(server, endpoint, index, "vless" if transport == "ws" else transport), safe="")
-    return f"vless://{server['uuid']}@{bracket_ipv6(endpoint['ip'])}:{endpoint['port']}?{query}#{label}"
-
-
-def _trojan_link(server: dict, endpoint: dict, index: int) -> str:
-    params = {
-        "security": "tls",
         "type": "ws",
         "host": server["host"],
         "path": server.get("path") or DEFAULT_PATH,
-        "sni": server["host"],
-        "fp": "chrome",
-        "alpn": "http/1.1",
     }
+    if secure:
+        params.update({"sni": server["host"], "fp": "chrome", "alpn": "http/1.1"})
     query = urlencode(params, quote_via=quote, safe="")
-    password = server.get("password") or server["uuid"]
-    label = quote(_remark(server, endpoint, index, "trojan"), safe="")
-    return f"trojan://{quote(str(password), safe='')}@{bracket_ipv6(endpoint['ip'])}:{endpoint['port']}?{query}#{label}"
+    label = quote(_remark(server, endpoint, index, "vless"), safe="")
+    return f"vless://{server['uuid']}@{bracket_ipv6(endpoint['ip'])}:{endpoint['port']}?{query}#{label}"
 
 
 def sub_url(server: dict, protocol: str) -> str:
     tail = {
         "vless": "sub",
-        "httpupgrade": "httpup",
-        "xhttp": "xhttp",
-        "trojan": "trojan",
         "mix": "mix",
     }.get(protocol, "sub")
     return f"https://{server['host']}/{server['uuid']}/{tail}"
@@ -265,8 +226,7 @@ async def build(tg_id: int, protocol: str = "vless") -> Optional[dict]:
     if server is None:
         return None
 
-    tls_only = protocol in {"trojan", "xhttp"}
-    endpoints = await _verified_endpoints(server, tls_only, MAX_CONFIGS)
+    endpoints = await _verified_endpoints(server, False, MAX_CONFIGS)
     if not endpoints:
         return None
 
@@ -274,14 +234,6 @@ async def build(tg_id: int, protocol: str = "vless") -> Optional[dict]:
     for index, endpoint in enumerate(endpoints, start=1):
         if protocol in {"vless", "mix"}:
             links.append(_vless_link(server, endpoint, index))
-        if protocol in {"httpupgrade", "mix"} and settings.httpupgrade:
-            links.append(_vless_link(server, endpoint, index, "httpupgrade"))
-        if protocol in {"xhttp", "mix"} and settings.xhttp:
-            link = _vless_link(server, endpoint, index, "xhttp")
-            if link:
-                links.append(link)
-        if protocol in {"trojan", "mix"} and vless.is_tls(int(endpoint["port"])):
-            links.append(_trojan_link(server, endpoint, index))
 
     if not links:
         return None

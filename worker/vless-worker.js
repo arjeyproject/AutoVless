@@ -1,17 +1,15 @@
 /**
  * AutoVless edge worker.
  *
- * VLESS, Trojan *and* Shadowsocks over WebSocket, running on the user's own
+ * VLESS and Shadowsocks over WebSocket, running on the user's own
  * Cloudflare account. None of the traffic touches the operator's VPS:
  *
  *   client -> clean CF IP:443|80 -> CF edge -> this worker -> destination
  *
- * Two protocols share one path and are told apart by the first frame: a Trojan
- * client opens with 56 hex characters and a CRLF, and nothing else can, because
- * a VLESS header starts with a zero byte. So the worker sniffs instead of
- * asking, and the same address, port and path serve both. That matters because a
- * VLESS handshake and a Trojan handshake look nothing alike to a DPI box: a
- * network that has learned to kill one frequently still passes the other.
+ * The tunnel path speaks VLESS only, over one WebSocket. Traffic leaves through
+ * the Proxy Chain first: one relay pinned for the whole panel (see CHAIN_MODE
+ * below), so destinations see a steady address instead of a rotating
+ * datacentre one.
  *
  * Shadowsocks is the third shape and it cannot be sniffed: its first 32 bytes
  * are random salt, which is indistinguishable from anything. It therefore gets
@@ -22,10 +20,8 @@
  * worker/shadowsocks.js, where scripts/test-shadowsocks.mjs checks it against an
  * independent client.
  *
- * Trojan and Shadowsocks are only ever offered on TLS ports. Their cover story is
- * "this is ordinary HTTPS", and on a plain port there is no TLS record to hide
- * inside. TROJAN_PASSWORD defaults to UUID, so an existing panel starts speaking
- * Trojan the moment it picks up this bundle.
+ * Shadowsocks is only ever offered on TLS ports. Its cover story is "this is
+ * ordinary HTTPS", and on a plain port there is no TLS record to hide inside.
  *
  * The subscription this worker serves is not a frozen list. Every fetch blends
  * three sources of entry addresses:
@@ -46,17 +42,14 @@
  *
  * Paths, all under /<uuid>/ :
  *   sub | raw        VLESS subscription, base64 or plain
- *   trojan           Trojan subscription (TLS endpoints only)
  *   ss               Shadowsocks subscription (TLS endpoints only)
- *   mix              every protocol in one subscription
+ *   mix              VLESS + Shadowsocks in one subscription
  *   clash | singbox  ready made client configs
  *   endpoints        the live entry list as JSON
  *   health | probe | ai   diagnostics the bot reads
  *
  * Bindings (plain text vars, all optional except UUID):
  *   UUID             the single account id allowed on this worker
- *   TROJAN_PASSWORD  trojan password. Defaults to UUID.
- *   TROJAN           "false" turns the trojan inbound and its paths off
  *   SS               "false" turns the shadowsocks inbound off
  *   SS_KEY           shadowsocks master key, 64 hex characters
  *   SS_PATH          websocket path shadowsocks listens on (default /ss)
@@ -119,8 +112,6 @@ const FIRST_BYTE_TIMEOUT_MS = 6000;
 // CONNECT_TIMEOUT on top of another and the client's ping test died of old age
 // before the direct attempt - the one that always works - ever got its turn.
 const LADDER_BUDGET_MS = 20000;
-// 56 hex characters of sha224, then CRLF. The whole trojan preamble.
-const TROJAN_HEAD = 58;
 
 /**
  * Destinations that need the relay path.
@@ -207,12 +198,6 @@ export default {
         }
         return handleTunnel(request, cfg);
       }
-      // XHTTP stream-one: one POST carries the whole session. The request body
-      // is the client -> destination stream, the response body the reverse. No
-      // session state is needed, so it runs on the free plan.
-      if (request.method === "POST" && cfg.xhttpActive && isXhttpPath(new URL(request.url).pathname, cfg)) {
-        return handleXhttpStream(request, cfg);
-      }
       return await handleHttp(request, cfg);
     } catch (err) {
       return textResponse("bad request", 400);
@@ -237,23 +222,12 @@ function readConfig(env, request) {
   return {
     uuid,
     uuidBytes: uuidToBytes(uuid),
-    // Defaulting to the account uuid is deliberate: a panel built before this
-    // bundle existed has no TROJAN_PASSWORD bound, and it still has to start
-    // speaking trojan the moment it is re-uploaded, with no migration step.
-    trojanPassword: String(env.TROJAN_PASSWORD || env.TROJAN_PASS || uuid).trim(),
-    trojan: String(env.TROJAN || "true").toLowerCase() !== "false",
     // Shadowsocks needs its key; without one the inbound stays shut.
     ssKey,
     ssActive: ssOn && !!ssKey,
     ssPath: String(env.SS_PATH || "/ss"),
     ssMethod: String(env.SS_METHOD || "aes-256-gcm").trim() || "aes-256-gcm",
     ssPassword: String(env.SS_PASSWORD || "").trim(),
-    // Free transports. HTTPUpgrade is served by the same WebSocket code path
-    // (an httpupgrade client sends a plain Upgrade: websocket handshake), so
-    // only the link builders differ. XHTTP stream-one is its own inbound.
-    httpupgradeActive: String(env.HTTPUPGRADE || "true").toLowerCase() !== "false",
-    xhttpActive: String(env.XHTTP || "true").toLowerCase() !== "false",
-    xhttpPath: String(env.XHTTP_PATH || "").trim(),
     proxies,
     aiProxies,
     aiDomains: aiDomainList(env.AI_DOMAINS),
@@ -326,114 +300,6 @@ function uuidToBytes(uuid) {
   return out;
 }
 
-/* ------------------------------------------------------- trojan: sha224 */
-
-/**
- * SHA-224, by hand, because the trojan handshake is defined as exactly that and
- * WebCrypto on Workers does not implement it. SHA-224 is SHA-256 with a
- * different initial state and a truncated output. Memoised per password.
- */
-const K256 = new Uint32Array(
-  (
-    "428a2f98 71374491 b5c0fbcf e9b5dba5 3956c25b 59f111f1 923f82a4 ab1c5ed5 " +
-    "d807aa98 12835b01 243185be 550c7dc3 72be5d74 80deb1fe 9bdc06a7 c19bf174 " +
-    "e49b69c1 efbe4786 0fc19dc6 240ca1cc 2de92c6f 4a7484aa 5cb0a9dc 76f988da " +
-    "983e5152 a831c66d b00327c8 bf597fc7 c6e00bf3 d5a79147 06ca6351 14292967 " +
-    "27b70a85 2e1b2138 4d2c6dfc 53380d13 650a7354 766a0abb 81c2c92e 92722c85 " +
-    "a2bfe8a1 a81a664b c24b8b70 c76c51a3 d192e819 d6990624 f40e3585 106aa070 " +
-    "19a4c116 1e376c08 2748774c 34b0bcb5 391c0cb3 4ed8aa4a 5b9cca4f 682e6ff3 " +
-    "748f82ee 78a5636f 84c87814 8cc70208 90befffa a4506ceb bef9a3f7 c67178f2"
-  )
-    .split(" ")
-    .map((word) => parseInt(word, 16))
-);
-
-const SHA224_IV = new Uint32Array([
-  0xc1059ed8, 0x367cd507, 0x3070dd17, 0xf70e5939, 0xffc00b31, 0x68581511, 0x64f98fa7,
-  0xbefa4fa4
-]);
-
-const DIGESTS = new Map();
-
-function rotr(value, bits) {
-  return ((value >>> bits) | (value << (32 - bits))) >>> 0;
-}
-
-function sha224Hex(text) {
-  const message = ENCODER.encode(String(text));
-  const size = ((message.length + 9 + 63) >> 6) << 6;
-  const block = new Uint8Array(size);
-  block.set(message);
-  block[message.length] = 0x80;
-  const view = new DataView(block.buffer);
-  const bits = message.length * 8;
-  view.setUint32(size - 8, Math.floor(bits / 4294967296));
-  view.setUint32(size - 4, bits >>> 0);
-
-  const h = SHA224_IV.slice();
-  const w = new Uint32Array(64);
-
-  for (let offset = 0; offset < size; offset += 64) {
-    for (let i = 0; i < 16; i++) w[i] = view.getUint32(offset + i * 4);
-    for (let i = 16; i < 64; i++) {
-      const x = w[i - 15];
-      const y = w[i - 2];
-      const s0 = (rotr(x, 7) ^ rotr(x, 18) ^ (x >>> 3)) >>> 0;
-      const s1 = (rotr(y, 17) ^ rotr(y, 19) ^ (y >>> 10)) >>> 0;
-      w[i] = (w[i - 16] + s0 + w[i - 7] + s1) >>> 0;
-    }
-
-    let a = h[0];
-    let b = h[1];
-    let c = h[2];
-    let d = h[3];
-    let e = h[4];
-    let f = h[5];
-    let g = h[6];
-    let t = h[7];
-
-    for (let i = 0; i < 64; i++) {
-      const s1 = (rotr(e, 6) ^ rotr(e, 11) ^ rotr(e, 25)) >>> 0;
-      const ch = ((e & f) ^ (~e & g)) >>> 0;
-      const t1 = (t + s1 + ch + K256[i] + w[i]) >>> 0;
-      const s0 = (rotr(a, 2) ^ rotr(a, 13) ^ rotr(a, 22)) >>> 0;
-      const mj = ((a & b) ^ (a & c) ^ (b & c)) >>> 0;
-      const t2 = (s0 + mj) >>> 0;
-      t = g;
-      g = f;
-      f = e;
-      e = (d + t1) >>> 0;
-      d = c;
-      c = b;
-      b = a;
-      a = (t1 + t2) >>> 0;
-    }
-
-    h[0] = (h[0] + a) >>> 0;
-    h[1] = (h[1] + b) >>> 0;
-    h[2] = (h[2] + c) >>> 0;
-    h[3] = (h[3] + d) >>> 0;
-    h[4] = (h[4] + e) >>> 0;
-    h[5] = (h[5] + f) >>> 0;
-    h[6] = (h[6] + g) >>> 0;
-    h[7] = (h[7] + t) >>> 0;
-  }
-
-  let out = "";
-  for (let i = 0; i < 7; i++) out += h[i].toString(16).padStart(8, "0");
-  return out;
-}
-
-function trojanDigest(cfg) {
-  const key = cfg.trojanPassword || cfg.uuid;
-  let hit = DIGESTS.get(key);
-  if (!hit) {
-    hit = sha224Hex(key);
-    DIGESTS.set(key, hit);
-  }
-  return hit;
-}
-
 /* ------------------------------------------- shadowsocks: aead aes-256-gcm */
 
 /*
@@ -442,7 +308,7 @@ function trojanDigest(cfg) {
  * nonce   = 12 byte little-endian counter, advanced after every AEAD operation
  * chunks  cap at 0x3fff bytes
  * The first plaintext bytes are a SOCKS-shaped target address, parsed by the
- * same readSocksAddress the Trojan inbound uses.
+ * same readSocksAddress.
  */
 const SS_INFO = ENCODER.encode("ss-subkey");
 const SS_SALT_BYTES = 32;
@@ -663,9 +529,8 @@ function handleTunnel(request, cfg) {
     socket: null,
     write: null,
     header: null,
-    // Which protocol this session turned out to be, the bytes that have to be
-    // prepended to the first answer (VLESS wants two, trojan wants none), and
-    // whether the far end has said anything yet. That last flag is what decides
+    // The bytes that have to be prepended to the first answer (the VLESS
+    // response header), and whether the far end has said anything yet. That last flag is what decides
     // if a failover is still allowed.
     mode: "",
     prefix: null,
@@ -693,101 +558,6 @@ function handleTunnel(request, cfg) {
     .catch(() => shutdown(state));
 
   return new Response(null, { status: 101, webSocket: client });
-}
-
-/* ------------------------------------------------------- xhttp stream-one */
-
-function isXhttpPath(pathname, cfg) {
-  const clean = String(pathname || "").replace(/\/+$/, "") || "/";
-  if (cfg.xhttpPath) {
-    if (clean === cfg.xhttpPath) return true;
-    return clean === cfg.xhttpPath + "/" + cfg.uuid;
-  }
-  return clean === "/" + cfg.uuid;
-}
-
-/**
- * XHTTP in stream-one mode: a single POST whose request body carries the
- * client->destination bytes and whose response body carries the reverse.
- *
- * This is the one XHTTP mode a stateless edge runtime can serve: no session
- * store is needed, because the entire session lives in one request. The same
- * state machine that drives the WebSocket tunnel does the work here; only the
- * sink differs, so a small object with ``readyState``, ``send`` and ``close``
- * stands in for the WebSocket. VLESS, and - as with the WS path - Trojan on
- * top, are sniffed from the first bytes exactly as before.
- */
-function handleXhttpStream(request, cfg) {
-  const state = {
-    cfg,
-    socket: null,
-    write: null,
-    header: null,
-    mode: "",
-    prefix: null,
-    encode: null,
-    spoke: false,
-    done: false,
-    out: null,
-    // Stand-in for the WebSocket: pumpRemote sends through it, shutdown
-    // closes it. The VLESS response header rides on the first chunk like on
-    // a WS session, so the client sees an identical byte stream.
-    ws: {
-      readyState: WS_OPEN,
-      send(bytes) {
-        if (state.out) state.out.enqueue(toBytes(bytes));
-      },
-      close() {
-        if (state.out) {
-          try {
-            state.out.close();
-          } catch (err) {
-            /* already closed */
-          }
-          state.out = null;
-        }
-      }
-    }
-  };
-
-  const out = new ReadableStream({
-    start(controller) {
-      state.out = controller;
-    },
-    cancel() {
-      state.done = true;
-      closeSocket(state.socket);
-    }
-  });
-
-  request.body
-    .pipeTo(
-      new WritableStream({
-        async write(chunk) {
-          await onClientChunk(state, chunk);
-        },
-        close() {
-          shutdown(state);
-        },
-        abort() {
-          shutdown(state);
-        }
-      })
-    )
-    .catch(() => shutdown(state));
-
-  // The gRPC content type is deliberate: it keeps the request looking like
-  // ordinary HTTP/2 service traffic at the edge and changes nothing for the
-  // client, which only reads bytes.
-  return new Response(out, {
-    status: 200,
-    headers: {
-      "content-type": "application/grpc",
-      "x-accel-buffering": "no",
-      "cache-control": "no-store",
-      ...corsHeaders()
-    }
-  });
 }
 
 function wsReadable(ws, earlyHeader) {
@@ -843,20 +613,11 @@ function decodeEarlyData(header) {
 }
 
 /**
- * Which protocol is this? A trojan client opens with 56 hex characters and CRLF;
- * a VLESS client opens with a zero byte. "" means the answer needs more bytes.
+ * The tunnel speaks VLESS only. "" means the answer needs more bytes, and any
+ * byte at all is treated as the start of a VLESS header.
  */
 function sniff(bytes) {
-  const seen = Math.min(bytes.length, 56);
-  for (let i = 0; i < seen; i++) {
-    const c = bytes[i];
-    const hex =
-      (c >= 48 && c <= 57) || (c >= 97 && c <= 102) || (c >= 65 && c <= 70);
-    if (!hex) return "vless";
-  }
-  if (bytes.length < TROJAN_HEAD) return "";
-  if (bytes[56] === 13 && bytes[57] === 10) return "trojan";
-  return "vless";
+  return bytes.length ? "vless" : "";
 }
 
 async function onClientChunk(state, chunk) {
@@ -871,25 +632,16 @@ async function onClientChunk(state, chunk) {
 
   const mode = state.mode || sniff(state.header);
   if (!mode) return;
-  if (mode === "trojan" && !state.cfg.trojan) throw new Error("trojan is disabled");
   state.mode = mode;
 
-  const head =
-    mode === "trojan"
-      ? readTrojanHeader(state.header, state.cfg)
-      : readVlessHeader(state.header, state.cfg.uuidBytes);
+  const head = readVlessHeader(state.header, state.cfg.uuidBytes);
   if (head.partial) return;
   if (head.error) throw new Error(head.error);
   state.header = null;
-  // VLESS expects a two byte response header before the first payload byte;
-  // trojan expects the destination's bytes verbatim.
-  state.prefix = mode === "trojan" ? null : VLESS_RESPONSE;
+  // VLESS expects a two byte response header before the first payload byte.
+  state.prefix = VLESS_RESPONSE;
 
   if (head.isUdp) {
-    if (mode === "trojan") {
-      state.write = openTrojanUdp(state, head);
-      return;
-    }
     if (head.port !== 53) throw new Error("udp is limited to dns");
     state.write = openDns(state, head);
     return;
@@ -965,45 +717,7 @@ function readVlessHeader(raw, expected) {
   };
 }
 
-/**
- * Trojan request layout
- *   0..55    hex sha224 of the password
- *   56..57   CRLF
- *   +0       command  1 connect, 3 udp associate
- *   +1       address type  1 ipv4, 3 domain, 4 ipv6   (SOCKS5 numbering)
- *   ...      address, then port, then CRLF, then payload
- */
-function readTrojanHeader(raw, cfg) {
-  const bytes = toBytes(raw);
-  if (bytes.length < TROJAN_HEAD + 4) return { partial: true };
-
-  const given = DECODER.decode(bytes.slice(0, 56)).toLowerCase();
-  if (given !== trojanDigest(cfg)) return { error: "trojan auth failed" };
-
-  let cursor = TROJAN_HEAD;
-  const command = bytes[cursor++];
-  if (command !== 1 && command !== 3) {
-    return { error: "unsupported trojan command " + command };
-  }
-
-  const target = readSocksAddress(bytes, cursor);
-  if (target.partial) return { partial: true };
-  if (target.error) return { error: target.error };
-  cursor = target.cursor;
-
-  if (bytes.length < cursor + 2) return { partial: true };
-  cursor += 2; // the CRLF that closes the request
-
-  return {
-    isUdp: command === 3,
-    port: target.port,
-    address: target.address,
-    hostname: target.hostname,
-    payload: bytes.slice(cursor)
-  };
-}
-
-/** ATYP, address, big endian port. Shared by trojan, its UDP frames, and shadowsocks. */
+/** ATYP, address, big endian port. Used by the shadowsocks inbound. */
 function readSocksAddress(bytes, start) {
   let cursor = start;
   if (bytes.length < cursor + 1) return { partial: true };
@@ -1174,6 +888,7 @@ function splitHostPort(raw, defaultPort) {
  * answer and, for shadowsocks, the sealing of every answer.
  */
 function openTcp(state, head) {
+  const started = Date.now();
   const attempts = buildAttempts(state.cfg, head);
   const box = {
     writer: null,
@@ -1181,7 +896,6 @@ function openTcp(state, head) {
     bytes: head.payload.byteLength,
     replayable: true
   };
-  const started = Date.now();
 
   const attempt = async (index) => {
     if (state.done) return;
@@ -1313,107 +1027,6 @@ function openDns(state, head) {
       shutdown(state);
     }
   };
-}
-
-/**
- * Trojan UDP, for DNS and nothing else. A Worker has no UDP socket at all, so the
- * honest options are DNS through a TCP resolver or nothing.
- */
-function openTrojanUdp(state, head) {
-  const socket = connect({ hostname: state.cfg.dns, port: state.cfg.dnsPort });
-  state.socket = socket;
-  const writer = socket.writable.getWriter();
-  const queue = [];
-
-  const pump = async () => {
-    let buffer = new Uint8Array(0);
-    const reader = socket.readable.getReader();
-    try {
-      for (;;) {
-        const step = await reader.read();
-        if (step.done) break;
-        buffer = concat(buffer, toBytes(step.value));
-        while (buffer.byteLength >= 2) {
-          const size = (buffer[0] << 8) | buffer[1];
-          if (buffer.byteLength < size + 2) break;
-          const answer = buffer.slice(2, size + 2);
-          buffer = buffer.slice(size + 2);
-          if (state.ws.readyState !== WS_OPEN) return;
-          const target = queue.shift();
-          if (!target) continue;
-          state.spoke = true;
-          state.ws.send(trojanUdpFrame(target, answer));
-        }
-      }
-    } catch (err) {
-      /* resolver hung up: the caller shuts the session down */
-    }
-  };
-
-  pump()
-    .then(() => shutdown(state))
-    .catch(() => shutdown(state));
-
-  let pending = head.payload;
-
-  const feed = async (bytes) => {
-    pending = bytes.byteLength ? concat(pending, bytes) : pending;
-    for (;;) {
-      const frame = readTrojanUdpFrame(pending);
-      if (!frame) break;
-      pending = frame.rest;
-      if (frame.port !== 53) continue;
-      queue.push(frame.head);
-      await writer.write(lengthPrefixed(frame.payload));
-    }
-  };
-
-  feed(new Uint8Array(0)).catch(() => shutdown(state));
-
-  return async (chunk) => {
-    try {
-      await feed(toBytes(chunk));
-    } catch (err) {
-      shutdown(state);
-    }
-  };
-}
-
-/** One trojan UDP frame, or null when the rest of it has not arrived yet. */
-function readTrojanUdpFrame(bytes) {
-  if (bytes.byteLength < 7) return null;
-  const target = readSocksAddress(bytes, 0);
-  if (target.partial || target.error) return null;
-  const cursor = target.cursor;
-  if (bytes.byteLength < cursor + 4) return null;
-  const size = (bytes[cursor] << 8) | bytes[cursor + 1];
-  const start = cursor + 4; // length, then CRLF
-  if (bytes.byteLength < start + size) return null;
-  return {
-    head: bytes.slice(0, cursor),
-    port: target.port,
-    payload: bytes.slice(start, start + size),
-    rest: bytes.slice(start + size)
-  };
-}
-
-function trojanUdpFrame(head, payload) {
-  const out = new Uint8Array(head.byteLength + 4 + payload.byteLength);
-  out.set(head, 0);
-  out[head.byteLength] = (payload.byteLength >> 8) & 0xff;
-  out[head.byteLength + 1] = payload.byteLength & 0xff;
-  out[head.byteLength + 2] = 13;
-  out[head.byteLength + 3] = 10;
-  out.set(payload, head.byteLength + 4);
-  return out;
-}
-
-function lengthPrefixed(payload) {
-  const out = new Uint8Array(payload.byteLength + 2);
-  out[0] = (payload.byteLength >> 8) & 0xff;
-  out[1] = payload.byteLength & 0xff;
-  out.set(payload, 2);
-  return out;
 }
 
 /**
@@ -1628,9 +1241,6 @@ async function handleHttp(request, cfg) {
 
   if (kind === "health") {
     const protocols = ["vless"];
-    if (cfg.httpupgradeActive) protocols.push("httpupgrade");
-    if (cfg.xhttpActive) protocols.push("xhttp");
-    if (cfg.trojan) protocols.push("trojan");
     if (cfg.ssActive) protocols.push("shadowsocks");
     return jsonResponse({
       ok: true,
@@ -1646,10 +1256,7 @@ async function handleHttp(request, cfg) {
       ai_proxies: cfg.aiProxies.length,
       ai_domains: cfg.aiDomains.length,
       protocols,
-      trojan: cfg.trojan,
       shadowsocks: cfg.ssActive,
-      httpupgrade: cfg.httpupgradeActive,
-      xhttp: cfg.xhttpActive,
       ss_path: cfg.ssActive ? cfg.ssPath : null,
       tls_ports: cfg.tlsPorts,
       http_ports: cfg.httpPorts,
@@ -1682,22 +1289,10 @@ async function handleHttp(request, cfg) {
   }
 
   let links;
-  if (kind === "trojan") {
-    links = buildTrojanLinks(cfg, endpoints);
-  } else if (kind === "ss" || kind === "shadowsocks") {
+  if (kind === "ss" || kind === "shadowsocks") {
     links = buildSsLinks(cfg, endpoints);
-  } else if (kind === "httpup" || kind === "httpupgrade") {
-    links = buildHttpUpgradeLinks(cfg, endpoints);
-  } else if (kind === "xhttp") {
-    links = buildXhttpLinks(cfg, endpoints);
   } else if (kind === "mix" || kind === "all") {
-    links = [
-      ...buildLinks(cfg, endpoints),
-      ...buildHttpUpgradeLinks(cfg, endpoints),
-      ...buildXhttpLinks(cfg, endpoints),
-      ...buildTrojanLinks(cfg, endpoints),
-      ...buildSsLinks(cfg, endpoints)
-    ];
+    links = [...buildLinks(cfg, endpoints), ...buildSsLinks(cfg, endpoints)];
   } else {
     links = buildLinks(cfg, endpoints);
   }
@@ -1861,10 +1456,7 @@ function remark(cfg, endpoint, index, protocol) {
   let badge = secure ? "\u26a1" : "\ud83d\udfe1";
   if (endpoint.kind === "domain") badge = "\ud83c\udf00";
   if (endpoint.kind === "live") badge = "\ud83d\udd04";
-  if (protocol === "trojan") badge = endpoint.kind === "domain" ? "\ud83c\udf00" : "\ud83c\udfaf";
   if (protocol === "ss") badge = endpoint.kind === "domain" ? "\ud83c\udf00" : "\ud83d\udee1";
-  if (protocol === "httpup") badge = "\ud83d\udcf6";
-  if (protocol === "xhttp") badge = "\ud83d\ude80";
   const ping = endpoint.latency ? Math.round(Number(endpoint.latency)) + "ms" : "auto";
   const tail = secure ? "" : " | \ud83d\udd0c" + endpoint.port;
   const lock = secure && Number(endpoint.port) !== 443 ? " | \ud83d\udd12" + endpoint.port : "";
@@ -1919,121 +1511,6 @@ function buildLinks(cfg, endpoints) {
         label
     );
   });
-  return links;
-}
-
-/**
- * HTTPUpgrade links. The wire handshake is a plain Upgrade: websocket
- * request, so the same server code path serves both transports and only the
- * client side differs: no websocket framing after the handshake, which costs
- * a few percent less CPU on the phone and sometimes passes DPI shapes that
- * have learned to look for websocket framing.
- */
-function buildHttpUpgradeLinks(cfg, endpoints) {
-  if (!cfg.httpupgradeActive) return [];
-  const links = [];
-  endpoints.forEach((endpoint, position) => {
-    const secure = isTls(endpoint.port, cfg);
-    const params = new URLSearchParams({
-      encryption: "none",
-      security: secure ? "tls" : "none",
-      type: "httpupgrade",
-      host: cfg.host,
-      path: cfg.wsPath
-    });
-    if (secure) {
-      params.set("sni", cfg.host);
-      params.set("fp", "chrome");
-      params.set("alpn", "http/1.1");
-    }
-    const label = encodeURIComponent(remark(cfg, endpoint, position + 1, "httpup"));
-    links.push(
-      "vless://" +
-        cfg.uuid +
-        "@" +
-        endpoint.ip +
-        ":" +
-        endpoint.port +
-        "?" +
-        params.toString() +
-        "#" +
-        label
-    );
-  });
-  return links;
-}
-
-/**
- * XHTTP stream-one links, TLS endpoints only: the mode needs one full-duplex
- * HTTP/2 request, and plaintext HTTP/1.1 on port 80 cannot promise that. The
- * path carries the panel uuid; the VLESS uuid rides in the header as usual.
- */
-function buildXhttpLinks(cfg, endpoints) {
-  if (!cfg.xhttpActive) return [];
-  const links = [];
-  let index = 0;
-  const path = "/" + cfg.uuid;
-  for (const endpoint of endpoints) {
-    if (!isTls(endpoint.port, cfg)) continue;
-    index += 1;
-    const params = new URLSearchParams({
-      encryption: "none",
-      security: "tls",
-      type: "xhttp",
-      mode: "stream-one",
-      host: cfg.host,
-      path: path,
-      sni: cfg.host,
-      fp: "chrome"
-    });
-    const label = encodeURIComponent(remark(cfg, endpoint, index, "xhttp"));
-    links.push(
-      "vless://" +
-        cfg.uuid +
-        "@" +
-        endpoint.ip +
-        ":" +
-        endpoint.port +
-        "?" +
-        params.toString() +
-        "#" +
-        label
-    );
-  }
-  return links;
-}
-
-/** Trojan links, TLS endpoints only. */
-function buildTrojanLinks(cfg, endpoints) {
-  if (!cfg.trojan) return [];
-  const links = [];
-  let index = 0;
-  for (const endpoint of endpoints) {
-    if (!isTls(endpoint.port, cfg)) continue;
-    index += 1;
-    const params = new URLSearchParams({
-      security: "tls",
-      type: "ws",
-      host: cfg.host,
-      path: cfg.wsPath,
-      sni: cfg.host,
-      fp: "chrome",
-      alpn: "http/1.1"
-    });
-    const label = encodeURIComponent(remark(cfg, endpoint, index, "trojan"));
-    links.push(
-      "trojan://" +
-        encodeURIComponent(cfg.trojanPassword) +
-        "@" +
-        endpoint.ip +
-        ":" +
-        endpoint.port +
-        "?" +
-        params.toString() +
-        "#" +
-        label
-    );
-  }
   return links;
 }
 
@@ -2094,33 +1571,6 @@ function buildClash(cfg, endpoints) {
     proxies.push(lines.join("\n"));
   });
 
-  if (cfg.trojan) {
-    let index = 0;
-    for (const endpoint of endpoints) {
-      if (!isTls(endpoint.port, cfg)) continue;
-      index += 1;
-      const name = remark(cfg, endpoint, index, "trojan").replace(/"/g, "'");
-      names.push('      - "' + name + '"');
-      proxies.push(
-        [
-          '  - name: "' + name + '"',
-          "    type: trojan",
-          "    server: " + endpoint.ip,
-          "    port: " + endpoint.port,
-          "    password: " + cfg.trojanPassword,
-          "    udp: true",
-          "    sni: " + cfg.host,
-          "    client-fingerprint: chrome",
-          "    network: ws",
-          "    ws-opts:",
-          '      path: "' + cfg.wsPath + '"',
-          "      headers:",
-          "        Host: " + cfg.host
-        ].join("\n")
-      );
-    }
-  }
-
   return [
     "# " + cfg.brand + " - built on your own Cloudflare account",
     "mixed-port: 7890",
@@ -2169,32 +1619,6 @@ function buildSingbox(cfg, endpoints) {
     }
     return item;
   });
-
-  if (cfg.trojan) {
-    let index = 0;
-    for (const endpoint of endpoints) {
-      if (!isTls(endpoint.port, cfg)) continue;
-      index += 1;
-      outbounds.push({
-        type: "trojan",
-        tag: remark(cfg, endpoint, index, "trojan"),
-        server: endpoint.ip,
-        server_port: Number(endpoint.port),
-        password: cfg.trojanPassword,
-        tls: {
-          enabled: true,
-          server_name: cfg.host,
-          utls: { enabled: true, fingerprint: "chrome" }
-        },
-        transport: {
-          type: "ws",
-          path: cfg.wsPath,
-          headers: { Host: cfg.host },
-          early_data_header_name: "Sec-WebSocket-Protocol"
-        }
-      });
-    }
-  }
 
   return { outbounds };
 }

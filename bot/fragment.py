@@ -32,7 +32,6 @@ from __future__ import annotations
 import json
 from typing import Optional
 
-from . import trojan as trojan_mod
 from .config import settings
 from .vless import WS_PATH, is_tls
 
@@ -83,12 +82,6 @@ def _vless_outbound(uuid: str, host: str, endpoint: dict, tag: str, dialer: str)
     }
 
 
-def _trojan_outbound(uuid: str, host: str, endpoint: dict, tag: str, dialer: str) -> dict:
-    item = trojan_mod.outbound(uuid, host, endpoint, tag)
-    item["streamSettings"]["sockopt"] = _sockopt(dialer)
-    return item
-
-
 def _dialer(endpoint: dict) -> str:
     return "fragment" if is_tls(int(endpoint["port"])) else "fragment-raw"
 
@@ -97,7 +90,6 @@ def outbounds(
     uuid: str,
     host: str,
     endpoints: list[dict],
-    with_trojan: bool = True,
 ) -> list[dict]:
     """Every config the user holds, as fragmented Xray outbounds.
 
@@ -105,18 +97,10 @@ def outbounds(
     exact tag; the rest are ``proxy-2`` upwards, which is also the prefix the
     observatory and the balancer select on.
     """
-    rows: list[tuple[str, dict]] = [("vless", endpoint) for endpoint in endpoints]
-    if with_trojan:
-        rows += [("trojan", endpoint) for endpoint in trojan_mod.usable(endpoints)]
-
     out: list[dict] = []
-    for index, (kind, endpoint) in enumerate(rows, start=1):
+    for index, endpoint in enumerate(endpoints, start=1):
         tag = "proxy" if index == 1 else f"proxy-{index}"
-        dialer = _dialer(endpoint)
-        if kind == "trojan":
-            out.append(_trojan_outbound(uuid, host, endpoint, tag, dialer))
-        else:
-            out.append(_vless_outbound(uuid, host, endpoint, tag, dialer))
+        out.append(_vless_outbound(uuid, host, endpoint, tag, _dialer(endpoint)))
     return out
 
 
@@ -125,7 +109,6 @@ def xray_config(
     host: str,
     endpoints: list[dict],
     brand: str = "",
-    with_trojan: bool = True,
     dns: Optional[list[str]] = None,
     chain_hops: Optional[list[str]] = None,
 ) -> str:
@@ -136,7 +119,7 @@ def xray_config(
     connection rides the chain - real multi-hop, not a second list.
     """
     brand = brand or settings.brand
-    proxies = outbounds(uuid, host, endpoints, with_trojan)
+    proxies = outbounds(uuid, host, endpoints)
     chain_outbounds: list[dict] = []
     if chain_hops:
         from . import chain as chainmod

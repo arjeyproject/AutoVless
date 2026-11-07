@@ -186,46 +186,6 @@ async def _wait_deployment(
     log.info("pages deployment for %s is live (waited %ss)", project, waited)
 
 
-async def attach_domain(cf: CloudflareClient, account_id: str, project: str) -> str:
-    """Attach ``<label>.<zone>`` to the Pages project. ``""`` when impossible.
-
-    Attaching the domain alone was never enough: the Pages domains API accepts
-    the hostname and then waits for a DNS record that nobody created, so the
-    domain sat "pending" forever and every build logged "custom domain never
-    answered". The zone lives in the same account and the operator's token
-    carries DNS edit, so the CNAME is created here, right after the attach -
-    pointing at the project's pages.dev host, proxied, which is what Cloudflare
-    needs to finish the certificate.
-    """
-    from . import edge
-
-    if not edge.enabled():
-        return ""
-    try:
-        zone = await edge.pick_zone(cf, account_id)
-    except CloudflareError as error:
-        log.info("zone lookup failed for %s: %s", account_id, error.message)
-        return ""
-    if not zone:
-        log.info("account %s has no active zone; panel stays on pages.dev", account_id)
-        return ""
-
-    hostname = f"{edge.label_for(project)}.{str(zone['name']).lower()}"
-    try:
-        await cf.attach_pages_domain(account_id, project, hostname)
-        await cf.upsert_zone_cname(
-            str(zone["id"]),
-            hostname,
-            host_for(project),
-            proxied=True,
-        )
-    except CloudflareError as error:
-        log.warning("could not attach %s to project %s: %s", hostname, project, error.message)
-        return ""
-    log.info("attached pages domain %s -> %s", hostname, project)
-    return hostname
-
-
 async def destroy(token: str, account_id: str, project: str) -> None:
     try:
         async with CloudflareClient(token) as cf:
@@ -264,9 +224,6 @@ def link_overview(uuid: str, host: str) -> dict[str, str]:
     """The subscription URLs a Pages panel serves, named for the UI."""
     return {
         "vless": vless.sub_url(uuid, host),
-        "httpupgrade": vless.sub_url(uuid, host, "httpup"),
-        "xhttp": vless.sub_url(uuid, host, "xhttp"),
-        "trojan": vless.sub_url(uuid, host, "trojan"),
         "ss": vless.sub_url(uuid, host, "ss"),
         "mix": vless.sub_url(uuid, host, "mix"),
         "clash": vless.sub_url(uuid, host, "clash"),
@@ -278,7 +235,6 @@ __all__ = [
     "PagesError",
     "PAGES_SUFFIX",
     "WORKER_BUNDLE",
-    "attach_domain",
     "bindings",
     "destroy",
     "host_for",

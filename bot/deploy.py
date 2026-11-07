@@ -5,25 +5,23 @@ The whole build is six steps, each reported back to the user:
   1. verify the token and resolve the account
   2. make sure a workers.dev subdomain exists
   3. pick clean entry points and relays
-  4. upload the worker, expose it, and attach the user's own domain
+  4. upload the worker and expose it
   5. prove the tunnel is alive before calling it ready
   6. accept only the endpoints that answer a real WebSocket upgrade
 
 The front door
 --------------
-The hostname a panel ships with is the single biggest factor in whether its
-configs ping in Iran. ``workers.dev`` as SNI is filtered there, so a panel whose
-configs carry it is dead on arrival no matter how clean the entry IPs are, and
-the acceptance check below cannot see that because it runs from this server.
-So when the user's Cloudflare account holds any active zone, the worker is
-attached to ``<label>.<zone>`` (see ``bot.edge``) and that is the hostname every
-config carries. workers.dev is kept only as the fallback for an account with no
-domain, or a domain that never answers.
+The hostname a panel ships with is always Cloudflare's own: ``<project>.
+pages.dev`` for Pages deployments, ``<script>.<subdomain>.workers.dev`` when
+Pages is blocked and the classic Workers target takes over. The operator's own
+domain is never attached to a panel and never written into a config - it is
+reserved for the payment gateway. Every config connects to a clean Cloudflare
+entry IP and carries the Cloudflare host only as SNI/Host, with the worker's
+Proxy Chain (one pinned relay per panel) behind it.
 
-``refresh`` does steps 3 to 6 only, and also moves a workers.dev panel onto a
-domain the moment one shows up on the account. Same script name, same uuid, so
-the gateway subscription link never changes while the hostname and addresses
-under it do.
+``refresh`` does steps 3 to 6 only, and also moves a panel stored on a custom
+domain (an old build) back onto its Cloudflare host. Same script name, same
+uuid, so the subscription link never changes while the addresses under it do.
 
 One binding here is deliberately *not* chosen for speed. ``AI_PROXY_IP`` is the
 relay every AI destination exits through, and the entire point of it is that the
@@ -43,7 +41,7 @@ from typing import Awaitable, Callable, Optional
 
 import httpx
 
-from . import aipin, db, edge, pages, proxies, shadowsocks, vless
+from . import aipin, db, pages, proxies, shadowsocks, vless
 from .cloudflare import CloudflareClient, CloudflareError, script_name
 from .config import settings
 from .probe import measure
@@ -226,8 +224,6 @@ def _bindings(
         "HTTP_COUNT": str(settings.http_config_count),
         "DNS_SERVER": settings.dns_server,
         "FALLBACK_HOST": settings.fallback_host,
-        "HTTPUPGRADE": "true" if settings.httpupgrade else "false",
-        "XHTTP": "true" if settings.xhttp else "false",
         "BUILD_ID": str(int(time.time())),
         **shadowsocks.bindings(uuid),
     }
@@ -440,25 +436,6 @@ async def _record_host(uuid: str, host: str) -> None:
         log.warning("could not record the new host %s for %s", host, uuid, exc_info=True)
 
 
-async def _move_to_domain(token: str, account_id: str, script: str, uuid: str, target: str) -> str:
-    """Attach a custom domain to a live panel. ``""`` if none."""
-    try:
-        async with CloudflareClient(token) as cf:
-            if target == "pages":
-                hostname = await pages.attach_domain(cf, account_id, script)
-            else:
-                hostname = await edge.attach(cf, account_id, script)
-    except CloudflareError as error:
-        log.info("custom domain move skipped for %s: %s", script, error.message)
-        return ""
-    if not hostname:
-        return ""
-    if not await _published(hostname, uuid, attempts=6):
-        log.warning("custom domain %s attached but not answering yet", hostname)
-        return ""
-    return hostname
-
-
 # --------------------------------------------------------------------- #
 # build
 # --------------------------------------------------------------------- #
@@ -526,7 +503,6 @@ async def _build_impl(
     started = time.perf_counter()
     reuse = reuse or {}
     code = _read_worker()
-    custom = ""
     target = (target or settings.deploy_target).lower()
 
     await _announce(progress, 0)
@@ -589,8 +565,6 @@ async def _build_impl(
                     if not subdomain:
                         raise DeployError(error.message) from error
                     dev_host = f"{script}.{subdomain}.workers.dev"
-                else:
-                    custom = await pages.attach_domain(cf, account_id, project)
             if target == "workers":
                 await cf.upload_script(
                     account_id,
@@ -599,11 +573,6 @@ async def _build_impl(
                     _bindings(panel_uuid, dev_host, endpoints, relays, ai_relays, chain_relays),
                 )
                 await cf.enable_workers_dev(account_id, script)
-                # The script has to exist before a domain can point at it, and
-                # the deterministic label may still sit on a dead Pages
-                # project from an earlier build - free it first.
-                await _free_pages_hostname(cf, account_id, script)
-                custom = await edge.attach(cf, account_id, script)
     except CloudflareError as error:
         network_task.cancel()
         raise DeployError(error.message) from error
@@ -613,35 +582,16 @@ async def _build_impl(
         raise
 
     await _announce(progress, 4)
-    # Race both front doors at once: whichever answers first wins. The pages
-    # deployment went live inside push() (push waits for it), so the dev host
-    # answers within seconds; the custom domain needs its certificate issued,
-    # which is worth a real wait when DNS exists - the custom domain is the
-    # one front door Iranian networks can resolve, pages.dev they cannot.
-    if custom:
-        custom_ok, dev_ok = await asyncio.gather(
-            _published(custom, panel_uuid, attempts=8),
-            _published(dev_host, panel_uuid, attempts=4),
+    # The pages deployment went live inside push() (push waits for it), so the
+    # Cloudflare host answers within seconds. The publish gate stays: a
+    # deployment that went "live" without a working worker used to be saved as
+    # a panel row with healthy=0 and a front door that answered nothing, and
+    # the user read the resulting empty subscription as "no sub link works".
+    if not await _published(dev_host, panel_uuid, attempts=10):
+        raise DeployError(
+            f"the panel was deployed but {dev_host} never answered"
         )
-        if custom_ok:
-            host = custom
-        elif dev_ok:
-            log.warning("custom domain %s never answered, falling back to %s", custom, dev_host)
-            host = dev_host
-        else:
-            raise DeployError(
-                f"the panel was deployed but neither {custom} nor {dev_host} answered"
-            )
-    else:
-        # No custom domain is no reason to skip the publish gate: a deployment
-        # that went "live" without a working worker used to be saved as a panel
-        # row with healthy=0 and a front door that answered nothing, and the
-        # user read the resulting empty subscription as "no sub link works".
-        if not await _published(dev_host, panel_uuid, attempts=10):
-            raise DeployError(
-                f"the panel was deployed but {dev_host} never answered"
-            )
-        host = dev_host
+    host = dev_host
 
     healthy, report = await _probe(host, panel_uuid)
     if report:
@@ -663,9 +613,9 @@ async def _build_impl(
             "nothing was saved - check the clean-IP pool and try again"
         )
     await _remember_reference(host)
-    if rejected or host != dev_host:
+    if rejected:
         # The bundle serves its own subscription from ENDPOINTS and SUB_HOST, so
-        # the healed list and the final hostname have to go back up.
+        # the healed list has to go back up once, only when something was healed.
         try:
             if target == "pages":
                 await pages.push(
@@ -702,10 +652,9 @@ async def _build_impl(
     await _record_chain_pin(panel_uuid, chain_relays, chain_country)
     build_ms = int((time.perf_counter() - started) * 1000)
     log.info(
-        "panel built target=%s host=%s custom=%s endpoints=%s rejected=%s relays=%s ai=%s(%s) chain=%s(%s) healthy=%s in %sms",
+        "panel built target=%s host=%s endpoints=%s rejected=%s relays=%s ai=%s(%s) chain=%s(%s) healthy=%s in %sms",
         target,
         host,
-        host != dev_host,
         len(endpoints),
         len(rejected),
         len(relays),
@@ -732,7 +681,7 @@ async def _build_impl(
         healthy=healthy,
         probe=report,
         rejected=len(rejected),
-        custom_domain=host != dev_host,
+        custom_domain=False,
         target=target,
     )
 
@@ -776,8 +725,9 @@ async def _free_pages_hostname(cf: CloudflareClient, account_id: str, script: st
 async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     """Re-point an existing panel at fresh entry addresses.
 
-    Same account, same script, same uuid: only the endpoint list, the relay
-    chain and - once, if the account has a domain - the front door change.
+    Same account, same script, same uuid: only the endpoint list and the relay
+    chain change, and a panel stored on a custom domain (an old build) moves
+    back onto its Cloudflare host.
     """
     token = panel.get("token")
     if not token:
@@ -793,35 +743,11 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
 
     if target == "pages":
         project = pages.project_name(script)
-    if edge.enabled() and (edge.is_dev_host(host) or pages.is_pages_host(host)):
-        moved = await _move_to_domain(str(token), account_id, script, panel_uuid, target)
-        if moved:
-            log.info("panel %s moved from %s to %s", panel_uuid, host, moved)
-            host = moved
+        # The operator's domain stays out of the configs: a panel stored on a
+        # custom domain (an old build) goes back onto its pages.dev host.
+        if not pages.is_pages_host(host):
+            host = pages.host_for(project)
             await _record_host(panel_uuid, host)
-
-    if not await _published(host, panel_uuid, attempts=2):
-        # A custom domain whose Pages binding went missing (an interrupted
-        # build, another deploy racing it) answers 522 forever while the very
-        # same project stays healthy on its pages.dev host. Re-attaching the
-        # domain is idempotent and costs one API call - cheaper than
-        # misreading a lost binding as a dead panel and reviving onto the
-        # wrong front door.
-        if not (edge.is_dev_host(host) or pages.is_pages_host(host)):
-            try:
-                async with CloudflareClient(str(token)) as cf:
-                    if target == "pages":
-                        repaired = await pages.attach_domain(cf, account_id, pages.project_name(script))
-                    else:
-                        repaired = await edge.attach(cf, account_id, script)
-            except CloudflareError as error:
-                log.info("domain repair skipped for %s: %s", host, error.message)
-                repaired = ""
-            if repaired and repaired != host:
-                host = repaired
-                await _record_host(panel_uuid, host)
-            if repaired and await _published(host, panel_uuid, attempts=2):
-                log.info("panel %s front door %s repaired by re-attach", panel_uuid, host)
 
     if not await _published(host, panel_uuid, attempts=2):
         # A front door that answers nothing used to kill the whole refresh:
@@ -873,11 +799,9 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
                 await _free_pages_hostname(cf, account_id, script)
                 await cf.upload_script(account_id, script, code, revival_vars)
                 await cf.enable_workers_dev(account_id, script)
-                custom = await edge.attach(cf, account_id, script)
             target = "workers"
             await _record_target(panel_uuid, target)
-            dev_host = f"{script}.{subdomain}.workers.dev"
-            host = custom if (custom and await _published(custom, panel_uuid, attempts=3)) else dev_host
+            host = f"{script}.{subdomain}.workers.dev"
             if host != str(panel.get("host")):
                 await _record_host(panel_uuid, host)
 
@@ -904,28 +828,16 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
             raise DeployError(getattr(error, "message", str(error))) from error
         # The account's Pages capability was flagged by abuse review; the
         # very same worker still runs fine on the classic Workers target.
-        # Move the panel over instead of dying: same script, same uuid, and
-        # the deterministic custom hostname moves with it.
+        # Move the panel over instead of dying: same script, same uuid.
         log.warning("pages is blocked for %s (%s); falling back to the workers target", script, message)
         async with CloudflareClient(str(token)) as cf:
             subdomain = await cf.ensure_subdomain(account_id)
             await _free_pages_hostname(cf, account_id, script)
             await cf.upload_script(account_id, script, code, final_vars)
             await cf.enable_workers_dev(account_id, script)
-            custom = await edge.attach(cf, account_id, script)
         target = "workers"
         await _record_target(panel_uuid, target)
-        dev_host = f"{script}.{subdomain}.workers.dev"
-        custom_ok = bool(custom) and await _published(custom, panel_uuid, attempts=4)
-        dev_ok = await _published(dev_host, panel_uuid, attempts=3)
-        if custom_ok:
-            host = custom
-        elif dev_ok:
-            host = dev_host
-        else:
-            raise DeployError(
-                f"the panel moved to the workers target but neither {custom} nor {dev_host} answered"
-            )
+        host = f"{script}.{subdomain}.workers.dev"
         if host != str(panel.get("host")):
             await _record_host(panel_uuid, host)
             # SUB_HOST rides in the bundle's env: re-upload once with the
@@ -938,30 +850,11 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
             except CloudflareError as retry_error:
                 log.warning("could not re-bind SUB_HOST after the target move: %s", retry_error)
         if not await _published(host, panel_uuid, attempts=2):
-            # The workers fallback found no working front door - which, on an
-            # account whose Pages writes AND workers executions are both
-            # flagged, is the rule rather than the exception. Put the custom
-            # hostname back on the (still serving) pages project and fail
-            # with the truth instead of leaving the domain on a dead worker.
-            log.warning("workers fallback produced no live host for %s; restoring pages bindings", script)
-            try:
-                async with CloudflareClient(str(token)) as cf:
-                    # No deployment here - a blocked project cannot take one.
-                    # Re-attaching the hostname is enough: the project's last
-                    # healthy deployment is still serving.
-                    await cf.attach_pages_domain(account_id, project, host)
-            except (CloudflareError, pages.PagesError) as attach_error:
-                log.warning("pages re-attach during restore failed: %s", attach_error)
-            await _record_target(panel_uuid, "pages")
-            restored = str(panel.get("host"))
-            if restored and await _published(restored, panel_uuid, attempts=2):
-                await _record_host(panel_uuid, restored)
-                host = restored
             raise DeployError(
                 "cloudflare has flagged this account (pages writes blocked, workers not executing). "
-                "the panel keeps serving from its last healthy pages deployment but nothing can be "
-                "re-deployed until cloudflare clears the review - email abusereply@cloudflare.com "
-                f"or use a different account. original error: {message}"
+                "nothing can be re-deployed until cloudflare clears the review - email "
+                "abusereply@cloudflare.com or use a different account. "
+                f"original error: {message}"
             )
 
     healthy, report = await _probe(host, panel_uuid)
@@ -987,7 +880,7 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
         healthy=healthy,
         probe=report,
         rejected=len(rejected),
-        custom_domain=not (edge.is_dev_host(host) or pages.is_pages_host(host)),
+        custom_domain=False,
         target=target,
     )
 
