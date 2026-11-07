@@ -127,7 +127,7 @@ def outbound_from_params(params: dict, tag: str) -> dict:
         return {"tag": tag, "protocol": "http", "settings": {"servers": [server]}}
 
     if scheme == "ss":
-        return {
+        out = {
             "tag": tag,
             "protocol": "shadowsocks",
             "settings": {
@@ -139,6 +139,17 @@ def outbound_from_params(params: dict, tag: str) -> dict:
                 }]
             },
         }
+        # v2ray-plugin rides SIP003: the core dials the websocket itself via
+        # plugin options, streamSettings would only describe a bare TCP dial.
+        if str(params.get("transport") or "tcp") == "ws":
+            host_header = str(params.get("host_header") or params["host"])
+            opts: dict[str, Any] = {"mode": "websocket", "host": host_header, "path": str(params.get("path") or "/ss")}
+            if str(params.get("security") or "") == "tls":
+                opts["tls"] = True
+                opts["serverName"] = str(params.get("sni") or host_header)
+            out["settings"]["servers"][0]["plugin"] = "v2ray-plugin"
+            out["settings"]["servers"][0]["pluginOpts"] = opts
+        return out
 
     if scheme == "vmess":
         stream = _tls_stream(params, transport if transport in ("ws", "httpupgrade", "grpc", "tcp") else "tcp")

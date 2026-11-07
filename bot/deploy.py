@@ -826,6 +826,21 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
         message = getattr(error, "message", str(error))
         if not (target == "pages" and _is_block_error(message)):
             raise DeployError(getattr(error, "message", str(error))) from error
+        # Pages writes are blocked by abuse review - but if the deployment
+        # still serves, moving the panel to the workers target would trade a
+        # live front door for a dead one. Keep the row as it is and say the
+        # truth instead.
+        if await _published(host, panel_uuid, attempts=2):
+            log.warning(
+                "pages writes blocked for %s but %s still serves; keeping the panel where it is",
+                script,
+                host,
+            )
+            raise DeployError(
+                "cloudflare blocked new Pages deployments for this account, but the "
+                f"panel still serves from {host}; contact abusereply@cloudflare.com "
+                f"or use a different account. original error: {message}"
+            )
         # The account's Pages capability was flagged by abuse review; the
         # very same worker still runs fine on the classic Workers target.
         # Move the panel over instead of dying: same script, same uuid.
