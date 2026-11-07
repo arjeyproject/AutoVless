@@ -293,14 +293,27 @@ class CloudflareClient:
                 for name, value in variables.items()
             ],
         }
-        files = {
-            "metadata": (None, json.dumps(metadata), "application/json"),
-            "worker.js": ("worker.js", code.encode("utf-8"), "application/javascript+module"),
-        }
+        # The multipart body is serialised by hand, exactly the way undici
+        # does, instead of being left to httpx's ``files=`` helper. The
+        # helper's shape made the Workers API store the ENTIRE multipart
+        # envelope as the module content - the worker then failed to parse
+        # and answered 1101 on every path while the API happily reported a
+        # successful deployment and the bindings looked perfect in settings.
+        # The Pages deployment path needed the same hand-built body for the
+        # same reason.
+        boundary = f"----formdata-undici-{secrets.token_hex(12)}"
+        body = self._undici_multipart(
+            [
+                ("metadata", None, json.dumps(metadata).encode("utf-8"), "application/json"),
+                ("worker.js", "worker.js", code.encode("utf-8"), "application/javascript+module"),
+            ],
+            boundary,
+        )
         result = await self._call(
             "PUT",
             f"/accounts/{account_id}/workers/scripts/{script_name}",
-            files=files,
+            content=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
         return result or {}
 
