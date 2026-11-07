@@ -380,27 +380,49 @@ class CloudflareClient:
     ) -> dict:
         """One deployment of an advanced-mode (``_worker.js``) Pages project.
 
-        The multipart body mirrors undici's FormData (what wrangler sends)
-        byte for byte, because the platform's parser is exact about the shape:
+        The multipart body is assembled BY HAND here, byte for byte the way
+        undici's FormData (what wrangler sends) serialises it, because the
+        platform's parser is exact about the shape and every generic client
+        encoding has been rejected at least once:
 
-        - ``manifest`` and ``branch`` ride as plain form fields WITHOUT a
-          ``Content-Type`` header. The manifest part used to carry
-          ``Content-Type: application/json`` and that alone was accepted while
-          the request had no bundle part - but the moment ``_worker.bundle``
-          joined, the same header got the whole call rejected with "Request
-          body is incorrect" (2026-11-07). Plain fields stay plain.
-        - the worker module rides as the ``_worker.bundle`` file part - the
-          only shape the platform executes. A ``_worker.js`` entry in the
-          asset manifest is SERVED STATICALLY instead of run, which is what
-          the "deployed but never answers" builds were doing.
-        - a pure advanced-mode project has no static assets, so the manifest
-          is the empty object - exactly what wrangler sends for one.
+        - ``manifest`` and ``branch`` ride as plain form fields with NO
+          ``Content-Type`` header on their parts. A manifest part carrying
+          ``Content-Type: application/json`` was accepted while the request had
+          no bundle part, and rejected the moment it did (2026-11-07).
+        - the worker module rides as the ``_worker.bundle`` FILE part with NO
+          ``Content-Type`` header either - ``new File([x], "_worker.bundle")``
+          in wrangler has an empty type, and undici omits the header when the
+          type is empty. httpx always stamps a Content-Type on file parts
+          (``application/octet-stream``), and BOTH that and the typed variant
+          were rejected with "Request body is incorrect" - so the header has to
+          simply not be there.
+        - field order follows wrangler: manifest, branch, then the bundle.
+        - a ``_worker.js`` entry in the asset manifest would be SERVED
+          STATICALLY instead of run, which is what the "deployed but never
+          answers" builds were doing; the bundle field is the only shape the
+          platform executes.
         """
+        boundary = f"----autovless-{secrets.token_hex(16)}"
+        head = (
+            f'--{boundary}\r\n'
+            'Content-Disposition: form-data; name="manifest"\r\n'
+            '\r\n'
+            '{}\r\n'
+            f'--{boundary}\r\n'
+            'Content-Disposition: form-data; name="branch"\r\n'
+            '\r\n'
+            'main\r\n'
+            f'--{boundary}\r\n'
+            'Content-Disposition: form-data; name="_worker.bundle"; filename="_worker.bundle"\r\n'
+            '\r\n'
+        ).encode("utf-8")
+        tail = f"\r\n--{boundary}--\r\n".encode("utf-8")
+        body = head + code + tail
         result = await self._call(
             "POST",
             f"/accounts/{account_id}/pages/projects/{project}/deployments",
-            data={"manifest": "{}", "branch": "main"},
-            files={"_worker.bundle": ("_worker.bundle", code)},
+            content=body,
+            headers={"Content-Type": f"multipart/form-data; boundary={boundary}"},
         )
         return result or {}
 

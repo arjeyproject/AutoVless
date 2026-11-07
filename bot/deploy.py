@@ -595,6 +595,18 @@ async def build(
                     )
         except (CloudflareError, pages.PagesError) as error:
             log.warning("could not re-upload the final bindings: %s", error)
+        else:
+            # The re-upload itself must not be able to kill the panel silently:
+            # a build once verified everything against upload #1, shipped a
+            # second upload, and the account stopped executing the script
+            # minutes later while the row already said healthy=1. Prove the
+            # final state answers before the result is trusted.
+            if not await _published(host, panel_uuid, attempts=4):
+                raise DeployError(
+                    f"the panel stopped answering right after the final upload ({host}); "
+                    "the Cloudflare account may be rate limited or flagged - try again "
+                    "later or use a different account"
+                )
 
     await _record_pin(panel_uuid, ai_relays, ai_country)
     await _record_chain_pin(panel_uuid, chain_relays, chain_country)

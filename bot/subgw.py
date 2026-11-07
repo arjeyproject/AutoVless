@@ -184,18 +184,23 @@ def render(panel: dict, fmt: str = "sub") -> tuple[str, str, str]:
         body = "\n".join(trojan.build_links(uuid, host, endpoints, brand))
     elif fmt == "ss":
         body = "\n".join(shadowsocks.build_links(uuid, host, endpoints, brand))
+    elif fmt == "vless":
+        # plain VLESS-over-WebSocket only, for clients that choke on the rest
+        body = "\n".join(vless.build_links(uuid, host, endpoints, brand))
     elif fmt == "httpup" or fmt == "httpupgrade":
         body = "\n".join(vless.build_links(uuid, host, endpoints, brand, "httpupgrade"))
     elif fmt == "xhttp":
         body = "\n".join(vless.build_links(uuid, host, endpoints, brand, "xhttp"))
-    elif fmt in {"mix", "all"}:
+    else:
+        # sub / raw / mix / all: the default a client imports is the FULL menu.
+        # The old default shipped VLESS-over-ws alone, which read as "xhttp and
+        # httpupgrade are missing" - every free transport and every protocol
+        # rides in one import now: vless ws + httpupgrade + xhttp, trojan, ss.
         rows = vless.all_links(uuid, host, endpoints, brand)
         rows += trojan.build_links(uuid, host, endpoints, brand)
         if shadowsocks.enabled():
             rows += shadowsocks.build_links(uuid, host, endpoints, brand)
         body = "\n".join(rows)
-    else:
-        body = "\n".join(vless.build_links(uuid, host, endpoints, brand))
 
     if fmt == "raw":
         return body, plain, "autovless.txt"

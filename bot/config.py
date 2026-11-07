@@ -82,7 +82,7 @@ class Settings:
     tls_ports: tuple[int, ...]; http_ports: tuple[int, ...]; tls_config_count: int; http_config_count: int
     scan_interval: int; scan_batch: int; scan_concurrency: int; scan_timeout: float
     verify_top: int; verify_probes: int; scan_rounds: int; scan_waves: int; scan_min_verified: int
-    verify_ws: bool; verify_host: str; accept_timeout: float; accept_retries: int
+    verify_ws: bool; verify_host: str; verify_sweep_ws: bool; accept_timeout: float; accept_retries: int
     scan_ttl: int; stale_factor: int; sweep_per_subnet: int; pool_size: int; pool_target: int
     clean_ip_sources: tuple[str, ...]; clean_ip_files: tuple[str, ...]; clean_domains: tuple[str, ...]
     source_ttl: int; source_retry: int; seed_limit: int; max_fails: int
@@ -138,6 +138,7 @@ def load_settings() -> Settings:
         # newest live panel is used and a cold pool falls back to the weaker
         # trace check until the first panel exists.
         verify_ws=_bool("VERIFY_WS", True), verify_host=_str("VERIFY_HOST").lower(),
+        verify_sweep_ws=_bool("VERIFY_SWEEP_WS", False),
         accept_timeout=max(2.0, _int("ACCEPT_TIMEOUT_MS", 8000) / 1000), accept_retries=max(0, min(4, _int("ACCEPT_RETRIES", 2))),
         scan_ttl=max(300, _int("SCAN_TTL", 3600)), stale_factor=max(2, _int("STALE_FACTOR", 8)), sweep_per_subnet=max(1, min(8, _int("SWEEP_PER_SUBNET", 2))),
         # POOL_SIZE is the whole pool's budget; POOL_TARGET is the floor every

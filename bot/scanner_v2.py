@@ -269,14 +269,23 @@ class CleanIPScanner:
     # ------------------------------------------------------------------ #
 
     async def reference_host(self) -> str:
-        """A live panel hostname to point TLS probes at.
+        """A live panel hostname to point TLS probes at, or "" when sweeps must not spend it.
 
         Any Cloudflare edge address serves every workers.dev hostname, so one
         real panel is enough to prove an address and port will carry a
         WebSocket for all of them. VERIFY_HOST pins it manually; otherwise the
         newest successful deploy records itself here.
+
+        The WS path is EXPENSIVE in the only currency a user's account has:
+        every upgrade is a billed Worker request, and a sweep used to burn
+        hundreds of thousands a day through whatever panel was newest - which
+        is exactly how an account hits its 100k/day free ceiling by mid-morning
+        and every panel on it starts erroring at once. Sweeps therefore verify
+        with the free edge trace by default (VERIFY_SWEEP_WS=false); the real
+        101-or-nothing proof still runs where it matters, at build acceptance,
+        which touches eight endpoints three times and nothing else.
         """
-        if not settings.verify_ws:
+        if not settings.verify_ws or not settings.verify_sweep_ws:
             return ""
         if settings.verify_host:
             return settings.verify_host
