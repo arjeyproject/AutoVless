@@ -268,6 +268,16 @@ def _parse_vmess(raw: str) -> dict[str, Any]:
 
 def _parse_ss(raw: str) -> dict[str, Any]:
     body = raw.split("://", 1)[1].split("#", 1)[0]
+    # SIP002: base64(method:password)@host:port?plugin=... - the query carries
+    # the v2ray-plugin options and must never leak into the port.
+    query: dict[str, str] = {}
+    if "?" in body:
+        body, _, qs = body.partition("?")
+        try:
+            from urllib.parse import parse_qsl as _pq
+            query = dict(_pq(qs))
+        except Exception:
+            query = {}
     # SIP002: base64(method:password)@host:port or plugin-less plain
     userinfo, _, hostport = body.rpartition("@")
     if not userinfo:
@@ -298,16 +308,36 @@ def _parse_ss(raw: str) -> dict[str, Any]:
     if ":" not in cred:
         raise LinkError("ss userinfo is not method:password")
     method, _, password = cred.partition(":")
+    # v2ray-plugin options decide the transport: mode=websocket(+tls) rides a
+    # websocket path, everything else stays plain TCP.
+    transport, security, host_header, path, mode = "tcp", "none", host, "", ""
+    plugin = str(query.get("plugin") or "")
+    if plugin:
+        pieces = plugin.split(";")
+        opts: dict[str, Any] = {}
+        for piece in pieces[1:]:
+            if "=" in piece:
+                k, _, v = piece.partition("=")
+                opts[k.strip()] = v.strip()
+            elif piece:
+                opts[piece] = True
+        if str(opts.get("mode") or "").lower() in ("websocket", "ws") or opts.get("websocket"):
+            transport = "ws"
+            mode = "websocket"
+            host_header = str(opts.get("host") or host)
+            path = str(opts.get("path") or "/")
+            security = "tls" if opts.get("tls") else "none"
+    sni = host_header if security == "tls" else host
     return {
         "scheme": "ss",
         "host": host,
         "port": port,
-        "security": "none",
-        "transport": "tcp",
-        "sni": host,
-        "host_header": host,
-        "path": "",
-        "mode": "",
+        "security": security,
+        "transport": transport,
+        "sni": sni,
+        "host_header": host_header,
+        "path": path,
+        "mode": mode,
         "name": "config",
         "uuid": "",
         "password": password,
@@ -910,7 +940,9 @@ def _ss_subkey(method: str, key: bytes, salt: bytes) -> bytes:
     from cryptography.hazmat.primitives.kdf.hkdf import HKDF
 
     info = b"ss-subkey"
-    digest = hashes.SHA256()
+    # shadowsocks AEAD derives the per-direction subkey with HKDF-SHA1 -
+    # SHA256 here would silently mismatch every server and fail with InvalidTag.
+    digest = hashes.SHA1()
     length = len(key)
     hk = HKDF(algorithm=digest, length=length, salt=salt, info=info)
     return hk.derive(key)
@@ -1018,6 +1050,10 @@ def needs_core(params: dict) -> bool:
         from . import xraycore
 
         if method not in _SS_AEAD or not xraycore.available():
+            return True
+        # A plugin (v2ray-plugin websocket) framing is core-only territory:
+        # the pure-python AEAD reader cannot parse the plugin's stream.
+        if transport in ("ws", "httpupgrade"):
             return True
     return False
 
