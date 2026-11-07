@@ -599,7 +599,10 @@ async def _build_impl(
                     _bindings(panel_uuid, dev_host, endpoints, relays, ai_relays, chain_relays),
                 )
                 await cf.enable_workers_dev(account_id, script)
-                # The script has to exist before a domain can point at it.
+                # The script has to exist before a domain can point at it, and
+                # the deterministic label may still sit on a dead Pages
+                # project from an earlier build - free it first.
+                await _free_pages_hostname(cf, account_id, script)
                 custom = await edge.attach(cf, account_id, script)
     except CloudflareError as error:
         network_task.cancel()
@@ -734,6 +737,42 @@ async def _build_impl(
     )
 
 
+async def _record_target(uuid: str, target: str) -> None:
+    """The panel switched deploy targets (a blocked Pages project falls back
+    to Workers): the row has to say so, or every later refresh retries the
+    dead path forever."""
+    try:
+        await db.execute(
+            "UPDATE panels SET deploy_target = ? WHERE uuid = ?", (str(target), str(uuid))
+        )
+    except Exception:  # noqa: BLE001
+        log.warning("could not record deploy target %s for %s", target, uuid, exc_info=True)
+
+
+_BLOCK_MARKS = ("blocked", "abuse", "abusereply", "suspended", "not allowed", "forbidden")
+
+
+def _is_block_error(message: str) -> bool:
+    text = str(message or "").lower()
+    return any(mark in text for mark in _BLOCK_MARKS)
+
+
+async def _free_pages_hostname(cf: CloudflareClient, account_id: str, script: str) -> None:
+    """Detach a Pages project's custom hostnames so a Workers custom domain
+    can claim the same deterministic label. Without this the fallback dies on
+    'you have already added this custom domain'."""
+    project = pages.project_name(script)
+    try:
+        for hostname in await cf.list_pages_domains(account_id, project):
+            try:
+                await cf.detach_pages_domain(account_id, project, str(hostname))
+                log.info("freed pages hostname %s for the workers target", hostname)
+            except CloudflareError as error:
+                log.info("could not free pages hostname %s: %s", hostname, error.message)
+    except CloudflareError as error:
+        log.info("pages domain list failed while freeing hostnames: %s", error.message)
+
+
 async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     """Re-point an existing panel at fresh entry addresses.
 
@@ -819,10 +858,28 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
                     await cf.upload_script(account_id, script, code, revival_vars)
                     await cf.enable_workers_dev(account_id, script)
         except (CloudflareError, pages.PagesError) as error:
-            raise DeployError(
-                f"the panel front door ({host}) is down and the revival upload "
-                f"failed: {getattr(error, 'message', error)}"
-            ) from error
+            message = getattr(error, "message", str(error))
+            if not (target == "pages" and _is_block_error(message)):
+                raise DeployError(
+                    f"the panel front door ({host}) is down and the revival upload "
+                    f"failed: {message}"
+                ) from error
+            # Pages is blocked; revival cannot go through it. Move the panel
+            # to the workers target right here so the rest of the refresh
+            # runs against a platform that can still take an upload.
+            log.warning("revival hit a blocked pages project; moving %s to workers", script)
+            async with CloudflareClient(str(token)) as cf:
+                subdomain = await cf.ensure_subdomain(account_id)
+                await _free_pages_hostname(cf, account_id, script)
+                await cf.upload_script(account_id, script, code, revival_vars)
+                await cf.enable_workers_dev(account_id, script)
+                custom = await edge.attach(cf, account_id, script)
+            target = "workers"
+            await _record_target(panel_uuid, target)
+            dev_host = f"{script}.{subdomain}.workers.dev"
+            host = custom if (custom and await _published(custom, panel_uuid, attempts=3)) else dev_host
+            if host != str(panel.get("host")):
+                await _record_host(panel_uuid, host)
 
     candidates = await _select_endpoints(force_scan)
     relays = await _select_relays()
@@ -833,26 +890,53 @@ async def refresh(panel: dict, force_scan: bool = False) -> Panel:
     if not endpoints:
         raise DeployError("no endpoint could complete a websocket upgrade")
 
+    final_vars = pages.bindings(panel_uuid, host, endpoints, relays, ai_relays, chain_relays)
     try:
         if target == "pages":
-            await pages.push(
-                str(token),
-                account_id,
-                project,
-                code,
-                pages.bindings(panel_uuid, host, endpoints, relays, ai_relays, chain_relays),
-            )
+            await pages.push(str(token), account_id, project, code, final_vars)
         else:
             async with CloudflareClient(str(token)) as cf:
-                await cf.upload_script(
-                    account_id,
-                    script,
-                    code,
-                    _bindings(panel_uuid, host, endpoints, relays, ai_relays, chain_relays),
-                )
+                await cf.upload_script(account_id, script, code, final_vars)
                 await cf.enable_workers_dev(account_id, script)
     except (CloudflareError, pages.PagesError) as error:
-        raise DeployError(getattr(error, "message", str(error))) from error
+        message = getattr(error, "message", str(error))
+        if not (target == "pages" and _is_block_error(message)):
+            raise DeployError(getattr(error, "message", str(error))) from error
+        # The account's Pages capability was flagged by abuse review; the
+        # very same worker still runs fine on the classic Workers target.
+        # Move the panel over instead of dying: same script, same uuid, and
+        # the deterministic custom hostname moves with it.
+        log.warning("pages is blocked for %s (%s); falling back to the workers target", script, message)
+        async with CloudflareClient(str(token)) as cf:
+            subdomain = await cf.ensure_subdomain(account_id)
+            await _free_pages_hostname(cf, account_id, script)
+            await cf.upload_script(account_id, script, code, final_vars)
+            await cf.enable_workers_dev(account_id, script)
+            custom = await edge.attach(cf, account_id, script)
+        target = "workers"
+        await _record_target(panel_uuid, target)
+        dev_host = f"{script}.{subdomain}.workers.dev"
+        custom_ok = bool(custom) and await _published(custom, panel_uuid, attempts=4)
+        dev_ok = await _published(dev_host, panel_uuid, attempts=3)
+        if custom_ok:
+            host = custom
+        elif dev_ok:
+            host = dev_host
+        else:
+            raise DeployError(
+                f"the panel moved to the workers target but neither {custom} nor {dev_host} answered"
+            )
+        if host != str(panel.get("host")):
+            await _record_host(panel_uuid, host)
+            # SUB_HOST rides in the bundle's env: re-upload once with the
+            # final host so the worker's own subscription points at it.
+            retry_vars = _bindings(panel_uuid, host, endpoints, relays, ai_relays, chain_relays)
+            try:
+                async with CloudflareClient(str(token)) as cf:
+                    await cf.upload_script(account_id, script, code, retry_vars)
+                    await cf.enable_workers_dev(account_id, script)
+            except CloudflareError as retry_error:
+                log.warning("could not re-bind SUB_HOST after the target move: %s", retry_error)
 
     healthy, report = await _probe(host, panel_uuid)
     if report:
