@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+import logging
 import random
 import secrets
 from typing import Any, Optional
@@ -12,6 +13,8 @@ from typing import Any, Optional
 import httpx
 
 from .config import settings
+
+log = logging.getLogger("autovless.cloudflare")
 
 API = "https://api.cloudflare.com/client/v4"
 
