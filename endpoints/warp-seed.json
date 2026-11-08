@@ -1,252 +1,252 @@
 {
-  "generated_at": "2026-11-08T06:01:41Z",
+  "generated_at": "2026-11-08T13:25:33Z",
   "source": "scan",
   "count": 24,
-  "best_latency_ms": 8.3,
+  "best_latency_ms": 7.6,
   "pool": {
     "stable": 24,
     "total": 24,
-    "avg_loss": 0.0
+    "avg_loss": 0.028
   },
   "endpoints": [
     {
-      "endpoint": "188.114.98.182:2408",
-      "ip": "188.114.98.182",
+      "endpoint": "188.114.96.198:2408",
+      "ip": "188.114.96.198",
       "port": 2408,
-      "latency_ms": 8.3,
-      "jitter_ms": 0.8,
+      "latency_ms": 7.6,
+      "jitter_ms": 0.2,
       "loss": 0.0,
-      "score": 8.9,
+      "score": 7.7,
       "stable": true
     },
     {
-      "endpoint": "162.159.195.13:1701",
-      "ip": "162.159.195.13",
+      "endpoint": "188.114.97.9:500",
+      "ip": "188.114.97.9",
+      "port": 500,
+      "latency_ms": 7.8,
+      "jitter_ms": 0.1,
+      "loss": 0.0,
+      "score": 7.9,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.98.236:500",
+      "ip": "188.114.98.236",
+      "port": 500,
+      "latency_ms": 7.9,
+      "jitter_ms": 0.2,
+      "loss": 0.0,
+      "score": 8.0,
+      "stable": true
+    },
+    {
+      "endpoint": "162.159.192.146:500",
+      "ip": "162.159.192.146",
+      "port": 500,
+      "latency_ms": 7.9,
+      "jitter_ms": 0.2,
+      "loss": 0.0,
+      "score": 8.0,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.99.232:1701",
+      "ip": "188.114.99.232",
       "port": 1701,
-      "latency_ms": 8.6,
-      "jitter_ms": 0.9,
+      "latency_ms": 7.9,
+      "jitter_ms": 0.4,
       "loss": 0.0,
-      "score": 9.3,
+      "score": 8.2,
       "stable": true
     },
     {
-      "endpoint": "188.114.96.52:2408",
-      "ip": "188.114.96.52",
+      "endpoint": "162.159.195.202:2408",
+      "ip": "162.159.195.202",
+      "port": 2408,
+      "latency_ms": 8.2,
+      "jitter_ms": 0.1,
+      "loss": 0.0,
+      "score": 8.3,
+      "stable": true
+    },
+    {
+      "endpoint": "162.159.193.202:500",
+      "ip": "162.159.193.202",
+      "port": 500,
+      "latency_ms": 8.3,
+      "jitter_ms": 0.1,
+      "loss": 0.0,
+      "score": 8.4,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.98.239:1701",
+      "ip": "188.114.98.239",
+      "port": 1701,
+      "latency_ms": 8.2,
+      "jitter_ms": 0.5,
+      "loss": 0.0,
+      "score": 8.5,
+      "stable": true
+    },
+    {
+      "endpoint": "162.159.193.169:500",
+      "ip": "162.159.193.169",
+      "port": 500,
+      "latency_ms": 8.7,
+      "jitter_ms": 0.4,
+      "loss": 0.0,
+      "score": 9.0,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.98.138:1701",
+      "ip": "188.114.98.138",
+      "port": 1701,
+      "latency_ms": 8.9,
+      "jitter_ms": 2.0,
+      "loss": 0.0,
+      "score": 10.3,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.99.48:1701",
+      "ip": "188.114.99.48",
+      "port": 1701,
+      "latency_ms": 8.4,
+      "jitter_ms": 8.3,
+      "loss": 0.0,
+      "score": 14.2,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.98.32:2408",
+      "ip": "188.114.98.32",
       "port": 2408,
       "latency_ms": 8.0,
-      "jitter_ms": 2.4,
+      "jitter_ms": 24.1,
       "loss": 0.0,
-      "score": 9.7,
+      "score": 24.8,
       "stable": true
     },
     {
-      "endpoint": "162.159.193.201:500",
-      "ip": "162.159.193.201",
-      "port": 500,
-      "latency_ms": 9.8,
-      "jitter_ms": 1.4,
-      "loss": 0.0,
-      "score": 10.8,
-      "stable": true
-    },
-    {
-      "endpoint": "162.159.195.70:500",
-      "ip": "162.159.195.70",
-      "port": 500,
-      "latency_ms": 9.5,
-      "jitter_ms": 2.1,
-      "loss": 0.0,
-      "score": 11.0,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.98.192:2408",
-      "ip": "188.114.98.192",
-      "port": 2408,
-      "latency_ms": 10.8,
-      "jitter_ms": 1.6,
-      "loss": 0.0,
-      "score": 11.9,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.97.150:500",
-      "ip": "188.114.97.150",
-      "port": 500,
-      "latency_ms": 12.1,
-      "jitter_ms": 1.4,
-      "loss": 0.0,
-      "score": 13.1,
-      "stable": true
-    },
-    {
-      "endpoint": "162.159.193.134:500",
-      "ip": "162.159.193.134",
-      "port": 500,
-      "latency_ms": 11.9,
-      "jitter_ms": 2.4,
-      "loss": 0.0,
-      "score": 13.6,
-      "stable": true
-    },
-    {
-      "endpoint": "162.159.195.185:2408",
-      "ip": "162.159.195.185",
-      "port": 2408,
-      "latency_ms": 10.7,
-      "jitter_ms": 9.7,
-      "loss": 0.0,
-      "score": 17.5,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.97.83:2408",
-      "ip": "188.114.97.83",
-      "port": 2408,
-      "latency_ms": 14.5,
-      "jitter_ms": 8.6,
-      "loss": 0.0,
-      "score": 20.5,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.99.119:2408",
-      "ip": "188.114.99.119",
-      "port": 2408,
-      "latency_ms": 16.7,
-      "jitter_ms": 5.9,
-      "loss": 0.0,
-      "score": 20.9,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.96.196:2408",
-      "ip": "188.114.96.196",
-      "port": 2408,
-      "latency_ms": 16.7,
-      "jitter_ms": 6.1,
-      "loss": 0.0,
-      "score": 21.0,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.96.137:500",
-      "ip": "188.114.96.137",
-      "port": 500,
-      "latency_ms": 10.3,
-      "jitter_ms": 22.9,
-      "loss": 0.0,
-      "score": 26.3,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.99.240:2408",
-      "ip": "188.114.99.240",
-      "port": 2408,
-      "latency_ms": 13.2,
-      "jitter_ms": 19.1,
-      "loss": 0.0,
-      "score": 26.6,
-      "stable": true
-    },
-    {
-      "endpoint": "162.159.192.22:500",
-      "ip": "162.159.192.22",
-      "port": 500,
-      "latency_ms": 25.4,
-      "jitter_ms": 6.0,
-      "loss": 0.0,
-      "score": 29.6,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.99.192:500",
-      "ip": "188.114.99.192",
-      "port": 500,
-      "latency_ms": 11.5,
-      "jitter_ms": 29.4,
-      "loss": 0.0,
-      "score": 32.1,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.98.142:2408",
-      "ip": "188.114.98.142",
-      "port": 2408,
-      "latency_ms": 12.9,
-      "jitter_ms": 30.6,
-      "loss": 0.0,
-      "score": 34.3,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.96.162:2408",
-      "ip": "188.114.96.162",
-      "port": 2408,
-      "latency_ms": 31.2,
-      "jitter_ms": 15.5,
-      "loss": 0.0,
-      "score": 42.0,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.97.146:2408",
-      "ip": "188.114.97.146",
-      "port": 2408,
-      "latency_ms": 38.7,
-      "jitter_ms": 10.4,
-      "loss": 0.0,
-      "score": 46.0,
-      "stable": true
-    },
-    {
-      "endpoint": "162.159.195.19:2408",
-      "ip": "162.159.195.19",
-      "port": 2408,
-      "latency_ms": 30.5,
-      "jitter_ms": 25.8,
-      "loss": 0.0,
-      "score": 48.6,
-      "stable": true
-    },
-    {
-      "endpoint": "162.159.192.189:2408",
-      "ip": "162.159.192.189",
-      "port": 2408,
-      "latency_ms": 38.1,
-      "jitter_ms": 26.2,
-      "loss": 0.0,
-      "score": 56.4,
-      "stable": true
-    },
-    {
-      "endpoint": "188.114.99.144:1701",
-      "ip": "188.114.99.144",
+      "endpoint": "188.114.97.189:1701",
+      "ip": "188.114.97.189",
       "port": 1701,
-      "latency_ms": 77.1,
-      "jitter_ms": 23.0,
+      "latency_ms": 8.0,
+      "jitter_ms": 24.5,
       "loss": 0.0,
-      "score": 93.2,
+      "score": 25.1,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.97.208:1701",
+      "ip": "188.114.97.208",
+      "port": 1701,
+      "latency_ms": 8.2,
+      "jitter_ms": 25.0,
+      "loss": 0.0,
+      "score": 25.7,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.99.32:2408",
+      "ip": "188.114.99.32",
+      "port": 2408,
+      "latency_ms": 8.1,
+      "jitter_ms": 28.2,
+      "loss": 0.0,
+      "score": 27.8,
       "stable": true
     },
     {
       "endpoint": "188.114.98.15:2408",
       "ip": "188.114.98.15",
       "port": 2408,
-      "latency_ms": 80.7,
-      "jitter_ms": 19.6,
+      "latency_ms": 7.9,
+      "jitter_ms": 28.6,
       "loss": 0.0,
-      "score": 94.4,
+      "score": 27.9,
       "stable": true
     },
     {
-      "endpoint": "188.114.97.240:2408",
-      "ip": "188.114.97.240",
+      "endpoint": "188.114.99.12:2408",
+      "ip": "188.114.99.12",
       "port": 2408,
-      "latency_ms": 86.1,
-      "jitter_ms": 26.5,
+      "latency_ms": 8.2,
+      "jitter_ms": 28.4,
       "loss": 0.0,
-      "score": 104.7,
+      "score": 28.1,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.96.110:2408",
+      "ip": "188.114.96.110",
+      "port": 2408,
+      "latency_ms": 28.4,
+      "jitter_ms": 17.2,
+      "loss": 0.0,
+      "score": 40.4,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.97.43:500",
+      "ip": "188.114.97.43",
+      "port": 500,
+      "latency_ms": 35.7,
+      "jitter_ms": 21.5,
+      "loss": 0.0,
+      "score": 50.8,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.97.51:1701",
+      "ip": "188.114.97.51",
+      "port": 1701,
+      "latency_ms": 75.2,
+      "jitter_ms": 34.8,
+      "loss": 0.0,
+      "score": 99.6,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.96.98:1701",
+      "ip": "188.114.96.98",
+      "port": 1701,
+      "latency_ms": 89.7,
+      "jitter_ms": 27.6,
+      "loss": 0.0,
+      "score": 109.0,
+      "stable": true
+    },
+    {
+      "endpoint": "162.159.192.120:2408",
+      "ip": "162.159.192.120",
+      "port": 2408,
+      "latency_ms": 93.6,
+      "jitter_ms": 22.2,
+      "loss": 0.0,
+      "score": 109.1,
+      "stable": true
+    },
+    {
+      "endpoint": "162.159.195.239:2408",
+      "ip": "162.159.195.239",
+      "port": 2408,
+      "latency_ms": 8.1,
+      "jitter_ms": 0.2,
+      "loss": 0.333,
+      "score": 208.2,
+      "stable": true
+    },
+    {
+      "endpoint": "188.114.97.209:500",
+      "ip": "188.114.97.209",
+      "port": 500,
+      "latency_ms": 20.0,
+      "jitter_ms": 12.3,
+      "loss": 0.333,
+      "score": 228.5,
       "stable": true
     }
   ]
