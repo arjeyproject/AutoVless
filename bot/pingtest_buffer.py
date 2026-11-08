@@ -10,11 +10,11 @@ import re
 from typing import Any
 
 
-_STATUS_101 = re.compile(rb"^HTTP/\d(?:\.\d)?\s+101(?:\s|$)", re.IGNORECASE)
+_STATUS_LINE = re.compile(rb"^HTTP/\d(?:\.\d)?\s+(\d{3})(?:\s|$)", re.IGNORECASE)
 
 
 class UpgradeBufferedReader:
-    """Reader adapter that returns 101 headers now and buffers the tail."""
+    """Reader adapter that returns complete 101 headers and buffers the tail."""
 
     def __init__(self, reader: Any) -> None:
         self._reader = reader
@@ -24,15 +24,34 @@ class UpgradeBufferedReader:
     async def read(self, n: int = -1) -> bytes:
         if self._pending:
             return self._take_pending(n)
-        data = await self._reader.read(n)
-        if not self._checked_first_read:
-            self._checked_first_read = True
-            marker = data.find(b"\r\n\r\n")
-            if marker >= 0 and _STATUS_101.match(data):
-                end = marker + 4
-                self._pending.extend(data[end:])
-                return data[:end]
-        return data
+        if self._checked_first_read:
+            return await self._reader.read(n)
+
+        self._checked_first_read = True
+        data = bytearray(await self._reader.read(n))
+        if not data.startswith(b"HTTP/"):
+            return bytes(data)
+
+        # A stream may split the status line or the header terminator across
+        # reads. Read through the complete header before exposing a 101 to the
+        # caller, while preserving any frame bytes that followed it.
+        while b"\r\n\r\n" not in data:
+            first_line = bytes(data).split(b"\r\n", 1)[0]
+            match = _STATUS_LINE.match(first_line)
+            if match and match.group(1) != b"101":
+                return bytes(data)
+            chunk = await self._reader.read(n)
+            if not chunk:
+                return bytes(data)
+            data.extend(chunk)
+
+        marker = data.find(b"\r\n\r\n")
+        end = marker + 4
+        first_line = bytes(data).split(b"\r\n", 1)[0]
+        if _STATUS_LINE.match(first_line) and _STATUS_LINE.match(first_line).group(1) == b"101":
+            self._pending.extend(data[end:])
+            return bytes(data[:end])
+        return bytes(data)
 
     async def readexactly(self, n: int) -> bytes:
         if n < 0:
