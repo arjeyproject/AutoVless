@@ -97,6 +97,7 @@ APPLE = {"ios", "macos"}
 _jobs: dict[str, dict] = {}
 _tasks: set[asyncio.Task] = set()
 _rescans: dict[int, float] = {}
+_pings: dict[int, float] = {}
 
 
 # --------------------------------------------------------------------- #
@@ -832,25 +833,55 @@ async def links_handler(request: web.Request, body: dict, user: dict) -> web.Str
 
 
 async def ping_handler(request: web.Request, body: dict, user: dict) -> web.StreamResponse:
+    """Measure every shipped entry and return a user-visible live summary.
+
+    This is a server-side TCP/entry check, not a promise about the user's
+    carrier. The client still needs its own Real Delay test, but this removes
+    dead entries before they are shown and makes the measurement explicit.
+    """
+    tg_id = int(user["id"])
+    now = time.monotonic()
+    last = _pings.get(tg_id, 0.0)
+    ping_cooldown = 10
+    if not settings.is_admin(tg_id) and now - last < ping_cooldown:
+        return _json(
+            {"ok": False, "error": "ping cooldown", "wait": int(ping_cooldown - (now - last))},
+            status=429,
+        )
+    _pings[tg_id] = now
     panel = await db.get_panel(user["id"])
     if panel is None:
         return _json({"ok": False, "error": "no panel"}, status=404)
     endpoints = list(panel.get("endpoints") or [])
     results = await asyncio.gather(
-        *(tcp_latency(str(item["ip"]), int(item["port"])) for item in endpoints)
+        *(tcp_latency(str(item["ip"]), int(item["port"]), timeout=2.5) for item in endpoints),
+        return_exceptions=False,
     )
+    rows = [
+        {
+            "ip": str(item["ip"]),
+            "port": int(item["port"]),
+            "kind": item.get("kind") or "ip",
+            "colo": item.get("colo"),
+            "latency": round(float(latency), 1) if latency is not None else None,
+            "alive": latency is not None,
+        }
+        for item, latency in zip(endpoints, results)
+    ]
+    live = [float(row["latency"]) for row in rows if row["latency"] is not None]
     return _json(
         {
             "ok": True,
-            "rows": [
-                {
-                    "ip": str(item["ip"]),
-                    "port": int(item["port"]),
-                    "kind": item.get("kind") or "ip",
-                    "latency": latency,
-                }
-                for item, latency in zip(endpoints, results)
-            ],
+            "source": "server_tcp_handshake",
+            "checkedAt": int(time.time()),
+            "rows": rows,
+            "summary": {
+                "total": len(rows),
+                "alive": len(live),
+                "dead": len(rows) - len(live),
+                "best": min(live) if live else None,
+                "average": round(sum(live) / len(live), 1) if live else None,
+            },
         }
     )
 
@@ -1030,6 +1061,7 @@ async def free_handler(request: web.Request, body: dict, user: dict) -> web.Stre
             "sub": result["sub"],
             "direct": result["sub"],
             "links": result["links"],
+            "endpoints": result["endpoints"],
             "best": result["best"],
             "count": result["count"],
         }

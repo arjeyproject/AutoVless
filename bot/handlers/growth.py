@@ -154,7 +154,11 @@ async def on_free_build(call: CallbackQuery, lang: str, is_admin: bool) -> None:
         sub=esc(result["sub"]),
         tip=t(lang, TIPS.get(protocol, "free.tip_vless")),
     )
-    body = header + "\n\n" + "\n\n".join(
+    ping_rows = "\n".join(
+        f"📡 <b>#{num(index, lang)}</b> · <code>{esc(row['ip'])}:{num(row['port'], lang)}</code> · {ping_label(row.get('latency'), lang)}"
+        for index, row in enumerate(result.get("endpoints") or [], start=1)
+    )
+    body = header + ("\n\n" + ping_rows if ping_rows else "") + "\n\n" + "\n\n".join(
         f"<b>#{num(index, lang)}</b>\n<code>{esc(link)}</code>"
         for index, link in enumerate(result["links"], start=1)
     )

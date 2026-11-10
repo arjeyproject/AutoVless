@@ -92,6 +92,8 @@
   STR.en = Object.assign({}, STR.fa, { tagline:"your own tunnel", loading:"Loading…", working:"Working…", "veil.hide":"Dismiss", "home.title":"Your network, always fresh", "home.text":"Clean IPs are scanned, tested and applied to your configs automatically.", "home.cta":"⚡️ Turbo panel", "home.cta2":"🎁 Free config", "stat.pool":"IP pool", "stat.verified":"Verified", "stat.relays":"Relays", "stat.warp":"WARP", "proto.title":"🔀 Active protocols", "proto.text":"One address, several handshakes.", "ai.title":"🧠 AI route", "ai.text":"Gemini, ChatGPT and Claude leave automatically through one pinned proxyIP in an allowed country. It runs on your own Worker, not on our server.", "ai.relay":"Pinned relay", "ai.none":"Set automatically once your panel is built", "link.support":"💬 Support", "link.channel":"📣 Channel", "link.github":"🐙 GitHub", "pay.title":"🔐 Access pass", "pay.text":"Pay once to use everything. Access unlocks automatically after payment.", "pay.price":"Price", "pay.period":"Validity", "pay.forever":"Lifetime", "pay.days":" days", "pay.zp":"💳 Pay by bank card", "pay.stars":"⭐️ Pay with Telegram Stars", "pay.check":"🔄 I paid, check it", "pay.none":"No payment gateway is configured yet.", "pay.done":"Payment confirmed 🎉", "pay.pending":"No payment yet; try again in a few seconds.", "pay.opened":"Payment page opened. Come back and tap Check.", "pay.toman":" Toman", "panel.buildTitle":"Build a turbo panel", "panel.buildText":"Paste your Cloudflare token; the Worker is built on your own account and traffic never touches our server.", "panel.tokenHelp":"Create a token on Cloudflare ↗", "panel.title":"Turbo panel", "panel.build":"Build panel", "panel.host":"Host", "panel.uuid":"UUID", "panel.count":"Configs", "panel.synced":"Last applied", "panel.mix":"All", "panel.apply":"⚡️ Fresh IPs", "panel.ping":"📶 Ping", "panel.rebuild":"🔄 Rebuild", "panel.fragment":"🧩 Fragment", "panel.delete":"🗑 Delete panel", "panel.noise":"🌫 Fragment + noise", "panel.clashFile":"📄 Clash file", "panel.openSub":"🌐 Open", "panel.showQr":"🔳 QR", "panel.configs":"Single configs", "panel.locked":"The panel unlocks once your access is active.", "warp.title":"WireGuard / WARP", "warp.build":"Build config", "warp.device":"Device", "warp.network":"Network", "warp.op_mci":"MCI","warp.op_mtn":"Irancell","warp.op_rightel":"Rightel","warp.op_shatel":"Shatel","warp.op_adsl":"Fixed/ADSL","warp.op_other":"Other","warp.opTip":"Clean, tested endpoints of your own network are picked for you", "warp.endpoint":"Endpoint", "warp.mode":"Mode", "warp.routes":"Routes", "free.title":"Free configs", "free.build":"Get configs", "free.mix":"🧩 Both", "invite.title":"🎁 Invite friends", "invite.text":"Share your link; every join counts.", "invite.done":"Invited", "invite.goal":"Goal", "invite.share":"📤 Share", "settings.title":"⚙️ Settings", "settings.lang":"Language", "settings.theme":"Theme", "admin.title":"🛠 Admin", save:"Save", add:"Add", copy:"Copy", on:"On", off:"Off", "tab.home":"Home", "tab.panel":"Panel", "tab.warp":"WARP", "tab.free":"Free", "tab.more":"More", healthy:"Healthy", unhealthy:"Needs a look", copied:"Copied ✅", done:"Done ✅", failed:"Failed: ", none:"Nothing found", noPanel:"No panel yet", locked:"Invite friends to unlock", needPay:"An access pass is required", cooldown:"Wait a moment and retry", quota:"Free quota used up", steps:["Checking token","Subdomain","Picking clean IPs","Uploading worker","Health check"], confirmDelete:"Delete the panel and its worker?", token:"Enter your token first", "err.network":"Could not reach the API", "err.timeout":"The server did not answer (timeout)", "err.unauth":"Telegram signature rejected; check the server clock or reopen the app", "err.title":"Could not connect to the server", "err.tried":"Tried", "err.hint":"Make sure the bot is running, the API is on HTTPS and WEBAPP_URL is right.", "err.outsideTitle":"Open this inside Telegram", "err.outsideText":"The mini app only works inside Telegram. Send /app to the bot.", retry:"Retry" });
 
   // ------------------------------------------------------------ helpers
+  STR.fa = Object.assign({}, STR.fa, { "ping.server":"تست TCP و هندشیک از سمت سرور", "ping.last":"آخرین بررسی", "ping.best":"بهترین", "ping.avg":"میانگین", "ping.alive":"پاسخ‌گو", "ping.dead":"قطع", "ping.none":"هیچ endpoint پاسخ‌گویی نیست", "ping.cooldown":"برای بررسی دوباره {s} ثانیه صبر کن" });
+  STR.en = Object.assign({}, STR.en, { "ping.server":"Server-side TCP/handshake check", "ping.last":"Last check", "ping.best":"Best", "ping.avg":"Average", "ping.alive":"Alive", "ping.dead":"Dead", "ping.none":"No live endpoint", "ping.cooldown":"Please wait {s}s before checking again" });
   function T(key) { var p = STR[state.lang] || STR.fa; return p[key] !== undefined ? p[key] : (STR.fa[key] !== undefined ? STR.fa[key] : key); }
   function digits(v) { var s = String(v); return state.lang !== "fa" ? s : s.replace(/[0-9]/g, function (d) { return "۰۱۲۳۴۵۶۷۸۹".charAt(Number(d)); }); }
   function money(v) { return digits(Number(v || 0).toLocaleString("en-US")); }
@@ -151,6 +153,10 @@
   }
   function explain(e) {
     var m = e && e.message ? e.message : String(e);
+    if (m === "ping cooldown") {
+      var wait = e && e.payload && e.payload.wait ? e.payload.wait : 10;
+      return T("ping.cooldown").replace("{s}", digits(wait));
+    }
     var map = { noapi: "err.noapiTitle", network: "err.network", timeout: "err.timeout", unauthorised: "err.unauth", payment_required: "needPay", locked: "locked", cooldown: "cooldown", quota: "quota", "no panel": "noPanel" };
     return map[m] ? T(map[m]) : T("failed") + m;
   }
@@ -226,6 +232,35 @@
     show("#payZp", !!p.zarinpal); show("#payStars", !!p.stars); show("#payNone", !(p.zarinpal || p.stars));
   }
   function copyRow(t) { var r = el("div", "rowitem"); r.appendChild(el("code", "", t)); var b = el("button", "btn tiny", T("copy")); b.type = "button"; b.onclick = function () { copy(t); }; r.appendChild(b); return r; }
+  function renderPingRows(rows, summary, checkedAt) {
+    var box = $("#pingRows"); if (!box) return;
+    box.innerHTML = "";
+    if (!rows || !rows.length) { box.appendChild(el("div", "note", T("ping.none"))); return; }
+    if (summary) {
+      var best = summary.best ? digits(Math.round(summary.best)) + "ms" : "—";
+      var avg = summary.average ? digits(Math.round(summary.average)) + "ms" : "—";
+      var meta = T("ping.server") + " · " + T("ping.best") + ": " + best + " · " + T("ping.avg") + ": " + avg;
+      if (checkedAt) meta += " · " + T("ping.last") + ": " + ago(checkedAt);
+      box.appendChild(el("div", "tiny muted", meta));
+    }
+    rows.forEach(function (r) {
+      var row = el("div", "rowitem");
+      var label = String(r.ip || "") + ":" + String(r.port || "");
+      row.appendChild(el("code", "", label));
+      row.appendChild(el("b", r.latency ? "good" : "bad", r.latency ? digits(Math.round(r.latency)) + "ms" : "✕"));
+      box.appendChild(row);
+    });
+  }
+  function renderFreePingRows(rows) {
+    var box = $("#freePingRows"); if (!box) return;
+    box.innerHTML = "";
+    (rows || []).forEach(function (r, i) {
+      var row = el("div", "rowitem");
+      row.appendChild(el("span", "tiny muted", "#" + digits(i + 1) + " · " + String(r.ip || "") + ":" + String(r.port || "")));
+      row.appendChild(el("b", r.latency ? "good" : "bad", r.latency ? digits(Math.round(r.latency)) + "ms" : "✕"));
+      box.appendChild(row);
+    });
+  }
   function render(d) {
     state.data = d;
     txt("#brandName", d.brand || "AutoVless"); txt("#logoMark", (d.brand || "A").charAt(0).toUpperCase());
@@ -255,7 +290,8 @@
       show("#gwNote", !!pan.gateway);
       var h = $("#panelHealth"); if (h) { h.textContent = pan.healthy ? T("healthy") : T("unhealthy"); h.className = "pill " + (pan.healthy ? "good" : "warn"); }
       showSub(state.fmt);
-      var list = $("#configList"); if (list) { list.innerHTML = ""; (pan.vless || []).concat(pan.ss || []).forEach(function (l) { list.appendChild(copyRow(l)); }); }
+      renderPingRows(pan.endpoints || [], null, null);
+      var list = $("#configList"); if (list) { list.innerHTML = ""; (pan.vless || []).concat(pan.trojan || [], pan.ss || []).forEach(function (l) { list.appendChild(copyRow(l)); }); }
       txt("#aiRelay", pan.aiRelay || T("ai.none")); txt("#aiFlag", pan.aiCountry || "—");
     } else { txt("#aiRelay", T("ai.none")); txt("#aiFlag", "—"); }
 
@@ -327,8 +363,9 @@
   async function pingPanel() {
     busy(true);
     try {
-      var d = await call("/api/panel/ping", {}), box = $("#pingRows"); if (!box) return; box.innerHTML = "";
-      (d.rows || []).forEach(function (r) { var row = el("div", "rowitem"); row.appendChild(el("code", "", r.ip + ":" + r.port)); row.appendChild(el("b", r.latency ? "good" : "bad", r.latency ? digits(Math.round(r.latency)) + "ms" : "✕")); box.appendChild(row); });
+      var d = await call("/api/panel/ping", {});
+      renderPingRows(d.rows || [], d.summary || null, d.checkedAt || null);
+      toast((d.summary && d.summary.alive ? digits(d.summary.alive) : "0") + "/" + digits(d.summary ? d.summary.total : 0) + " · " + (d.summary && d.summary.best ? digits(Math.round(d.summary.best)) + "ms" : T("ping.none")), "ok");
     } catch (e) { toast(explain(e), "bad"); } finally { busy(false); }
   }
   async function exportFile(fmt) { busy(true); try { var d = await call("/api/panel/export", { format: fmt }); busy(false); save(d.url, d.filename, d.body); } catch (e) { busy(false); toast(explain(e), "bad"); } }
@@ -357,6 +394,7 @@
       var d = await call("/api/free/build", { protocol: state.proto });
       txt("#freeSub", d.sub); show("#freeSubBox", true);
       txt("#freeMeta", d.best ? (digits(d.count || 0) + " · " + digits(Math.round(d.best)) + "ms") : "");
+      renderFreePingRows(d.endpoints || []);
       var list = $("#freeList"); if (list) { list.innerHTML = ""; (d.links || []).forEach(function (x) { list.appendChild(copyRow(x)); }); }
     } catch (e) { toast(explain(e), "bad"); } finally { busy(false); }
   }
